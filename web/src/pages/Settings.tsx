@@ -12,12 +12,14 @@ import { UsersSettings } from "./settings/UsersSettings";
 import { ImportSettings } from "./settings/ImportSettings";
 import { SystemSettings } from "./settings/SystemSettings";
 import { StatusSection } from "./settings/Status";
+import { AlertsSettings } from "./settings/AlertsSettings";
 
 // What each section renders; sections.ts says who sees it and where its cards are.
 const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   library: LibrarySettings,
   media: NamingSettings,
   downloads: DownloadsSettings,
+  alerts: AlertsSettings,
   users: UsersSettings,
   import: ImportSettings,
   system: SystemSettings,

@@ -2,7 +2,7 @@
 // (for the search box) and where an old link should land. Kept free of components so it
 // can be tested on its own; pages/Settings.tsx pairs each id with the component it renders.
 
-export type SectionId = "library" | "media" | "downloads" | "users" | "import" | "system" | "status";
+export type SectionId = "library" | "media" | "downloads" | "alerts" | "users" | "import" | "system" | "status";
 
 export interface SettingsSection {
   id: SectionId;
@@ -17,6 +17,8 @@ export const SECTIONS: readonly SettingsSection[] = [
   { id: "library", label: "Library", adminOnly: false },
   { id: "media", label: "Naming & metadata", adminOnly: false },
   { id: "downloads", label: "Downloads", adminOnly: true },
+  // Managers see the alert connections read-only; only admins change them.
+  { id: "alerts", label: "Alerts", adminOnly: false },
   { id: "users", label: "Users", adminOnly: true },
   { id: "import", label: "Import", adminOnly: true },
   { id: "system", label: "System", adminOnly: true },
@@ -51,6 +53,7 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { label: "Stalled downloads", keywords: "stall stuck timeout no progress replacement fail over hours", section: "downloads", anchor: "stalled-downloads" },
   { label: "Upgrades per sweep", keywords: "upgrade limit budget sweep quality profile replace better release grabs at once", section: "downloads", anchor: "upgrade-limit" },
   { label: "Recycle bin", keywords: "trash deleted restore empty retention size cap purge undo", section: "downloads", anchor: "recycle-bin" },
+  { label: "Alerts", keywords: "alert alerts notification notifications apprise discord telegram ntfy email slack pushover push phone message", section: "alerts", anchor: "alerts" },
   { label: "Users", keywords: "add user people accounts roles admin manager requester read-only password auto-approve block delete disable sign in", section: "users", anchor: "users" },
   { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users", section: "users", anchor: "plex-sign-in" },
   { label: "Import from Overseerr / Jellyseerr", keywords: "overseerr jellyseerr requests migrate import", section: "import", anchor: "overseerr-import" },

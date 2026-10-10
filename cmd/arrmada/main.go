@@ -403,8 +403,16 @@ func main() {
 	// download client's own settings say.
 	coordinator.SetMovieCategory(cfg.DownloadCategory)
 
-	// Deliver grab/import notifications to configured connections.
+	// Admin alerts: the catalog's bus topics become queued deliveries, and the worker
+	// sends them (retrying, a few at a time, rows surviving a restart).
+	// "This device" alert connections push to their admin's browsers and phones, while
+	// that account is still staff.
+	notifySvc.SetPusher(pushSvc, func(ctx context.Context, uid int64) bool {
+		u, err := authSvc.UserByID(ctx, uid)
+		return err == nil && !u.Disabled && u.Role.AtLeast(auth.RoleManager)
+	})
 	grp.Loop("notify", notifySvc.Run)
+	grp.Loop("notify: delivery worker", notifySvc.RunWorker)
 
 	// Realtime hub bridges the event bus to connected websocket clients.
 	hub := realtime.NewHub(log)
@@ -642,6 +650,12 @@ func main() {
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
 	requestsSvc.SetJobs(jobRunner)     // and are jobs, single-flight with a Search click
+	// Staff's personal Apprise URLs keep the ordinary rules; everyone else's are held off
+	// internal hosts, re-checked before each send. A lookup failure counts as not staff.
+	requestsSvc.SetStaffLookup(func(ctx context.Context, uid int64) bool {
+		u, err := authSvc.UserByID(ctx, uid)
+		return err == nil && !u.Disabled && u.Role.AtLeast(auth.RoleManager)
+	})
 	// Book requests made before they remembered their library row are linked to it by
 	// title and author, so the ones whose book was re-matched to a new catalogue key
 	// stop showing "Searching" and get their "ready".
@@ -850,6 +864,14 @@ func main() {
 		convert: convertSvc, subtitles: subtitlesSvc, requests: requestsSvc, audio: audioSrv, grp: grp,
 	}.register(box)
 	grp.Loop("outbox: dispatcher", box.Run)
+	// Alert deliveries are each connection's log on the Alerts page: a month of it.
+	sched.Register("notify-prune", 24*time.Hour, true, func(ctx context.Context) error {
+		n, err := notifySvc.PruneDeliveries(ctx, notify.HistoryKeep)
+		if err == nil && n > 0 {
+			log.Info("notify: cleared old alert history", "rows", n)
+		}
+		return err
+	}, scheduler.Label("Clear old alert history"), scheduler.Description("Deletes alert deliveries older than 30 days."))
 	// Finished rows are kept a week for anyone tracing what happened to an import; failed
 	// ones stay until someone retries them.
 	sched.Register("outbox-prune", 24*time.Hour, true, func(ctx context.Context) error {

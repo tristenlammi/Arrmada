@@ -21,6 +21,7 @@ export const LINKS = {
   status: "/settings/status",
   tasks: "/settings/status#tasks",
   review: "/review",
+  alerts: "/settings/alerts",
 } as const;
 
 // fixLink is where a health warning sends you: the LINKS entry the server named, else the

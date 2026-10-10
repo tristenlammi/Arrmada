@@ -33,6 +33,19 @@ func (s *Service) parties(ctx context.Context, req Request) []int64 {
 	return out
 }
 
+// publishAutoApproved feeds the "Auto-approved request" admin alert (notify's catalog).
+// It names the title and the requester, so it rides a staff-only topic — the realtime
+// policy never hands it to a requester's socket.
+func (s *Service) publishAutoApproved(req Request) {
+	if s.bus == nil {
+		return
+	}
+	s.bus.Publish("request.auto_approved", map[string]any{
+		"id": req.ID, "title": req.Title, "year": req.Year, "media_type": req.MediaType,
+		"requested_by": req.RequestedByName,
+	})
+}
+
 // publishUpdated tells open pages a request changed, so they refresh instead of polling:
 // staff on request.updated, and each of users on their own user.<id>.request.updated.
 // Ids and status only — no titles — and a requester never hears about anyone else's

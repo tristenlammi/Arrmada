@@ -58,6 +58,24 @@ func (a *api) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"subscribed": true})
 }
 
+// handlePushStatus says whether this browser's subscription (its endpoint) is
+// registered to the signed-in user — the Alerts page's "This device" card uses it.
+func (a *api) handlePushStatus(w http.ResponseWriter, r *http.Request) {
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "not signed in")
+		return
+	}
+	var req struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	subscribed := a.deps.Push != nil && req.Endpoint != "" && a.deps.Push.HasSubscription(r.Context(), u.ID, req.Endpoint)
+	a.writeJSON(w, http.StatusOK, map[string]any{"subscribed": subscribed})
+}
+
 func (a *api) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	u, ok := userFrom(r)
 	if !ok || u == nil {

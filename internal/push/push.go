@@ -12,6 +12,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -102,10 +104,19 @@ type Payload struct {
 // never returned — a dead push service must not fail the caller's flow — and
 // subscriptions the push service says are gone (404/410) are pruned.
 func (s *Service) SendToUser(ctx context.Context, userID int64, title, body, url string) {
+	_, _ = s.SendToUserResult(ctx, userID, title, body, url)
+}
+
+// ErrNoDevices is SendToUserResult for a user with no device subscribed.
+var ErrNoDevices = errors.New("no devices subscribed — turn on push on the device first")
+
+// SendToUserResult is SendToUser for a caller that keeps a delivery log (admin push
+// alerts): it says how many devices took the message, and when none did, why.
+func (s *Service) SendToUserResult(ctx context.Context, userID int64, title, body, url string) (int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?`, userID)
 	if err != nil {
-		return
+		return 0, err
 	}
 	type sub struct{ endpoint, p256dh, auth string }
 	var subs []sub
@@ -117,18 +128,20 @@ func (s *Service) SendToUser(ctx context.Context, userID int64, title, body, url
 	}
 	rows.Close()
 	if len(subs) == 0 {
-		return
+		return 0, ErrNoDevices
 	}
 
 	priv := s.settings.Get(ctx, keyPrivate, "")
 	pub := s.settings.Get(ctx, keyPublic, "")
 	if priv == "" || pub == "" {
-		return // no keys yet → nobody could have subscribed anyway
+		return 0, ErrNoDevices // no keys yet → nobody could have subscribed anyway
 	}
 	msg, err := json.Marshal(Payload{Title: title, Body: body, URL: url})
 	if err != nil {
-		return
+		return 0, err
 	}
+	sent := 0
+	var lastErr error
 	for _, x := range subs {
 		resp, err := webpush.SendNotification(msg, &webpush.Subscription{
 			Endpoint: x.endpoint,
@@ -142,15 +155,26 @@ func (s *Service) SendToUser(ctx context.Context, userID int64, title, body, url
 		})
 		if err != nil {
 			s.log.Debug("push: send failed", "err", err)
+			lastErr = errors.New("the push service couldn't be reached")
 			continue
 		}
-		if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		switch {
+		case resp.StatusCode == 404 || resp.StatusCode == 410:
 			// The browser revoked the subscription (uninstalled PWA, cleared
 			// site data) — the push service says it's gone for good.
 			_, _ = s.db.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE endpoint = ?`, x.endpoint)
+			lastErr = errors.New("the device's subscription has expired — turn push on again there")
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+			sent++
+		default:
+			lastErr = fmt.Errorf("the push service answered %d", resp.StatusCode)
 		}
 		resp.Body.Close()
 	}
+	if sent == 0 && lastErr != nil {
+		return 0, lastErr
+	}
+	return sent, nil
 }
 
 // timeoutCtx bounds a send batch kicked off from an event handler.

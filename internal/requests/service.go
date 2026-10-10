@@ -33,10 +33,12 @@ type Service struct {
 	quality    *quality.Service
 	bus        *eventbus.Bus
 	appriseBin string
-	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
-	runner     Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
-	jobs       jobs.Submitter
-	log        *slog.Logger
+	// userApprise guards and sends personal Apprise pushes (usernotify.go).
+	userApprise userApprise
+	push        PushSender // optional: Web Push fan-out alongside inbox + Apprise
+	runner      Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
+	jobs        jobs.Submitter
+	log         *slog.Logger
 	// seriesMu serialises series request creation (and season trims): working out which
 	// seasons are already covered and inserting the rest must happen as one step.
 	seriesMu sync.Mutex
@@ -513,8 +515,9 @@ func (s *Service) searchRequestedBook(ctx context.Context, requestID, bookID int
 	})
 }
 
-// autoApprove approves a request its requester's own auto-approve just made: they aren't
-// told about their own click, and an import's Silent/DeferSearch carry through.
+// autoApprove approves a new request its requester's own auto-approve just made: they
+// aren't told about their own click, staff get the auto-approved alert, and an import's
+// Silent/DeferSearch carry through.
 func (s *Service) autoApprove(ctx context.Context, created Request, opts CreateOptions) (Request, error) {
 	profile := created.QualityProfile
 	if created.MediaType == "book" {
@@ -522,10 +525,16 @@ func (s *Service) autoApprove(ctx context.Context, created Request, opts CreateO
 		// approver's pick would re-derive the choice from the profile.
 		profile = ""
 	}
-	return s.Approve(ctx, created.ID, ApproveOptions{
+	approved, err := s.Approve(ctx, created.ID, ApproveOptions{
 		Profile: profile, DecidedBy: created.RequestedBy, DecidedByName: created.RequestedByName,
 		Auto: true, Silent: opts.Silent, DeferSearch: opts.DeferSearch,
 	}) // announces it as approved
+	if err == nil && !opts.Silent {
+		// The staff "Auto-approved request" alert: once, for this new row (an import's
+		// old requests don't raise it).
+		s.publishAutoApproved(approved)
+	}
+	return approved, err
 }
 
 // ApproveOptions says how a request is approved.

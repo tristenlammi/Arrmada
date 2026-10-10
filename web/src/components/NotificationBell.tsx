@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type UserNotification } from "../lib/api";
+import { api, type MyApprise, type UserNotification } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
+import { pushSupported, subscribeThisDevice, thisDeviceEndpoint, unsubscribeThisDevice } from "../lib/webpush";
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
 // watch — the quoted part is the title. Falls back to the whole body if nothing is
@@ -115,22 +116,11 @@ export function NotificationBell() {
   );
 }
 
-// urlBase64ToUint8Array converts the VAPID public key into the form
-// PushManager.subscribe expects.
-function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = window.atob(b64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
 // PushSetting is the per-device Web Push toggle: real notifications on this
 // phone/desktop when a request is ready — no extra app. iOS needs the PWA added
 // to the Home Screen (16.4+); Android/desktop work in the browser directly.
 function PushSetting() {
-  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const supported = pushSupported();
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,9 +134,8 @@ function PushSetting() {
         const key = await api.pushKey();
         if (!alive || !key) return;
         setAvailable(true);
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
-        if (alive) setEnabled(!!sub && Notification.permission === "granted");
+        const endpoint = await thisDeviceEndpoint();
+        if (alive) setEnabled(!!endpoint);
       } catch { /* push stays hidden */ }
     })();
     return () => { alive = false; };
@@ -156,28 +145,12 @@ function PushSetting() {
     if (busy) return;
     setBusy(true); setError(null);
     try {
-      const reg = await navigator.serviceWorker.ready;
       if (enabled) {
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) {
-          await api.pushUnsubscribe(sub.endpoint).catch(() => {});
-          await sub.unsubscribe();
-        }
+        await unsubscribeThisDevice();
         setEnabled(false);
       } else {
         // Permission must be requested from this user gesture (iOS requires it).
-        const perm = await Notification.requestPermission();
-        if (perm !== "granted") {
-          setError(perm === "denied" ? "Notifications are blocked for this site in your browser settings." : "Permission not granted.");
-          return;
-        }
-        const key = await api.pushKey();
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
-        });
-        const json = sub.toJSON();
-        await api.pushSubscribe({ endpoint: sub.endpoint, keys: { p256dh: json.keys?.p256dh ?? "", auth: json.keys?.auth ?? "" } });
+        await subscribeThisDevice();
         setEnabled(true);
       }
     } catch (e) {
@@ -211,31 +184,36 @@ function PushSetting() {
   );
 }
 
+// AppriseSetting is the personal push link. Once saved it isn't shown again (it usually
+// holds a token): the field's placeholder hints at it, typing replaces it, Remove clears it.
 function AppriseSetting() {
   const [url, setUrl] = useState("");
-  const [set, setSet] = useState(false);
+  const [status, setStatus] = useState<MyApprise | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { api.myApprise().then((r) => { setSet(r.set); setUrl(r.url); }).catch(() => {}); }, []);
-  const save = async () => {
+  useEffect(() => { api.myApprise().then(setStatus).catch(() => {}); }, []);
+  const write = async (next: string) => {
     setError(null);
     try {
-      const r = await api.setMyApprise(url.trim());
-      setSet(r.set);
+      setStatus(await api.setMyApprise(next));
+      setUrl("");
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setError((e as Error).message);
     }
   };
+  const set = !!status?.set;
   return (
     <div className="px-3.5 py-3" style={{ background: "var(--panel-2)", borderBottom: "1px solid var(--line)" }}>
       <div className="text-[11.5px] font-semibold">Push notifications (optional)</div>
-      <div className="mb-1.5 text-[10.5px] text-ink-faint">Paste your own Apprise URL to also get pushed (Discord, ntfy, email…). Leave blank for in-app only.{set ? " Currently set." : ""}</div>
+      <div className="mb-1.5 text-[10.5px] text-ink-faint">Paste your own Apprise URL to also get pushed (Discord, ntfy, email…). Leave it unset for in-app only.{set ? " Currently set — paste a new one to replace it." : ""}</div>
       <div className="flex gap-1.5">
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ntfy://topic or discord://id/token" className="flex-1 rounded-lg px-2 py-1 font-mono text-[11px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-        <button onClick={save} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{saved ? "✓" : "Save"}</button>
+        <input type="password" autoComplete="off" aria-label="Your Apprise URL" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={set ? `${status?.hint || "saved"} (saved)` : "ntfy://topic or discord://id/token"} className="min-w-0 flex-1 rounded-lg px-2 py-1 font-mono text-[11px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <button onClick={() => write(url.trim())} disabled={!url.trim()} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{saved ? "✓" : "Save"}</button>
+        {set && <button onClick={() => write("")} className="rounded-lg px-2 py-1 text-[11px] text-ink-faint">Remove</button>}
       </div>
+      {status?.blocked_reason && <div className="mt-1.5 text-[10.5px] font-medium" style={{ color: "var(--avoid)" }}>Not sending to this link: {status.blocked_reason}</div>}
       {error && <div className="mt-1.5 text-[10.5px] font-medium" style={{ color: "var(--reject)" }}>Couldn’t save — {error}</div>}
     </div>
   );

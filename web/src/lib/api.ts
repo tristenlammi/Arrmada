@@ -527,17 +527,38 @@ export interface NewDownloadClient {
   priority?: number;
 }
 
+// An alert connection as the server shows it. The saved Apprise URL never comes back:
+// url_hint stands in for it ("discord://••••OKEN", "ntfys://ntfy.example.com/••••").
 export interface NotificationConn {
   id?: number;
   name: string;
   kind: string; // free-form label / service hint
-  url: string; // an Apprise URL
-  on_grab: boolean;
-  on_import: boolean;
-  on_stream?: boolean;
-  on_buffering?: boolean;
+  /** Catalog keys this connection subscribes to (GET /notifications/catalog). */
+  events: string[];
   enabled: boolean;
+  /** For kind "webpush" ("This device"): the account whose devices get the pushes. */
+  config?: { user_id?: number };
+  url_hint?: string;
+  url_set?: boolean;
+  /** A URL saved before validation existed that no longer passes it (it still sends). */
+  invalid_reason?: string;
+  /** The latest delivery: "" never sent, "retrying" = the last try failed and another is due. */
+  last_status?: "" | "sent" | "failed" | "retrying";
+  last_error?: string;
+  last_sent_at?: number;
 }
+
+// One row of a connection's delivery log.
+export interface AlertDelivery { id: number; event_key: string; title: string; body: string; status: "queued" | "sending" | "sent" | "failed"; attempts: number; last_error: string; created_at: number; next_attempt_at: number; sent_at: number }
+
+// What create, update and test take. On update, a missing or blank url keeps the saved one.
+export type NotificationInput = Pick<NotificationConn, "name" | "kind" | "events" | "enabled"> & { url?: string };
+
+// The alert event catalog: what a connection can subscribe to, grouped for the page.
+export interface AlertEvent { key: string; group: string; label: string; hint: string; default_on: boolean; module?: "books" | "music" }
+export interface AlertCatalog { groups: { key: string; label: string }[]; events: AlertEvent[] }
+
+export interface MyApprise { set: boolean; hint: string; blocked_reason?: string }
 
 export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
 
@@ -2071,14 +2092,20 @@ export const api = {
 
   notifications: () =>
     req<{ notifications: NotificationConn[] }>("/api/v1/notifications").then((r) => r.notifications),
-  createNotification: (body: NotificationConn) =>
+  alertCatalog: () => req<AlertCatalog>("/api/v1/notifications/catalog"),
+  alertDeliveries: (id: number, limit = 20) =>
+    req<{ deliveries: AlertDelivery[] }>(`/api/v1/notifications/${id}/deliveries?limit=${limit}`).then((r) => r.deliveries),
+  createNotification: (body: NotificationInput) =>
     req<NotificationConn>("/api/v1/notifications", { method: "POST", body: JSON.stringify(body) }),
-  updateNotification: (id: number, body: NotificationConn) =>
+  updateNotification: (id: number, body: NotificationInput) =>
     req<{ status: string }>(`/api/v1/notifications/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteNotification: (id: number) =>
     req<void>(`/api/v1/notifications/${id}`, { method: "DELETE" }),
-  testNotification: (body: NotificationConn) =>
+  testNotification: (body: NotificationInput) =>
     req<{ ok: boolean; error?: string }>("/api/v1/notifications/test", { method: "POST", body: JSON.stringify(body) }),
+  /** Test a saved connection through its stored URL. */
+  testSavedNotification: (id: number) =>
+    req<{ ok: boolean; error?: string }>(`/api/v1/notifications/${id}/test`, { method: "POST" }),
 
   // Per-user notifications (in-app inbox + personal Apprise URL)
   myNotifications: () => req<{ notifications: UserNotification[]; unread: number }>("/api/v1/me/notifications"),
@@ -2088,10 +2115,16 @@ export const api = {
     req<{ subscribed: boolean }>("/api/v1/me/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
   pushUnsubscribe: (endpoint: string) =>
     req<{ subscribed: boolean }>("/api/v1/me/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint }) }),
+  /** Whether this browser's endpoint is registered to the signed-in user. */
+  pushStatus: (endpoint: string) =>
+    req<{ subscribed: boolean }>("/api/v1/me/push/status", { method: "POST", body: JSON.stringify({ endpoint }) }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
   calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
-  myApprise: () => req<{ url: string; set: boolean }>("/api/v1/me/apprise"),
-  setMyApprise: (url: string) => req<{ url: string; set: boolean }>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
+  // The saved URL never comes back: a hint stands in, and blocked_reason says why pushes
+  // to it are being skipped (e.g. it points at the local network).
+  myApprise: () => req<MyApprise>("/api/v1/me/apprise"),
+  /** "" removes the saved URL. */
+  setMyApprise: (url: string) => req<MyApprise>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
 
   // refresh re-runs every check first (the server allows that once per 10 s).
   systemHealth: (refresh = false) =>

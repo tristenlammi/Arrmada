@@ -79,6 +79,8 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// Resolver checks the hosts in requesters' Apprise URLs (nil: the system resolver).
+	Resolver notify.Resolver
 	// FlareSolverr, whose URL is the "flaresolverr" API key (read on every use).
 	FlareSolverr *flaresolverr.Client
 	// KeyVerifiers back the API key Test button, by key id: each makes one real request
@@ -232,6 +234,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/me/push/key", a.signedIn(a.handlePushKey).ext())
 	mux.HandleFunc("POST /api/v1/me/push/subscribe", a.signedIn(a.handlePushSubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/unsubscribe", a.signedIn(a.handlePushUnsubscribe).ext())
+	mux.HandleFunc("POST /api/v1/me/push/status", a.signedIn(a.handlePushStatus).ext())
 	mux.HandleFunc("GET /api/v1/me/apprise", a.signedIn(a.handleGetMyApprise).ext())
 	mux.HandleFunc("GET /api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
 	mux.HandleFunc("PUT /api/v1/me/apprise", a.signedIn(a.handleSetMyApprise).ext())
@@ -288,11 +291,16 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/downloadclients/restore-bundled", a.requireRole(auth.RoleManager, a.handleRestoreBundledClient))
 	mux.HandleFunc("GET /api/v1/indexers/prowlarr", a.requireRole(auth.RoleManager, a.handleProwlarrInfo))
 	mux.HandleFunc("POST /api/v1/indexers/prowlarr/sync", a.requireRole(auth.RoleManager, a.handleProwlarrSync))
+	// Alert connections: staff see the list (URLs redacted); writes and sends are the
+	// admin's, since a connection decides where the server posts.
 	mux.HandleFunc("GET /api/v1/notifications", a.requireRole(auth.RoleManager, a.handleListNotifications))
-	mux.HandleFunc("POST /api/v1/notifications", a.requireRole(auth.RoleManager, a.handleCreateNotification))
-	mux.HandleFunc("PUT /api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleUpdateNotification))
-	mux.HandleFunc("DELETE /api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleDeleteNotification))
-	mux.HandleFunc("POST /api/v1/notifications/test", a.requireRole(auth.RoleManager, a.handleTestNotification))
+	mux.HandleFunc("GET /api/v1/notifications/catalog", a.requireRole(auth.RoleManager, a.handleNotificationCatalog))
+	mux.HandleFunc("GET /api/v1/notifications/{id}/deliveries", a.requireRole(auth.RoleManager, a.handleNotificationDeliveries))
+	mux.HandleFunc("POST /api/v1/notifications", a.requireRole(auth.RoleAdmin, a.handleCreateNotification))
+	mux.HandleFunc("PUT /api/v1/notifications/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateNotification))
+	mux.HandleFunc("DELETE /api/v1/notifications/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteNotification))
+	mux.HandleFunc("POST /api/v1/notifications/test", a.requireRole(auth.RoleAdmin, a.handleTestNotification))
+	mux.HandleFunc("POST /api/v1/notifications/{id}/test", a.requireRole(auth.RoleAdmin, a.handleTestSavedNotification))
 	mux.HandleFunc("GET /api/v1/queue", a.requireRole(auth.RoleManager, a.handleQueue))
 	mux.HandleFunc("GET /api/v1/downloads/disk-guard", a.requireRole(auth.RoleManager, a.handleDiskGuardStatus))
 	mux.HandleFunc("GET /api/v1/files/info", a.requireRole(auth.RoleManager, a.handleFileInfo))

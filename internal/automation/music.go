@@ -699,7 +699,9 @@ func (c *Coordinator) importAlbumContent(ctx context.Context, a music.Artist, al
 			"placed", placed, "of", len(tracks), "quality", quality)
 		c.music.AddEvent(ctx, a.ID, "imported",
 			fmt.Sprintf("Imported %d/%d track(s) of %q (%s)", placed, len(tracks), al.Title, quality))
-		c.bus.Publish("music.imported", map[string]any{"artist_id": a.ID, "album_id": al.ID, "placed": placed})
+		c.bus.Publish("music.imported", map[string]any{
+			"artist_id": a.ID, "album_id": al.ID, "placed": placed, "artist": a.Name, "album": al.Title,
+		})
 	}
 	return placed, found
 }

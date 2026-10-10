@@ -17,7 +17,7 @@ DELETE /api/v1/movies/{id}/file staff -
 DELETE /api/v1/movies/{id}/versions/{vid} staff -
 DELETE /api/v1/movies/{id}/versions/{vid}/file staff -
 DELETE /api/v1/music/artists/{id} staff -
-DELETE /api/v1/notifications/{id} staff -
+DELETE /api/v1/notifications/{id} admin -
 DELETE /api/v1/quality/profiles/{id} staff -
 DELETE /api/v1/queue/{hash} staff -
 DELETE /api/v1/requests/{id} requester ext
@@ -151,6 +151,8 @@ GET /api/v1/music/artists/{id} staff -
 GET /api/v1/music/artists/{id}/history staff -
 GET /api/v1/music/lookup staff -
 GET /api/v1/notifications staff -
+GET /api/v1/notifications/catalog staff -
+GET /api/v1/notifications/{id}/deliveries staff -
 GET /api/v1/parse staff -
 GET /api/v1/quality/preview staff -
 GET /api/v1/quality/profiles staff -
@@ -253,6 +255,7 @@ POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
+POST /api/v1/me/push/status user ext
 POST /api/v1/me/push/subscribe user ext
 POST /api/v1/me/push/unsubscribe user ext
 POST /api/v1/movies staff -
@@ -273,8 +276,9 @@ POST /api/v1/music/artists staff -
 POST /api/v1/music/artists/{id}/discography staff -
 POST /api/v1/music/artists/{id}/refresh staff -
 POST /api/v1/music/scan staff -
-POST /api/v1/notifications staff -
-POST /api/v1/notifications/test staff -
+POST /api/v1/notifications admin -
+POST /api/v1/notifications/test admin -
+POST /api/v1/notifications/{id}/test admin -
 POST /api/v1/quality/default staff -
 POST /api/v1/quality/impact staff -
 POST /api/v1/quality/preview staff -
@@ -357,7 +361,7 @@ PUT /api/v1/movies/{id}/versions/{vid} staff -
 PUT /api/v1/music/albums/{id}/monitor staff -
 PUT /api/v1/music/artists/{id}/monitor staff -
 PUT /api/v1/music/artists/{id}/profile staff -
-PUT /api/v1/notifications/{id} staff -
+PUT /api/v1/notifications/{id} admin -
 PUT /api/v1/quality/profiles/{id} staff -
 PUT /api/v1/series/episodes/{eid}/monitor staff -
 PUT /api/v1/series/{id}/monitor staff -

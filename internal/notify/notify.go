@@ -1,37 +1,84 @@
-// Package notify sends outbound notifications via Apprise (80+ services from a single URL
-// scheme) when Arrmada grabs or imports a release, or on Plex watch events. It's a small
-// subsystem: a CRUD store of connections plus a bus subscriber that fans events out to them.
-// Apprise is bundled in the image; delivery shells out to the `apprise` CLI.
+// Package notify sends the owner's alerts through Apprise (80+ services from a single URL
+// scheme): grabs and imports, requests, Plex watch events, and whatever else the event
+// catalog (catalog.go) declares. It's a CRUD store of connections — each an Apprise URL
+// plus the events it subscribes to — and a dispatcher that fans each event out to the
+// connections that want it. Apprise is bundled in the image; delivery shells out to the
+// `apprise` CLI.
 package notify
 
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a connection id doesn't exist.
 var ErrNotFound = errors.New("notification connection not found")
 
-// Connection is one configured notification target — an Apprise URL plus event subscriptions.
+// Connection is one configured notification target — an Apprise URL plus the catalog
+// events it subscribes to.
 type Connection struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"` // free-form label / service hint (informational)
-	URL         string `json:"url"`  // an Apprise URL (discord://, tgram://, mailto://, ntfy://, …)
-	OnGrab      bool   `json:"on_grab"`
-	OnImport    bool   `json:"on_import"`
-	OnStream    bool   `json:"on_stream"`    // Plex: a stream started
-	OnBuffering bool   `json:"on_buffering"` // Plex: a stream buffered
-	Enabled     bool   `json:"enabled"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"` // free-form label / service hint (informational)
+	// URL is an Apprise URL (discord://, tgram://, mailto://, ntfy://, …). It often holds a
+	// token or password, so it never goes out in JSON: the API answers with URLHint.
+	URL     string   `json:"-"`
+	Events  []string `json:"events"` // catalog keys, sorted
+	Enabled bool     `json:"enabled"`
+	// Config holds what a non-Apprise kind needs: {"user_id": N} for KindWebPush.
+	Config json.RawMessage `json:"config"`
+}
+
+// KindWebPush is a connection that delivers as Web Push to one user's subscribed
+// browsers and phones ("This device") instead of through an Apprise URL.
+const KindWebPush = "webpush"
+
+// PushConfig is a KindWebPush connection's Config.
+type PushConfig struct {
+	UserID int64 `json:"user_id"`
+}
+
+// PushUserID is the user a KindWebPush connection delivers to (0 if none).
+func (c Connection) PushUserID() int64 {
+	var pc PushConfig
+	if len(c.Config) > 0 {
+		_ = json.Unmarshal(c.Config, &pc)
+	}
+	return pc.UserID
+}
+
+// PushConfigFor is the Config of a push connection for userID.
+func PushConfigFor(userID int64) json.RawMessage {
+	b, _ := json.Marshal(PushConfig{UserID: userID})
+	return b
+}
+
+func configOrEmpty(c json.RawMessage) string {
+	if len(c) == 0 {
+		return "{}"
+	}
+	return string(c)
+}
+
+// Subscribes reports whether the connection wants an event.
+func (c Connection) Subscribes(key string) bool {
+	for _, e := range c.Events {
+		if e == key {
+			return true
+		}
+	}
+	return false
 }
 
 // Service stores connections and delivers notifications to them via Apprise.
@@ -40,38 +87,81 @@ type Service struct {
 	bus     *eventbus.Bus
 	log     *slog.Logger
 	apprise string // path to the apprise binary ("" if not found)
+	// transport sends one message to one Apprise URL. It's the apprise CLI; tests swap
+	// it for a recorder (SetTransport).
+	transport Transport
+
+	// pusher delivers KindWebPush connections; pushAllowed says whether the connection's
+	// user may still receive admin alerts (still staff, not disabled). Both set by SetPusher.
+	pusher      Pusher
+	pushAllowed func(ctx context.Context, userID int64) bool
+
+	// The delivery queue (queue.go): wake nudges the worker, now and poll are the clock
+	// and the idle interval (tests shorten them).
+	wake chan struct{}
+	now  func() time.Time
+	poll time.Duration
 }
+
+// Transport sends one message to one Apprise URL. An error's text must not quote the
+// URL (Send scrubs its own).
+type Transport func(ctx context.Context, url, title, body string) error
 
 // NewService wires the notification service.
 func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
-	s := &Service{db: db, bus: bus, log: log}
+	s := &Service{db: db, bus: bus, log: log, wake: make(chan struct{}, 1), now: time.Now, poll: defaultQueuePoll}
 	if p, err := exec.LookPath("apprise"); err == nil {
 		s.apprise = p
 	} else {
 		log.Warn("notify: apprise binary not found — notifications will not send")
 	}
+	s.transport = func(ctx context.Context, url, title, body string) error {
+		if s.apprise == "" {
+			return fmt.Errorf("apprise is not installed")
+		}
+		return Send(ctx, s.apprise, title, body, url)
+	}
 	return s
+}
+
+// SetTransport replaces how messages leave the server. For tests.
+func (s *Service) SetTransport(t Transport) { s.transport = t }
+
+// Pusher sends Web Push to every device a user subscribed, saying how many took it.
+// Satisfied by *push.Service.
+type Pusher interface {
+	SendToUserResult(ctx context.Context, userID int64, title, body, url string) (int, error)
+}
+
+// SetPusher wires Web Push delivery. allowed is checked before every push: a push
+// connection belongs to the admin who made it, and stops if they're no longer staff.
+func (s *Service) SetPusher(p Pusher, allowed func(ctx context.Context, userID int64) bool) {
+	s.pusher, s.pushAllowed = p, allowed
 }
 
 // AppriseBin returns the path to the apprise binary ("" if not installed) — used by other
 // modules (e.g. per-user request-ready pushes) to send directly.
 func (s *Service) AppriseBin() string { return s.apprise }
 
-const cols = `id, name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled`
+const cols = `id, name, kind, url, enabled, config`
 
 func scanConn(row interface{ Scan(...any) error }) (Connection, error) {
 	var (
-		c                                              Connection
-		onGrab, onImport, onStream, onBuffering, enabl int
+		c      Connection
+		enabl  int
+		config string
 	)
-	if err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.URL, &onGrab, &onImport, &onStream, &onBuffering, &enabl); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.URL, &enabl, &config); err != nil {
 		return Connection{}, err
 	}
-	c.OnGrab, c.OnImport, c.OnStream, c.OnBuffering, c.Enabled = onGrab != 0, onImport != 0, onStream != 0, onBuffering != 0, enabl != 0
+	c.Enabled = enabl != 0
+	c.Events = []string{}
+	c.Config = json.RawMessage(config)
 	return c, nil
 }
 
-// List returns all connections.
+// List returns all connections with their subscriptions (two queries, however many
+// connections there are).
 func (s *Service) List(ctx context.Context) ([]Connection, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+cols+` FROM notifications ORDER BY id`)
 	if err != nil {
@@ -79,14 +169,34 @@ func (s *Service) List(ctx context.Context) ([]Connection, error) {
 	}
 	defer rows.Close()
 	var out []Connection
+	at := map[int64]int{}
 	for rows.Next() {
 		c, err := scanConn(rows)
 		if err != nil {
 			return nil, err
 		}
+		at[c.ID] = len(out)
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	subs, err := s.db.QueryContext(ctx, `SELECT connection_id, event_key FROM notification_subscriptions ORDER BY connection_id, event_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer subs.Close()
+	for subs.Next() {
+		var id int64
+		var key string
+		if err := subs.Scan(&id, &key); err != nil {
+			return nil, err
+		}
+		if i, ok := at[id]; ok {
+			out[i].Events = append(out[i].Events, key)
+		}
+	}
+	return out, subs.Err()
 }
 
 // Get returns one connection.
@@ -96,36 +206,92 @@ func (s *Service) Get(ctx context.Context, id int64) (Connection, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Connection{}, ErrNotFound
 	}
-	return c, err
-}
-
-// Create stores a new connection.
-func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) {
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO notifications (name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Name, c.Kind, c.URL, b2i(c.OnGrab), b2i(c.OnImport), b2i(c.OnStream), b2i(c.OnBuffering), b2i(c.Enabled))
 	if err != nil {
 		return Connection{}, err
 	}
-	id, _ := res.LastInsertId()
+	rows, err := s.db.QueryContext(ctx, `SELECT event_key FROM notification_subscriptions WHERE connection_id = ? ORDER BY event_key`, id)
+	if err != nil {
+		return Connection{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return Connection{}, err
+		}
+		c.Events = append(c.Events, key)
+	}
+	return c, rows.Err()
+}
+
+// legacyFlags are the old per-event columns, kept in step for the four events they
+// described so a rolled-back build still alerts as configured.
+func legacyFlags(c Connection) (grab, imp, stream, buffering int) {
+	return b2i(c.Subscribes("release.grabbed")),
+		b2i(c.Subscribes("movie.imported") || c.Subscribes("episodes.imported")),
+		b2i(c.Subscribes("plex.stream.started")),
+		b2i(c.Subscribes("plex.buffering"))
+}
+
+// Create stores a new connection and its subscriptions together.
+func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) {
+	grab, imp, stream, buf := legacyFlags(c)
+	var id int64
+	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO notifications (name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config))
+		if err != nil {
+			return err
+		}
+		if id, err = res.LastInsertId(); err != nil {
+			return err
+		}
+		return writeEvents(ctx, tx, id, c.Events)
+	})
+	if err != nil {
+		return Connection{}, err
+	}
 	return s.Get(ctx, id)
 }
 
-// Update changes a connection.
+// Update changes a connection and replaces its subscriptions, together.
 func (s *Service) Update(ctx context.Context, id int64, c Connection) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE notifications SET name = ?, kind = ?, url = ?, on_grab = ?, on_import = ?, on_stream = ?, on_buffering = ?, enabled = ? WHERE id = ?`,
-		c.Name, c.Kind, c.URL, b2i(c.OnGrab), b2i(c.OnImport), b2i(c.OnStream), b2i(c.OnBuffering), b2i(c.Enabled), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+	grab, imp, stream, buf := legacyFlags(c)
+	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE notifications SET name = ?, kind = ?, url = ?, on_grab = ?, on_import = ?, on_stream = ?, on_buffering = ?, enabled = ?, config = ? WHERE id = ?`,
+			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config), id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		if !c.Enabled {
+			// Switched off: what's still waiting would never go, so say so in its log.
+			if err := failQueued(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM notification_subscriptions WHERE connection_id = ?`, id); err != nil {
+			return err
+		}
+		return writeEvents(ctx, tx, id, c.Events)
+	})
+}
+
+func writeEvents(ctx context.Context, tx *sql.Tx, id int64, events []string) error {
+	for _, key := range events {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO notification_subscriptions (connection_id, event_key) VALUES (?, ?)`, id, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// Delete removes a connection.
+// Delete removes a connection; its subscriptions go with it (ON DELETE CASCADE).
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM notifications WHERE id = ?`, id)
 	if err != nil {
@@ -137,66 +303,84 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// Test sends a sample message to a connection to verify it works.
+// Test sends a sample message to a connection to verify it works. It sends straight
+// away rather than through the queue, so the answer is the real outcome; a saved
+// connection's Test is also recorded in its delivery log.
 func (s *Service) Test(ctx context.Context, c Connection) error {
-	return s.deliver(ctx, c, "Arrmada", "✅ Test notification — this connection works.")
+	m := Message{Title: "Arrmada", Body: "✅ Test notification — this connection works.", Link: "/settings/alerts"}
+	err := s.deliver(ctx, c, m)
+	if c.ID > 0 {
+		s.recordTest(context.WithoutCancel(ctx), c, m, err)
+	}
+	return err
 }
 
-// Run subscribes to acquisition events and delivers notifications until ctx is
-// cancelled. Start it once at boot.
+// Run subscribes to every bus topic the catalog names and dispatches each event until
+// ctx is cancelled. Start it once at boot, after any Register calls.
 func (s *Service) Run(ctx context.Context) {
-	grabbed, cancelG := s.bus.Subscribe("release.grabbed")
-	imported, cancelI := s.bus.Subscribe("movie.downloaded")
-	seriesImported, cancelS := s.bus.Subscribe("series.imported")
-	streamStarted, cancelSt := s.bus.Subscribe("plex.stream.started")
-	buffering, cancelB := s.bus.Subscribe("plex.buffering")
-	defer cancelG()
-	defer cancelI()
-	defer cancelS()
-	defer cancelSt()
-	defer cancelB()
+	byTopic := topics()
+	names := make([]string, 0, len(byTopic))
+	for t := range byTopic {
+		names = append(names, t)
+	}
+	events, cancel := s.bus.Subscribe(names...)
+	defer cancel()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-streamStarted:
-			user, _ := asString(ev.Data, "user")
-			title, _ := asString(ev.Data, "title")
-			if title != "" {
-				s.fan(ctx, "stream", "Now playing", fmt.Sprintf("▶️ %s started %s", user, title))
+		case ev, ok := <-events:
+			if !ok {
+				return
 			}
-		case ev := <-buffering:
-			user, _ := asString(ev.Data, "user")
-			title, _ := asString(ev.Data, "title")
-			if title != "" {
-				s.fan(ctx, "buffering", "Buffering", fmt.Sprintf("⏳ %s’s stream is buffering — %s", user, title))
-			}
-		case ev := <-grabbed:
-			title, _ := asString(ev.Data, "title")
-			if title != "" {
-				s.fan(ctx, "grab", "Grabbed", "🎬 "+title)
-			}
-		case ev := <-imported:
-			title, _ := asString(ev.Data, "title")
-			// A library scan adopting files already on disk isn't an import worth a ping
-			// per film; those events carry source "scan" (and no title).
-			if source, _ := asString(ev.Data, "source"); source == "scan" {
-				continue
-			}
-			if title != "" {
-				s.fan(ctx, "import", "Imported", "📥 "+title)
-			}
-		case ev := <-seriesImported:
-			title, _ := asString(ev.Data, "title")
-			if title != "" {
-				body := "📥 " + title
-				if count, ok := asInt(ev.Data, "count"); ok && count > 0 {
-					body = fmt.Sprintf("📥 %s (%d episode%s)", title, count, plural(count))
+			data := payload(ev.Data)
+			for _, def := range byTopic[ev.Topic] {
+				if m, ok := def.Format(data); ok {
+					if _, err := s.Dispatch(ctx, def.Key, m); err != nil && ctx.Err() == nil {
+						s.log.Warn("notify: couldn't dispatch an alert", "event", def.Key, "err", err)
+					}
 				}
-				s.fan(ctx, "import", "Imported", body)
 			}
 		}
 	}
+}
+
+// Emit formats a catalog event from its payload and queues it — for producers that
+// call the alerts directly instead of publishing a bus topic. Unknown keys and payloads
+// Format turns down send nothing.
+func (s *Service) Emit(ctx context.Context, key string, data map[string]any) (int, error) {
+	return s.EmitOnce(ctx, key, "", data)
+}
+
+// EmitOnce is Emit with a dedupe key (see DispatchOnce).
+func (s *Service) EmitOnce(ctx context.Context, key, dedupe string, data map[string]any) (int, error) {
+	def, ok := Lookup(key)
+	if !ok {
+		return 0, fmt.Errorf("unknown alert event %q", key)
+	}
+	m, ok := def.Format(data)
+	if !ok {
+		return 0, nil
+	}
+	return s.DispatchOnce(ctx, key, dedupe, m)
+}
+
+// deliverPush sends a push connection's message to its user's devices; a tap opens
+// the message's link (the dashboard when it has none).
+func (s *Service) deliverPush(ctx context.Context, c Connection, m Message) error {
+	uid := c.PushUserID()
+	if s.pusher == nil {
+		return errors.New("push isn't available")
+	}
+	if uid <= 0 || s.pushAllowed == nil || !s.pushAllowed(ctx, uid) {
+		return errors.New("this push connection's account can no longer receive alerts")
+	}
+	link := m.Link
+	if link == "" {
+		link = "/"
+	}
+	_, err := s.pusher.SendToUserResult(ctx, uid, m.Title, m.Body, link)
+	return err
 }
 
 func plural(n int) string {
@@ -206,46 +390,19 @@ func plural(n int) string {
 	return "s"
 }
 
-// subscribes reports whether a connection wants the given event.
-func (c Connection) subscribes(event string) bool {
-	switch event {
-	case "grab":
-		return c.OnGrab
-	case "import":
-		return c.OnImport
-	case "stream":
-		return c.OnStream
-	case "buffering":
-		return c.OnBuffering
+// deliver sends a notification to one connection: Web Push for a push connection,
+// Apprise for everything else. The error never quotes the URL.
+func (s *Service) deliver(ctx context.Context, c Connection, m Message) error {
+	if c.Kind == KindWebPush {
+		return s.deliverPush(ctx, c, m)
 	}
-	return false
-}
-
-// fan delivers a message to every enabled connection subscribed to the event.
-func (s *Service) fan(ctx context.Context, event, title, body string) {
-	conns, err := s.List(ctx)
-	if err != nil {
-		return
-	}
-	for _, c := range conns {
-		if !c.Enabled || !c.subscribes(event) {
-			continue
-		}
-		if err := s.deliver(ctx, c, title, body); err != nil {
-			s.log.Warn("notify delivery failed", "connection", c.Name, "err", err)
-		}
-	}
-}
-
-// deliver sends a notification to one connection via the bundled apprise CLI.
-func (s *Service) deliver(ctx context.Context, c Connection, title, body string) error {
 	if c.URL == "" {
 		return fmt.Errorf("no Apprise URL configured")
 	}
-	if s.apprise == "" {
-		return fmt.Errorf("apprise is not installed")
+	if err := s.transport(ctx, c.URL, m.Title, m.Body); err != nil {
+		return errors.New(Redact(err.Error(), c.URL))
 	}
-	return Send(ctx, s.apprise, title, body, c.URL)
+	return nil
 }
 
 // Send delivers one notification through the apprise CLI to one or more Apprise URLs.
@@ -258,7 +415,8 @@ func Send(ctx context.Context, appriseBin, title, body string, urls ...string) e
 	cmd := exec.CommandContext(cctx, appriseBin, appriseArgs(title, body, urls)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("apprise: %v (%s)", err, trim(string(out)))
+		// apprise -v can echo the URL it failed on; the reason is wanted, the token isn't.
+		return fmt.Errorf("apprise: %v (%s)", err, trim(Redact(string(out), urls...)))
 	}
 	return nil
 }
@@ -272,10 +430,10 @@ func appriseArgs(title, body string, urls []string) []string {
 }
 
 // appriseSchemes is the allowlist of Apprise notification URL schemes accepted by
-// ValidateAppriseURL. Note: the generic delivery schemes (json/form/xml/webhook and
-// their TLS variants) let a user point Arrmada's server at ANY host — including
-// internal ones — so storing them is an accepted SSRF surface; the allowlist guards
-// against option injection and nonsense input, not against where those schemes post.
+// ValidateAppriseURL. The generic delivery schemes (json/form/xml/webhook and their TLS
+// variants) can point the server at any host, internal ones included. That's fine for
+// the admin's own connections; requesters' personal URLs go through the stricter
+// ValidateUserAppriseURL (ssrf.go), which refuses them.
 var appriseSchemes = map[string]bool{
 	"discord": true, "telegram": true, "tgram": true, "slack": true,
 	"mailto": true, "mailtos": true,
@@ -295,9 +453,12 @@ var appriseSchemes = map[string]bool{
 }
 
 // ValidateAppriseURL rejects strings that are not a plausible Apprise notification URL:
-// anything starting with "-" (could read as a CLI option), anything unparseable, and any
-// scheme outside the allowlist above. Intended for storage-time validation of
-// user-supplied URLs (e.g. per-user notification endpoints).
+// anything starting with "-" (could read as a CLI option), anything with whitespace or a
+// second "scheme://" in it (apprise splits those into several URLs, which would smuggle a
+// second target past these checks), and any scheme outside the allowlist above.
+//
+// The scheme is split off by hand rather than with url.Parse: real Apprise URLs aren't
+// all RFC 3986 — a Telegram bot token ("tgram://123456:ABC…/chat") reads as a bad port.
 func ValidateAppriseURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -306,16 +467,22 @@ func ValidateAppriseURL(raw string) error {
 	if strings.HasPrefix(raw, "-") {
 		return errors.New("notification URL must not start with '-'")
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("not a valid URL: %v", err)
+	if strings.IndexFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return errors.New("notification URL must not contain spaces")
 	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme == "" {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || scheme == "" {
 		return errors.New("notification URL must include a scheme (e.g. discord://…)")
 	}
+	scheme = strings.ToLower(scheme)
 	if !appriseSchemes[scheme] {
 		return fmt.Errorf("unsupported notification scheme %q", scheme)
+	}
+	if rest == "" {
+		return errors.New("notification URL has nothing after " + scheme + "://")
+	}
+	if strings.Contains(rest, "://") {
+		return errors.New("one connection takes one URL — add another connection for a second one")
 	}
 	return nil
 }
@@ -332,22 +499,4 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-func asString(data any, key string) (string, bool) {
-	m, ok := data.(map[string]any)
-	if !ok {
-		return "", false
-	}
-	s, ok := m[key].(string)
-	return s, ok
-}
-
-func asInt(data any, key string) (int, bool) {
-	m, ok := data.(map[string]any)
-	if !ok {
-		return 0, false
-	}
-	n, ok := m[key].(int)
-	return n, ok
 }

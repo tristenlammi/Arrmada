@@ -2,7 +2,9 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 
@@ -86,5 +88,60 @@ func TestUserApprise(t *testing.T) {
 	}
 	if got != "ntfy://mytopic" {
 		t.Errorf("apprise = %q, want ntfy://mytopic", got)
+	}
+}
+
+// fixedResolver maps every host to one address.
+type fixedResolver map[string]string
+
+func (r fixedResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	ip, ok := r[host]
+	if !ok {
+		return nil, errors.New("no such host")
+	}
+	return []net.IPAddr{{IP: net.ParseIP(ip)}}, nil
+}
+
+// A requester's saved URL that points at the local network is skipped at send time —
+// no Apprise call — while the inbox row still lands. A staff member's same URL, and a
+// requester's public one, still push.
+func TestNotifyPartiesSkipsInternalApprise(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	var sent []string
+	s := &Service{repo: NewRepo(st.DB()), log: slog.Default()}
+	s.userApprise.resolver = fixedResolver{"internal.lan": "192.168.1.5", "push.example.com": "93.184.216.34"}
+	s.userApprise.send = func(_ context.Context, url, _, _ string) error { sent = append(sent, url); return nil }
+	s.SetStaffLookup(func(_ context.Context, uid int64) bool { return uid == 8 })
+	ctx := context.Background()
+
+	for _, u := range []struct {
+		id   int64
+		name string
+		url  string
+	}{{7, "kid", "gotify://internal.lan/token"}, {8, "mgr", "gotify://internal.lan/token"}, {9, "aunt", "gotify://push.example.com/token"}} {
+		if _, err := st.DB().ExecContext(ctx, `INSERT INTO users (id, username, role, password_hash, apprise_url) VALUES (?, ?, 'requester', 'x', ?)`, u.id, u.name, u.url); err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
+	for i, uid := range []int64{7, 8, 9} {
+		req := Request{ID: int64(i + 1), MediaType: "movie", TMDBID: 100 + i, Title: "Dune", RequestedBy: uid}
+		if _, err := s.notifyPartiesCount(ctx, req, "Your request is ready", "“Dune” is ready to watch.", requestRef(req), "request-ready", nil); err != nil {
+			t.Fatalf("notify %d: %v", uid, err)
+		}
+		if n, _ := s.repo.unreadCount(ctx, uid); n != 1 {
+			t.Errorf("user %d inbox = %d, want 1", uid, n)
+		}
+	}
+	if len(sent) != 2 || sent[0] != "gotify://internal.lan/token" || sent[1] != "gotify://push.example.com/token" {
+		t.Fatalf("apprise sends = %v, want only the staff member's and the public one", sent)
+	}
+
+	set, hint, blocked, err := s.AppriseStatus(ctx, 7, false)
+	if err != nil || !set || blocked == "" || strings.Contains(hint, "token") {
+		t.Errorf("status for the blocked URL = %v %q %q %v, want set with a reason and no token", set, hint, blocked, err)
 	}
 }
