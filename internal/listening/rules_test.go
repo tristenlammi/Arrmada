@@ -60,9 +60,10 @@ func TestOlderOfflineUploadDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-// Forward is always saved at once; small skips back are normal and saved too.
+// Forward is saved at once (away from the very end; see endzone_test.go); small skips
+// back are normal and saved too.
 func TestForwardAndSmallBack(t *testing.T) {
-	p := Progress{Position: 100, Duration: 1000, UpdatedAt: 1}
+	p := Progress{Position: 100, Duration: 40000, UpdatedAt: 1}
 	if d := Decide(&p, Report{Kind: Live, Position: 700, At: 2}); d.Progress.Position != 700 {
 		t.Fatal("forward skip not saved")
 	}
@@ -183,7 +184,7 @@ func TestReportedHoldAdoptedByContinuousLiveSession(t *testing.T) {
 // Forward, set without playing, is saved at once; so is marking a finished book not
 // finished — but a routine "not finished" on an unfinished book is just a position.
 func TestReportedForwardApplies(t *testing.T) {
-	p := Progress{Position: 100, Duration: 1000, UpdatedAt: 1}
+	p := Progress{Position: 100, Duration: 40000, UpdatedAt: 1}
 	if d := Decide(&p, Report{Kind: Reported, Position: 700, At: 2}); d.Reason != "set" || d.Progress.Position != 700 || d.Progress.UpdatedAt != 2 {
 		t.Fatalf("forward: %s %+v", d.Reason, d.Progress)
 	}
@@ -194,7 +195,8 @@ func TestReportedForwardApplies(t *testing.T) {
 		t.Fatalf("un-finish keeping the place: %s %+v", d.Reason, d.Progress)
 	}
 	// Reaching the end still marks it finished, whatever the routine flag says.
-	if d := Decide(&p, Report{Kind: Reported, Position: 998, Finished: &no, At: 2}); !d.Progress.Finished {
+	near := Progress{Position: 900, Duration: 1000, UpdatedAt: 1}
+	if d := Decide(&near, Report{Kind: Reported, Position: 998, Finished: &no, At: 2}); !d.Progress.Finished {
 		t.Fatalf("a report at the end with isFinished:false: %+v", d.Progress)
 	}
 }

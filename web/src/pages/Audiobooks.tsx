@@ -1,11 +1,13 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { api, type AudioHistoryEntry, type AudioListening, type AudioPlace, type MyAudio } from "../lib/api";
+import { api, type AudioHistoryEntry, type AudioListening, type AudioPlace, type AudioRemoved, type MyAudio } from "../lib/api";
 import { useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
 import { lazyPage } from "../lib/lazyPage";
 import { useTabParam } from "../lib/useTabParam";
 import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { PageHeader } from "../components/PageHeader";
+import { PlaceTimeline } from "../components/audiobooks/PlaceTimeline";
+import { OfferBanner } from "../components/audiobooks/OfferBanner";
 import { Card, DailyBars, DaysPicker, Field, Loading, Sessions, Totals, addresses, danger, fmtAgo, fmtClock, ghost, inputStyle, primary } from "./audiobooks/shared";
 
 // The admin tabs are their own chunk: requesters only ever download "You".
@@ -92,6 +94,7 @@ function YouView() {
 
       <PasswordCard data={data} onSaved={setData} />
       <PlacesCard places={data.places} onChange={load} />
+      {data.removed?.length > 0 && <RemovedCard removed={data.removed} onChange={load} />}
       <MyListeningCard />
       {data.devices.length > 0 && (
         <Card title="Your devices" note="Apps signed in as you. Sign one out if you lose the phone or stop using it.">
@@ -194,6 +197,7 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
   const act = async (f: () => Promise<unknown>) => { setBusy(true); try { await f(); setHist(null); setOpen(false); onChange(); } finally { setBusy(false); } };
   const pct = p.finished ? 100 : p.duration > 0 ? Math.min(100, (p.position / p.duration) * 100) : 0;
   const pending = p.pending_position ?? null;
+  const restore = (h: AudioHistoryEntry) => act(() => api.restoreAudioPlace(p.item_key, h.id));
   return (
     <div className="py-2.5" style={{ borderTop: "1px solid var(--line-soft)" }}>
       <div className="flex items-center gap-3">
@@ -212,6 +216,11 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
         </div>
         <button onClick={toggle} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={ghost}>{open ? "Hide" : "Earlier places"}</button>
       </div>
+      {p.offer && (
+        <OfferBanner offer={p.offer} busy={busy}
+          onUse={() => act(() => api.restoreAudioPlace(p.item_key, p.offer!.history_id))}
+          onDismiss={() => act(() => api.dismissAudioOffer(p.item_key, p.offer!.history_id))} />
+      )}
       {pending !== null && p.finished && (
         // A finished book opened again starts from 0:00 and is held until listening
         // carries on from there — that's "Listen again", not a glitch, so no warning.
@@ -222,21 +231,46 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
       )}
       {pending !== null && !p.finished && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <span>An app jumped back to <b>{fmtClock(pending)}</b>. It's kept once you listen on from there for a bit — or use it now if that was you.</span>
+          {pending > p.position
+            ? <span>An app jumped ahead to <b>{fmtClock(pending)}</b>, near the end. It's kept once you listen on from there — or use it now.</span>
+            : <span>An app jumped back to <b>{fmtClock(pending)}</b>. It's kept once you listen on from there for a bit — or use it now if that was you.</span>}
           <button onClick={() => act(() => api.acceptAudioJump(p.item_key))} disabled={busy} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-60" style={primary}>Use this spot</button>
         </div>
       )}
       {open && (
-        <div className="mt-2 flex flex-col gap-1 pl-[64px]">
-          {hist === null ? <span className="text-[11.5px] text-ink-faint">Loading…</span> : hist.length === 0 ? <span className="text-[11.5px] text-ink-faint">No earlier places yet.</span> : hist.slice(0, 20).map((h) => (
-            <div key={h.id} className="flex items-center justify-between gap-2 text-[11.5px]">
-              <span className="text-ink-dim">{fmtClock(h.position)} · {new Date(h.at).toLocaleString()}{h.device ? ` · ${h.device}` : ""}</span>
-              <button onClick={() => act(() => api.restoreAudioPlace(p.item_key, h.id))} disabled={busy} className="flex-none rounded px-2 py-0.5 font-semibold disabled:opacity-60" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Go back here</button>
-            </div>
-          ))}
+        <div className="mt-2 sm:pl-[64px]">
+          <PlaceTimeline history={hist} busy={busy} onRestore={restore} />
         </div>
       )}
     </div>
+  );
+}
+
+// RemovedCard lists places an app removed ("discard progress" in the app). They're kept
+// for 90 days, and Restore puts one back exactly where it was.
+function RemovedCard({ removed, onChange }: { removed: AudioRemoved[]; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const restore = async (key: string) => {
+    setBusy(key); setError(null);
+    try { await api.undiscardAudio(key); onChange(); } catch (e) { setError((e as Error).message); } finally { setBusy(null); }
+  };
+  return (
+    <Card title="Recently removed" note="Places an app removed in the last 90 days. Restore one to put it back where it was.">
+      {removed.map((r) => (
+        <div key={r.item_key} className="flex items-center gap-3 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+          <div className="h-[40px] w-[40px] flex-none overflow-hidden rounded-md" style={{ background: "var(--panel-2)" }}>
+            {r.cover_url && <img src={posterThumb(r.cover_url)} alt="" className="h-full w-full object-cover" loading="lazy" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-semibold">{r.title}</div>
+            <div className="text-[11px] text-ink-faint">{r.finished ? "Finished" : fmtClock(r.position)} · removed {fmtAgo(r.discarded_at)}{r.device ? ` in ${r.device}` : ""}</div>
+          </div>
+          <button onClick={() => restore(r.item_key)} disabled={busy !== null} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-60" style={primary}>{busy === r.item_key ? "Restoring…" : "Restore"}</button>
+        </div>
+      ))}
+      {error && <div className="mt-1 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
+    </Card>
   );
 }
 

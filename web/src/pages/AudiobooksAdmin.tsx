@@ -41,6 +41,7 @@ function ServerView() {
           <div className="flex items-center gap-2 text-[14px] font-bold"><span className="h-2 w-2 rounded-full" style={{ background: dot }} />{state}</div>
           <div className="text-[12px] text-ink-dim">
             {data.running ? `${data.items} audiobook${data.items === 1 ? "" : "s"} served${data.items_ready < data.items ? ` · reading chapters for ${data.items - data.items_ready}` : ""}.` : data.error ? data.error : "Listening apps can't connect while it's off."}
+            {" "}Switching it off also turns off listening in Arrmada.
           </div>
         </div>
         <button onClick={toggle} disabled={busy} className="flex-none rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={data.enabled ? ghost : primary}>{data.enabled ? "Switch off" : "Switch on"}</button>
@@ -57,7 +58,7 @@ function ServerView() {
       </Card>
       <Card title="How places are kept">
         <p className="m-0 text-[12px] text-ink-dim">
-          Play sessions are saved as they happen and survive restarts. Moving forward is saved straight away. A big jump backwards is held until playback carries on from there for 30 seconds, so a glitch can't reset anyone to the start — and the person can confirm it sooner on their Audiobooks page. Older offline listening never replaces a newer place, and everyone can put back an earlier place. A place an app sets without playing follows the same rules.
+          Play sessions are saved as they happen and survive restarts. Moving forward is saved straight away. A big jump backwards is held until playback carries on from there for 30 seconds, so a glitch can't reset anyone to the start — and the person can confirm it sooner on their Audiobooks page. A jump to the very end of a book needs the same proof, so one bad report can't mark it finished. Older offline listening never replaces a newer place, and everyone can put back an earlier place. A place an app sets without playing follows the same rules.
         </p>
       </Card>
     </div>
