@@ -462,3 +462,54 @@ func TestSeasonNoticesWaitForPlex(t *testing.T) {
 		t.Errorf("refs = %v, want S2 and the final notice once each", got)
 	}
 }
+
+// A 'ready' notice for a title Plex has carries the title's Watch on Plex page: on the
+// inbox row, in the Web Push (next to the title's own address) and at the end of the
+// personal Apprise message. A notice sent after the grace period carries none.
+func TestReadyNoticeCarriesPlexLink(t *testing.T) {
+	s, loc, clk, _, _ := plexMovieFixture(t)
+	ctx := context.Background()
+	pushes := &urlPush{}
+	s.push = pushes
+	var apprise []string
+	s.userApprise.resolver = fixedResolver{"push.example.com": "93.184.216.34"}
+	s.userApprise.send = func(_ context.Context, _, _, body string) error { apprise = append(apprise, body); return nil }
+	if _, err := s.repo.db.ExecContext(ctx, `INSERT INTO users (id, username, role, password_hash, apprise_url) VALUES (7, 'kid', 'requester', 'x', 'gotify://push.example.com/token')`); err != nil {
+		t.Fatal(err)
+	}
+	loc.rebuilt(clk.now(), "movie:603")
+	if err := s.NotifyMovieReady(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	want := "https://app.plex.tv/desktop/#!/server/m1/details?key=movie:603"
+	inbox, err := s.repo.listUserNotifications(ctx, 7)
+	if err != nil || len(inbox) != 1 || inbox[0].PlexURL != want {
+		t.Fatalf("inbox = %+v (%v), want one row linking %q", inbox, err, want)
+	}
+	pushes.mu.Lock()
+	gotPush := append([]string(nil), pushes.urls...)
+	gotPlex := append([]string(nil), pushes.plex...)
+	pushes.mu.Unlock()
+	if !reflect.DeepEqual(gotPush, []string{"/discover/movie/603"}) || !reflect.DeepEqual(gotPlex, []string{want}) {
+		t.Errorf("push opens %v, plex %v", gotPush, gotPlex)
+	}
+	if len(apprise) != 1 || apprise[0] != "“Dune” is ready to watch on Plex.\nWatch: "+want {
+		t.Errorf("apprise = %q", apprise)
+	}
+
+	// The fallback has no link to give.
+	late, err := s.repo.Create(ctx, Request{MediaType: "movie", TMDBID: 604, Title: "Arrival", Status: StatusApproved, RequestedBy: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib := s.movies.(*fakeMovies)
+	lib.mu.Lock()
+	lib.byTMDB[604] = movies.Movie{ID: 2, TMDBID: 604, Title: "Arrival", HasFile: true}
+	lib.mu.Unlock()
+	_ = s.notifyReady(ctx, late)
+	clk.add(31 * time.Minute)
+	_ = s.CheckPlexWaiting(ctx)
+	if inbox, _ := s.repo.listUserNotifications(ctx, 8); len(inbox) != 1 || inbox[0].PlexURL != "" {
+		t.Errorf("fallback inbox = %+v, want one row with no link", inbox)
+	}
+}

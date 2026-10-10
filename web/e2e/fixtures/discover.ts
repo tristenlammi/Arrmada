@@ -169,13 +169,16 @@ export function created(p: PersonaInfo, body: unknown): { request: MediaRequest;
   };
 }
 
+// The Watch on Plex page of the 'ready' notice's title (REQ-16).
+export const plexWatchURL = "https://app.plex.tv/desktop/#!/server/fixture/details?key=%2Flibrary%2Fmetadata%2F1007";
+
 // The inbox: a 'ready' notice with a structured reference (APP-08: it opens that exact
-// title), a book decision whose key holds a ':' (Hardcover), and an old notice whose
-// reference says nothing.
+// title) and a Watch on Plex link, a book decision whose key holds a ':' (Hardcover), and
+// an old notice whose reference says nothing.
 export const notifications: { notifications: UserNotification[]; unread: number } = {
   unread: 1,
   notifications: [
-    { id: 1, title: "Your request is ready", body: "“The Cartographer” is ready to watch.", media_type: "movie", ref: "movie:1007", read: false, created_at: Date.parse(at) },
+    { id: 1, title: "Your request is ready", body: "“The Cartographer” is ready to watch on Plex.", media_type: "movie", ref: "movie:1007", read: false, created_at: Date.parse(at), plex_url: plexWatchURL },
     { id: 2, title: "Request approved", body: "“Moby-Dick” was approved.", media_type: "book", ref: "book:hc:4242:approved:1759300000", read: true, created_at: Date.parse(at) - 60_000 },
     { id: 3, title: "Your request is ready", body: "“Saltwind” is ready to watch.", media_type: "series", ref: "", read: true, created_at: Date.parse(at) - 120_000 },
   ],

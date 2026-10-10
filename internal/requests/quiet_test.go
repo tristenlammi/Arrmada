@@ -13,6 +13,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -130,7 +131,7 @@ type fakePush struct {
 	users []int64
 }
 
-func (p *fakePush) SendToUserAsync(userID int64, _, _, _ string) {
+func (p *fakePush) SendToUserAsync(userID int64, _ push.Message) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.users = append(p.users, userID)

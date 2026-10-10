@@ -98,13 +98,29 @@ type Payload struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	URL   string `json:"url,omitempty"` // where a tap takes the user
+	// PlexURL, on a 'ready' notice for a title the owner's Plex has, is the title's
+	// app.plex.tv page: the worker offers "Watch on Plex" and a plain tap opens it.
+	PlexURL string `json:"plex_url,omitempty"`
+}
+
+// Message is one push: its words, the app address a tap opens, and (optionally) the
+// title's Watch on Plex page.
+type Message struct {
+	Title   string
+	Body    string
+	URL     string
+	PlexURL string
+}
+
+func (m Message) payload() ([]byte, error) {
+	return json.Marshal(Payload(m))
 }
 
 // SendToUser pushes to every device the user has registered. Failures are logged,
 // never returned — a dead push service must not fail the caller's flow — and
 // subscriptions the push service says are gone (404/410) are pruned.
-func (s *Service) SendToUser(ctx context.Context, userID int64, title, body, url string) {
-	_, _ = s.SendToUserResult(ctx, userID, title, body, url)
+func (s *Service) SendToUser(ctx context.Context, userID int64, m Message) {
+	_, _ = s.SendMessage(ctx, userID, m)
 }
 
 // ErrNoDevices is SendToUserResult for a user with no device subscribed.
@@ -113,6 +129,11 @@ var ErrNoDevices = errors.New("no devices subscribed — turn on push on the dev
 // SendToUserResult is SendToUser for a caller that keeps a delivery log (admin push
 // alerts): it says how many devices took the message, and when none did, why.
 func (s *Service) SendToUserResult(ctx context.Context, userID int64, title, body, url string) (int, error) {
+	return s.SendMessage(ctx, userID, Message{Title: title, Body: body, URL: url})
+}
+
+// SendMessage is SendToUserResult for a whole Message.
+func (s *Service) SendMessage(ctx context.Context, userID int64, m Message) (int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?`, userID)
 	if err != nil {
@@ -136,7 +157,7 @@ func (s *Service) SendToUserResult(ctx context.Context, userID int64, title, bod
 	if priv == "" || pub == "" {
 		return 0, ErrNoDevices // no keys yet → nobody could have subscribed anyway
 	}
-	msg, err := json.Marshal(Payload{Title: title, Body: body, URL: url})
+	msg, err := m.payload()
 	if err != nil {
 		return 0, err
 	}
@@ -184,10 +205,10 @@ func timeoutCtx() (context.Context, context.CancelFunc) {
 
 // SendToUserAsync fires the sends on a goroutine with its own deadline — event
 // handlers (import fan-out) must never block on push services.
-func (s *Service) SendToUserAsync(userID int64, title, body, url string) {
+func (s *Service) SendToUserAsync(userID int64, m Message) {
 	safego.Go(s.log, "push: send", func() {
 		ctx, cancel := timeoutCtx()
 		defer cancel()
-		s.SendToUser(ctx, userID, title, body, url)
+		s.SendToUser(ctx, userID, m)
 	})
 }
