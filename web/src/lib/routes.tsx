@@ -1,13 +1,17 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { Navigate, type RouteObject } from "react-router-dom";
 import type { UserRole } from "./api";
 import type { RouteHandle } from "./title";
-import { AppLayout } from "../components/AppLayout";
 import { UserLayout } from "../components/UserLayout";
 import { RouteError } from "../components/RouteError";
 import { ModuleGate } from "../components/ModuleGate";
 import { lazyPage } from "./lazyPage";
 import { LINKS } from "./links";
+
+// The staff console's frame (sidebar, Needs-you polling, restart banner) is its own
+// chunk too: a requester's phone loads only the small requester shell with Discover.
+const AppLayout = lazyPage(() => import("../components/AppLayout"), "AppLayout");
+const staffShellLoading = <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
 
 // Every page is its own chunk (FE-06): a requester downloads Discover and their few
 // pages, never Quality, Convert, Settings or the rest of the console.
@@ -129,7 +133,8 @@ function staffRoutes(admin: boolean): RouteObject[] {
 export function buildRoutes({ role, external }: { role: UserRole; external: boolean }): RouteObject[] {
   const shell = shellFor(role, external);
   if (shell === "staff") {
-    return [{ element: <AppLayout />, errorElement: <RouteError />, children: staffRoutes(role === "admin") }];
+    const frame = <Suspense fallback={staffShellLoading}><AppLayout /></Suspense>;
+    return [{ element: frame, errorElement: <RouteError />, children: staffRoutes(role === "admin") }];
   }
   return [{ element: <UserLayout />, errorElement: <RouteError />, children: requesterRoutes(shell) }];
 }
