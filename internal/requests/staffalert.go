@@ -31,7 +31,8 @@ type StaffAlerts struct {
 func (s *Service) SetStaffAlerts(a StaffAlerts) { s.staffAlerts = a }
 
 // alertStaff tells staff about a new ask waiting for their approval: the admin's alert
-// connections (Apprise, "This device"), and each manager's and admin's inbox and Web Push.
+// connections (Apprise, "This device"), and each manager's and admin's inbox and Web Push
+// (the push only for those who haven't turned off "Someone requests something").
 // Called only from announceCreated, once per new pending row or re-opened declined one.
 //
 // The dedupe key and the inbox reference name the ask: the row's creation time, plus how
@@ -93,7 +94,9 @@ func (s *Service) alertStaff(ctx context.Context, req Request) {
 			s.log.Warn("request: couldn't add the new-request notice", "request", req.ID, "user", uid, "err", err)
 			continue
 		}
-		if inserted && s.push != nil && !pushed[uid] {
+		// Their "Someone requests something" choice silences the push; the inbox keeps the
+		// notice, as it does for every other choice.
+		if inserted && s.push != nil && !pushed[uid] && s.wantsPush(ctx, uid, PrefNewRequest) {
 			s.push.SendToUserAsync(uid, m.Title, m.Body, m.Link)
 		}
 	}

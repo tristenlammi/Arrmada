@@ -50,6 +50,7 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	exec(`INSERT INTO listen_progress (user_id, item_key, position, updated_at) VALUES (?, 'b1', 100, 1)`, f.admin.ID)
 	exec(`INSERT INTO listen_log (session_id, user_id, started_at, ended_at, seconds) VALUES ('s1', ?, 1, 2, 60)`, f.dup.ID)
 	exec(`INSERT INTO audio_passwords (user_id, hash, updated_at) VALUES (?, 'dup-hash', 1)`, f.dup.ID)
+	exec(`UPDATE users SET notify_prefs = '{"approved":false}' WHERE id = ?`, f.dup.ID)
 	if _, _, err := s.CreateSession(ctx, f.dup.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +99,7 @@ func TestMergePlexDuplicateMovesRequests(t *testing.T) {
 		{"admin gains the place in b2", `SELECT COUNT(*) FROM listen_progress WHERE user_id = ? AND item_key = 'b2'`, []any{a}, 1},
 		{"listening log moved", `SELECT COUNT(*) FROM listen_log WHERE user_id = ?`, []any{a}, 1},
 		{"audiobook password moved (the admin had none)", `SELECT COUNT(*) FROM audio_passwords WHERE user_id = ? AND hash = 'dup-hash'`, []any{a}, 1},
+		{"notification choices moved (the admin made none)", `SELECT COUNT(*) FROM users WHERE id = ? AND notify_prefs = '{"approved":false}'`, []any{a}, 1},
 		{"duplicate gone", `SELECT COUNT(*) FROM users WHERE id = ?`, []any{f.dup.ID}, 0},
 		{"its sessions signed out", `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, []any{f.dup.ID}, 0},
 		{"nothing left under the duplicate", `SELECT (SELECT COUNT(*) FROM user_notifications WHERE user_id = ?) + (SELECT COUNT(*) FROM request_subscribers WHERE user_id = ?)`, []any{f.dup.ID, f.dup.ID}, 0},

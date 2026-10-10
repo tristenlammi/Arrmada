@@ -133,6 +133,7 @@ GET /api/v1/me/audio/history user ext
 GET /api/v1/me/audio/listening user ext
 GET /api/v1/me/books user ext
 GET /api/v1/me/notifications user ext
+GET /api/v1/me/notify-prefs user ext
 GET /api/v1/me/plex user ext
 GET /api/v1/me/plex/link/{id} user ext
 GET /api/v1/me/push/key user ext
@@ -373,6 +374,7 @@ PUT /api/v1/insights/plex staff -
 PUT /api/v1/insights/plex/scan staff -
 PUT /api/v1/me/apprise user ext
 PUT /api/v1/me/audio/password user ext
+PUT /api/v1/me/notify-prefs user ext
 PUT /api/v1/movies/{id}/availability staff -
 PUT /api/v1/movies/{id}/monitor staff -
 PUT /api/v1/movies/{id}/profile staff -

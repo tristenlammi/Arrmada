@@ -155,6 +155,44 @@ test.describe("Get notified on a desktop", () => {
   });
 });
 
+// APP-15: per-event choices. They save, come back on reload, and staff get one more.
+test.describe("notify me when", () => {
+  test.use({ persona: "requester" });
+
+  test("the checkboxes save and reload", async ({ page, api }) => {
+    let saved = { approved: true, declined: true, ready: true, new_request: true };
+    await override(page, api, [
+      { method: "GET", path: "/api/v1/me/notify-prefs", respond: () => saved },
+      { method: "PUT", path: "/api/v1/me/notify-prefs", respond: ({ body }) => (saved = { ...saved, ...(body as object) }) },
+    ]);
+    await page.goto("/me");
+    const group = page.getByRole("group", { name: "Notify me when" });
+    await expect(group.getByRole("checkbox")).toHaveCount(3); // no staff-only choice
+    const approved = group.getByRole("checkbox", { name: "A request is approved" });
+    await expect(approved).toBeChecked();
+    await approved.tap();
+    await expect(approved).not.toBeChecked();
+    expect(api.callsTo("PUT", "/api/v1/me/notify-prefs").map((c) => c.body)).toEqual([{ approved: false }]);
+
+    await page.reload();
+    await expect(page.getByRole("group", { name: "Notify me when" }).getByRole("checkbox", { name: "A request is approved" })).not.toBeChecked();
+    await expect(page.getByRole("group", { name: "Notify me when" }).getByRole("checkbox", { name: "It’s ready to watch or read" })).toBeChecked();
+  });
+});
+
+test.describe("notify me when, as staff", () => {
+  test.use({ persona: "manager" });
+
+  test("staff can turn off 'Someone requests something'", async ({ page, api }) => {
+    await page.goto("/me");
+    const box = page.getByRole("group", { name: "Notify me when" }).getByRole("checkbox", { name: "Someone requests something" });
+    await expect(box).toBeChecked();
+    await box.tap();
+    await expect(box).not.toBeChecked();
+    expect(api.callsTo("PUT", "/api/v1/me/notify-prefs")[0].body).toEqual({ new_request: false });
+  });
+});
+
 // APP-14: after a request, "Get notified when it's ready?" — once per device, and only
 // when the answer can be yes here.
 async function requestBook(page: Page, api: MockedApi, title: string, button: string) {

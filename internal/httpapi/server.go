@@ -251,6 +251,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
 	mux.HandleFunc("GET /api/v1/me/quota", a.signedIn(a.handleMyQuota).ext())
 	mux.HandleFunc("PUT /api/v1/me/apprise", a.signedIn(a.handleSetMyApprise).ext())
+	// Which of your notices reach your phones and Apprise link (the inbox keeps them all).
+	mux.HandleFunc("GET /api/v1/me/notify-prefs", a.signedIn(a.handleGetNotifyPrefs).ext())
+	mux.HandleFunc("PUT /api/v1/me/notify-prefs", a.signedIn(a.handleSetNotifyPrefs).ext())
 
 	// User management (admin only).
 	mux.HandleFunc("GET /api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))

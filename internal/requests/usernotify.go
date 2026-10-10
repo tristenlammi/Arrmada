@@ -486,6 +486,12 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			continue // already notified — don't re-push
 		}
 		told++
+		// Their choice gates only the pushes: the inbox row above is the record (and the
+		// de-dupe a retry and the ready sweep rely on), so it's written whatever they chose.
+		if !s.wantsPush(ctx, uid, prefKey(kind)) {
+			s.log.Info(kind+" notified (inbox only, by their choice)", "request", req.ID, "user", uid)
+			continue
+		}
 		if url, err := s.repo.getUserApprise(ctx, uid); err == nil && url != "" {
 			// Checked again at send time: DNS can change, and a URL saved before the
 			// check existed gets it too. A refusal skips only this push — the inbox row

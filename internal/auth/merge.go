@@ -159,6 +159,8 @@ func (s *Service) MergePlexDuplicate(ctx context.Context, targetID, fromID int64
 			{"listening log", `UPDATE listen_log SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
 			{"audiobook password", `INSERT OR IGNORE INTO audio_passwords (user_id, hash, updated_at) SELECT ?, hash, updated_at FROM audio_passwords WHERE user_id = ?`, []any{targetID, fromID}},
 			{"personal alerts", `UPDATE users SET apprise_url = (SELECT apprise_url FROM users WHERE id = ?) WHERE id = ? AND apprise_url = ''`, []any{fromID, targetID}},
+			// Their per-event notification choices, when the target never made any.
+			{"notification choices", `UPDATE users SET notify_prefs = (SELECT notify_prefs FROM users WHERE id = ?) WHERE id = ? AND notify_prefs = ''`, []any{fromID, targetID}},
 			// The Plex link: off the duplicate first (plex_id is unique), then onto the target.
 			{"Plex link", `UPDATE users SET plex_id = NULL, plex_username = '' WHERE id = ?`, []any{fromID}},
 			{"Plex link", `UPDATE users SET plex_id = ?, plex_username = ? WHERE id = ?`, []any{plexID, plexName, targetID}},

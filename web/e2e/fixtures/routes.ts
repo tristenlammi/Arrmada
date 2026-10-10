@@ -39,6 +39,9 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // The Me page's notification settings: no push key (it says push isn't set up), no Apprise link.
     get("/api/v1/me/push/key", { key: "" }),
     get("/api/v1/me/apprise", { set: false, hint: "" }),
+    // Which notices reach your phones: everything, until changed.
+    get("/api/v1/me/notify-prefs", { approved: true, declined: true, ready: true, new_request: true }),
+    { method: "PUT", path: "/api/v1/me/notify-prefs", respond: ({ body }) => ({ approved: true, declined: true, ready: true, new_request: true, ...(body as object) }) },
     // Your own Plex link (sidebar footer, Me page): not linked.
     get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 

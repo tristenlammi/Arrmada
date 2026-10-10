@@ -1,14 +1,17 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { api, type MyApprise } from "../lib/api";
+import { accountApi, type NotifyPrefs } from "../lib/accountApi";
+import { isStaff, useMe } from "../lib/me";
 import { deviceName, disablePush, enablePush, pushStatus, type PushStatus } from "../lib/webpush";
 
-// The Me page's "Get notified" card: push on this device first, then (for the few who want
-// it) a personal Apprise link tucked under Advanced. It loads with the Me page only, so
-// lib/webpush never rides in the requester's first load.
+// The Me page's "Get notified" card: push on this device first, then which notices to
+// send, then (for the few who want it) a personal Apprise link tucked under Advanced. It
+// loads with the Me page only, so lib/webpush never rides in the requester's first load.
 export function NotificationSettings() {
   return (
     <>
       <PushSetting />
+      <EventPrefs />
       <details className="group" style={{ borderTop: "1px solid var(--line-soft)" }}>
         <summary className="flex min-h-[44px] cursor-pointer list-none items-center justify-between gap-2 px-3.5 text-[12px] font-medium text-ink-dim [&::-webkit-details-marker]:hidden">
           Advanced: Discord, ntfy, email (Apprise)
@@ -106,6 +109,60 @@ function PushSetting() {
       {help && <div role="note" className="mt-2 rounded-lg px-3 py-2 text-[11.5px] leading-relaxed text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>{help}</div>}
       {error && <div role="alert" className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
     </div>
+  );
+}
+
+const EVENTS: { key: keyof NotifyPrefs; label: string; staff?: boolean }[] = [
+  { key: "approved", label: "A request is approved" },
+  { key: "declined", label: "A request is declined" },
+  { key: "ready", label: "It’s ready to watch or read" },
+  { key: "new_request", label: "Someone requests something", staff: true },
+];
+
+// EventPrefs is which notices reach your phones and Apprise link. The bell keeps every
+// one either way; an unticked box only stops the buzz.
+function EventPrefs() {
+  const { user } = useMe();
+  const staff = isStaff(user);
+  const [prefs, setPrefs] = useState<NotifyPrefs | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    accountApi.notifyPrefs().then(setPrefs).catch((e) => setError((e as Error).message));
+  }, []);
+
+  const change = async (key: keyof NotifyPrefs, on: boolean) => {
+    if (!prefs) return;
+    const before = prefs;
+    setPrefs({ ...prefs, [key]: on });
+    setError(null);
+    try {
+      setPrefs(await accountApi.setNotifyPrefs({ [key]: on }));
+    } catch (e) {
+      setPrefs(before);
+      setError(`Couldn’t save — ${(e as Error).message}`);
+    }
+  };
+
+  return (
+    <fieldset className="m-0 border-0 px-3.5 pb-3 pt-2.5" style={{ borderTop: "1px solid var(--line-soft)" }}>
+      <legend className="float-left mb-1 w-full p-0 text-[12px] font-semibold">Notify me when</legend>
+      {prefs === null && !error && <div className="clear-left text-[11.5px] text-ink-faint">Loading…</div>}
+      {prefs && (
+        <div className="clear-left flex flex-col">
+          {EVENTS.filter((e) => !e.staff || staff).map((e) => (
+            <label key={e.key} className="flex min-h-[40px] cursor-pointer items-center gap-2.5 text-[12.5px]">
+              <input type="checkbox" checked={prefs[e.key]} onChange={(ev) => change(e.key, ev.target.checked)} className="h-4 w-4 flex-none accent-[var(--accent)]" />
+              {e.label}
+            </label>
+          ))}
+        </div>
+      )}
+      <p className="clear-left m-0 mt-1 text-[11px] text-ink-faint">
+        These choose what reaches your phones and Apprise link; the bell keeps every notice either way.
+        {staff && " Alert connections in Settings → Alerts keep their own event lists."}
+      </p>
+      {error && <div role="alert" className="mt-1.5 text-[11px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
+    </fieldset>
   );
 }
 
