@@ -64,13 +64,14 @@ export function requestStage(rq: MediaRequest, queueKnown = true): RequestStage 
       // When it was last checked and whether anything has turned up — times only.
       return { badge: "Searching", tone: "accent", detail: searchingDetail(tr, eps) };
     case "declined":
-      return { badge: "Declined", tone: "reject", detail: "Declined" };
+      // The reason staff gave, when they gave one (always plain text).
+      return { badge: "Declined", tone: "reject", detail: rq.decline_reason || "Declined" };
     case "pending":
       return { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
   }
   // No tracking (an older server): fall back to the plain status.
   return rq.available ? { badge: "Ready", tone: "good", detail: ready }
-    : rq.status === "declined" ? { badge: "Declined", tone: "reject", detail: "Declined" }
+    : rq.status === "declined" ? { badge: "Declined", tone: "reject", detail: rq.decline_reason || "Declined" }
     : rq.status === "approved" ? { badge: "Requested", tone: "accent", detail: "Looking for a release" }
     : { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
 }

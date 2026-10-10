@@ -1162,6 +1162,14 @@ export interface MediaRequest {
   library_id?: number;
   /** Staff only, on GET /requests/{id}: who else follows it. */
   followers?: { name: string }[];
+  /** What staff told the requester when declining; a re-request keeps the previous one. */
+  decline_reason?: string;
+  /** Staff only: who made the last decision (absent for an auto-approval). */
+  decided_by_name?: string;
+  /** When the last decision was made (unix seconds); absent while undecided. */
+  decided_at?: number;
+  /** How often it was asked for again after a decline; > 0 flags a re-request. */
+  rerequest?: number;
 }
 
 /** A section of the request list (GET /api/v1/requests?section=). */
@@ -2371,7 +2379,7 @@ export const api = {
     req<void>(`/api/v1/requests/${id}/subscription`, { method: "DELETE" }),
   // Approve or decline several at once; each is decided on its own, so one failure
   // doesn't stop the rest.
-  bulkRequests: (body: { action: "approve" | "decline"; ids: number[]; quality_profile?: string }) =>
+  bulkRequests: (body: { action: "approve" | "decline"; ids: number[]; quality_profile?: string; reason?: string }) =>
     req<{ results: { id: number; ok: boolean; error?: string }[] }>("/api/v1/requests/bulk", { method: "POST", body: JSON.stringify(body) }),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
@@ -2393,8 +2401,9 @@ export const api = {
       body: JSON.stringify({ quality_profile: b.quality_profile ?? "", ...(b.seasons?.length ? { seasons: b.seasons } : {}) }),
     });
   },
-  declineRequest: (id: number) =>
-    req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST" }),
+  // reason (≤ 280 characters) is what the requester is told.
+  declineRequest: (id: number, reason = "") =>
+    req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
   deleteRequest: (id: number) =>
     req<void>(`/api/v1/requests/${id}`, { method: "DELETE" }),
 

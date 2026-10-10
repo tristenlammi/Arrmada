@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/notify"
@@ -33,24 +34,29 @@ func (s *Service) SetStaffAlerts(a StaffAlerts) { s.staffAlerts = a }
 // connections (Apprise, "This device"), and each manager's and admin's inbox and Web Push.
 // Called only from announceCreated, once per new pending row or re-opened declined one.
 //
-// The dedupe key and the inbox reference carry when it was asked (the row's last write,
-// which for a re-opened request is the re-open), so a re-request alerts again while a
-// repeat of the same ask can never queue twice.
+// The dedupe key and the inbox reference name the ask: the row's creation time, plus how
+// many times it has been asked for again after a decline, so a re-request alerts again
+// while a repeat of the same ask can never queue twice.
 func (s *Service) alertStaff(ctx context.Context, req Request) {
-	asked := parseSQLiteTime(req.UpdatedAt)
-	if asked.IsZero() {
-		asked = time.Now()
+	created := parseSQLiteTime(req.CreatedAt)
+	if created.IsZero() {
+		created = time.Now()
+	}
+	ask := fmt.Sprintf("%d:%d", req.ID, created.Unix())
+	if req.ReRequest > 0 {
+		ask += fmt.Sprintf(":%d", req.ReRequest)
 	}
 	data := map[string]any{
 		"id": req.ID, "media_type": req.MediaType, "tmdb_id": req.TMDBID, "title": req.Title, "year": req.Year,
 		"requested_by_name": req.RequestedByName, "note": req.Note,
+		"rerequest": req.ReRequest > 0, "decline_reason": req.DeclineReason,
 	}
 	if req.MediaType == "series" && len(req.Seasons) > 0 {
 		data["seasons"] = series.SeasonsLabel(req.Seasons)
 	}
 	a := s.staffAlerts
 	if a.Emit != nil {
-		if err := a.Emit(ctx, EventRequestCreated, fmt.Sprintf("%s:%d:%d", EventRequestCreated, req.ID, asked.Unix()), data); err != nil {
+		if err := a.Emit(ctx, EventRequestCreated, EventRequestCreated+":"+ask, data); err != nil {
 			s.log.Warn("request: couldn't queue the new-request alert", "request", req.ID, "err", err)
 		}
 	}
@@ -76,7 +82,7 @@ func (s *Service) alertStaff(ctx context.Context, req Request) {
 			pushed = p
 		}
 	}
-	ref := fmt.Sprintf("request:%d:new:%d", req.ID, asked.Unix())
+	ref := "request:" + strings.Replace(ask, ":", ":new:", 1)
 	now := time.Now().Unix()
 	for _, uid := range staff {
 		if uid <= 0 || uid == req.RequestedBy {

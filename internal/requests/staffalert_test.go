@@ -75,8 +75,13 @@ func TestCreatePublishesRequestCreated(t *testing.T) {
 	if _, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 438631, Title: "Dune", RequestedBy: 9, RequestedByName: "cara", Note: "please"}, CreateOptions{}); err != nil || subscribed {
 		t.Fatalf("re-request: subscribed %v, %v", subscribed, err)
 	}
-	if got := rec.got(); len(got) != 2 {
-		t.Fatalf("after the re-request: %v, want a second alert", got)
+	got = rec.got()
+	if len(got) != 2 || !strings.HasSuffix(got[1], "|Dune|again") {
+		t.Fatalf("after the re-request: %v, want a second alert flagged as asked again", got)
+	}
+	dedupe := func(call string) string { return strings.Split(call, "|")[1] }
+	if dedupe(got[0]) == dedupe(got[1]) {
+		t.Errorf("the re-request reused the first ask's dedupe key %q", dedupe(got[0]))
 	}
 }
 

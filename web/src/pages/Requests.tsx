@@ -9,6 +9,7 @@ import { usePoll } from "../lib/usePoll";
 import { pickTab } from "../lib/useTabParam";
 import { formatSeasons, mediaLabel, MOVING_STAGES, requestAge, requestStage } from "../lib/requestStage";
 import { BookFormatBadge } from "../components/BookFormats";
+import { DECLINE_REASON_MAX, ReRequestFlag, decisionLine } from "../components/DeclineReason";
 import { refreshAttention } from "../lib/useAttention";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { Button, EmptyState, ErrorState, StatusChip, useConfirm, useToast } from "../ui";
@@ -57,6 +58,10 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // The request whose sheet opens on the decline reason box (a row's Decline).
+  const [declineID, setDeclineID] = useState(0);
+  // A bulk decline's reason, told to every requester.
+  const [bulkReason, setBulkReason] = useState("");
 
   // The tab: ?tab=, or a ?section= synonym; without either, staff land on what's waiting
   // when anything is (once the counts are in), everyone else on what's in progress.
@@ -108,11 +113,13 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
   const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pendingIDs));
 
-  // One approve or decline, from a row: a decline always asks first.
+  // One approve or decline, from a row. A decline opens the request's sheet on its reason
+  // box, which is where it's confirmed.
   const decide = async (rq: MediaRequest, action: "approve" | "decline") => {
     if (action === "decline") {
-      const yes = await confirm({ title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`, body: "They’ll be told.", confirmLabel: "Decline", tone: "danger" });
-      if (!yes) return;
+      setDeclineID(rq.id);
+      setParam("id", String(rq.id));
+      return;
     }
     setBusy(`${action}:${rq.id}`);
     setRowErrors((e) => { const n = { ...e }; delete n[rq.id]; return n; });
@@ -139,7 +146,8 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
     }
     setBusy(`bulk:${action}`);
     try {
-      const r = await api.bulkRequests({ action, ids });
+      const r = await api.bulkRequests({ action, ids, ...(action === "decline" && bulkReason.trim() ? { reason: bulkReason.trim() } : {}) });
+      if (action === "decline") setBulkReason("");
       const failed: Record<number, string> = {};
       for (const res of r.results) if (!res.ok) failed[res.id] = res.error || "Didn’t go through";
       const ok = r.results.length - Object.keys(failed).length;
@@ -255,6 +263,15 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
         <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-center gap-2 px-4 py-3" style={{ background: "var(--panel)", borderTop: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
           <span className="text-[12px] text-ink-dim">{selected.size} selected</span>
           <Button variant="primary" className="min-h-[40px]" onClick={() => bulk("approve")} busy={busy === "bulk:approve"} busyLabel="Approving…" disabled={!!busy}>Approve {selected.size}</Button>
+          <input
+            value={bulkReason}
+            onChange={(e) => setBulkReason(e.target.value.slice(0, DECLINE_REASON_MAX))}
+            maxLength={DECLINE_REASON_MAX}
+            placeholder="Decline reason (optional)"
+            aria-label="Reason for declining the selected requests"
+            className="min-h-[40px] w-full rounded-lg px-3 text-[12.5px] sm:w-[220px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          />
           <Button className="min-h-[40px]" onClick={() => bulk("decline")} busy={busy === "bulk:decline"} busyLabel="Declining…" disabled={!!busy}>Decline {selected.size}</Button>
           <Button variant="ghost" className="min-h-[40px]" onClick={() => setSelected(new Set())} disabled={!!busy}>Clear</Button>
         </div>
@@ -265,8 +282,9 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
           key={openID}
           requestId={openID}
           initial={open}
+          startDeclining={declineID === openID}
           onChanged={() => { void load(); }}
-          onClose={() => setParam("id", "")}
+          onClose={() => { setDeclineID(0); setParam("id", ""); }}
         />
       )}
     </>
@@ -309,7 +327,9 @@ function RequestRow({ rq, staff, own, queueKnown, selectable, selected, onSelect
             </div>
             <div className="mt-1 truncate font-mono text-[10px] text-ink-faint">
               {staff && rq.requested_by_name ? `${rq.requested_by_name} · ` : own && !staff ? "" : ""}{requestAge(rq.created_at)}
+              {staff && decisionLine(rq) ? ` · ${decisionLine(rq)}` : ""}
             </div>
+            {staff && rq.rerequest ? <div className="mt-1"><ReRequestFlag rq={rq} /></div> : null}
             {rq.note && (staff || own) && <div className="mt-1 line-clamp-1 text-[11.5px] italic text-ink-dim">“{rq.note}”</div>}
           </div>
         </button>

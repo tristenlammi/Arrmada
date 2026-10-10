@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,15 @@ type Service struct {
 	attentionKick atomic.Pointer[func()]
 	// staffAlerts tells staff a new request is waiting (staffalert.go).
 	staffAlerts StaffAlerts
+	// now is the clock decisions are stamped with (time.Now when nil; tests move it).
+	now func() time.Time
+}
+
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -368,6 +378,11 @@ func (s *Service) announceCreated(ctx context.Context, req Request, opts CreateO
 // attachAndPublish is attachToExisting that tells open pages about it: the request is
 // re-opened (a new ask, so it's announced like one), or has a new subscriber.
 func (s *Service) attachAndPublish(ctx context.Context, existing, in Request, opts CreateOptions) (Request, bool, error) {
+	if existing.Status == StatusDeclined {
+		if err := needsNote(in, opts, existing); err != nil {
+			return Request{}, false, err
+		}
+	}
 	req, subscribed, err := s.attachToExisting(ctx, existing, in)
 	switch {
 	case err != nil:
@@ -427,11 +442,12 @@ func (s *Service) lookupExistingBook(ctx context.Context, in Request) (Request, 
 // attachToExisting handles a request for media that's already requested:
 //   - pending/approved: the caller becomes a subscriber (idempotent) and shares
 //     future notifications; the existing request is returned with subscribed=true.
-//   - declined: re-request — the row goes back to pending under the caller, and
-//     the previous requester is kept as a subscriber so they still hear the outcome.
+//   - declined: re-request — the row goes back to pending under the caller with their
+//     note, flagged as asked again, and the previous requester is kept as a subscriber
+//     so they still hear the outcome. Callers check the note first (needsNote).
 func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (Request, bool, error) {
 	if existing.Status == StatusDeclined {
-		if err := s.repo.Resurrect(ctx, existing.ID, in.RequestedBy, in.RequestedByName, in.QualityProfile); err != nil {
+		if err := s.repo.Resurrect(ctx, existing.ID, in.RequestedBy, in.RequestedByName, in.QualityProfile, in.Note); err != nil {
 			return Request{}, false, err
 		}
 		// Keep the previous requester in the loop as a subscriber.
@@ -563,9 +579,34 @@ type ApproveOptions struct {
 
 // DeclineOptions says how a request is declined.
 type DeclineOptions struct {
+	// Reason is what the requester is told ("Already on Netflix"); "" says only that it
+	// was declined. The HTTP layer bounds it (DeclineReasonMax).
+	Reason string
 	// DecidedBy is who declined it; they're never told about their own decision.
 	DecidedBy     int64
 	DecidedByName string
+}
+
+// DeclineReasonMax is the longest decline reason, in characters.
+const DeclineReasonMax = 280
+
+// NeedsNoteError refuses a declined title asked for again without a note: whoever asks
+// again has to say why they'd still like it, and sees why it was declined.
+type NeedsNoteError struct {
+	DeclineReason string
+}
+
+func (e *NeedsNoteError) Error() string {
+	return "this was declined before — add a note saying why you'd still like it"
+}
+
+// needsNote is the NeedsNoteError for asking again for what declined (a declined request)
+// turned down, or nil when the ask may go ahead: it carries a note, or it's an import.
+func needsNote(in Request, opts CreateOptions, declined Request) error {
+	if opts.Silent || strings.TrimSpace(in.Note) != "" {
+		return nil
+	}
+	return &NeedsNoteError{DeclineReason: declined.DeclineReason}
 }
 
 // Approve adds the requested media to the Movies/Series module (monitored) and starts
@@ -740,7 +781,19 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 		}
 		s.log.Info("request trimmed on approve", "title", req.Title, "seasons", series.SeasonsLabel(req.Seasons), "not_approved", req.notApproved)
 	}
-	if err := s.repo.SetStatus(ctx, id, StatusApproved, profile); err != nil {
+	// Who approved it, for staff — nobody for the requester's own auto-approve. The time
+	// also keys the decision notice, so a later approval after a re-request is told again.
+	// Approving an approved request again keeps the first decision and tells nobody again.
+	already := req.Status == StatusApproved
+	decision := Decision{By: o.DecidedBy, ByName: o.DecidedByName, At: s.clock().Unix()}
+	switch {
+	case already:
+		decision = Decision{By: req.DecidedBy, ByName: req.DecidedByName, At: req.DecidedAt}
+	case o.Auto:
+		decision.By, decision.ByName = 0, ""
+	}
+	req.DecidedBy, req.DecidedByName, req.DecidedAt, req.DeclineReason = decision.By, decision.ByName, decision.At, ""
+	if err := s.repo.Decide(ctx, id, StatusApproved, profile, decision); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// The request was withdrawn while we were approving it. The library add
 			// above stands (the media is monitored either way); just report success.
@@ -759,7 +812,9 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 		if o.Auto {
 			skip[req.RequestedBy] = true
 		}
-		s.notifyDecision(ctx, req, true, skip)
+		if !already {
+			s.notifyDecision(ctx, req, true, skip)
+		}
 		s.publishUpdated(req, StatusApproved, s.parties(ctx, req))
 	} else {
 		s.kickAttention() // publishUpdated kicks otherwise
@@ -861,18 +916,24 @@ func (s *Service) requestedFormatsFor(ctx context.Context, req Request, profile 
 	return s.formatsForProfile(ctx, profile)
 }
 
-// Decline rejects a request without adding anything. The stored quality profile
-// is preserved so a later re-request keeps the original choice.
+// Decline rejects a request without adding anything, recording who did it and the reason
+// the requester is told. The stored quality profile is preserved so a later re-request
+// keeps the original choice.
 func (s *Service) Decline(ctx context.Context, id int64, o DeclineOptions) error {
 	req, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if err := s.repo.SetStatus(ctx, id, StatusDeclined, ""); err != nil {
+	already := req.Status == StatusDeclined // declining it again tells nobody again
+	d := Decision{By: o.DecidedBy, ByName: o.DecidedByName, At: s.clock().Unix(), Reason: strings.TrimSpace(o.Reason)}
+	if err := s.repo.Decide(ctx, id, StatusDeclined, "", d); err != nil {
 		return err
 	}
-	s.log.Info("request declined", "media", req.MediaType, "title", req.Title)
-	s.notifyDecision(ctx, req, false, map[int64]bool{o.DecidedBy: true})
+	req.Status, req.DecidedBy, req.DecidedByName, req.DecidedAt, req.DeclineReason = StatusDeclined, d.By, d.ByName, d.At, d.Reason
+	s.log.Info("request declined", "media", req.MediaType, "title", req.Title, "by", d.ByName)
+	if !already {
+		s.notifyDecision(ctx, req, false, map[int64]bool{o.DecidedBy: true})
+	}
 	s.publishUpdated(req, StatusDeclined, s.parties(ctx, req))
 	return nil
 }
@@ -899,8 +960,8 @@ var ErrNotPending = errors.New("not waiting for approval")
 // a failure is reported for that request and the rest still go ahead. Approvals queue
 // their searches like any other approval (the job runner's indexer-search class), so a
 // bulk approve never fans out more than a couple of searches at a time. by is who
-// decided; profile, when set, is used for every approval.
-func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile string, by int64, byName string) []BulkResult {
+// decided; profile, when set, is used for every approval, and reason for every decline.
+func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile, reason string, by int64, byName string) []BulkResult {
 	out := make([]BulkResult, 0, len(ids))
 	for _, id := range ids {
 		res := BulkResult{ID: id}
@@ -912,7 +973,7 @@ func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile 
 		case action == BulkApprove:
 			_, err = s.Approve(ctx, id, ApproveOptions{Profile: profile, DecidedBy: by, DecidedByName: byName})
 		default:
-			err = s.Decline(ctx, id, DeclineOptions{DecidedBy: by, DecidedByName: byName})
+			err = s.Decline(ctx, id, DeclineOptions{Reason: reason, DecidedBy: by, DecidedByName: byName})
 		}
 		if err != nil {
 			res.Error = err.Error()

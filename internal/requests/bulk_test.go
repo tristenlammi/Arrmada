@@ -25,7 +25,7 @@ func TestBulkApproveReportsPerItem(t *testing.T) {
 	if err := s.Decline(ctx, declined, DeclineOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	res := s.Bulk(ctx, BulkApprove, []int64{p1, 999, declined, p2}, "", 1, "admin")
+	res := s.Bulk(ctx, BulkApprove, []int64{p1, 999, declined, p2}, "", "", 1, "admin")
 	if len(res) != 4 {
 		t.Fatalf("results = %+v", res)
 	}
@@ -48,7 +48,7 @@ func TestBulkApproveReportsPerItem(t *testing.T) {
 	}
 	// A bulk decline tells each requester once.
 	p3 := newReq(4)
-	if res := s.Bulk(ctx, BulkDecline, []int64{p3}, "", 1, "admin"); !res[0].OK {
+	if res := s.Bulk(ctx, BulkDecline, []int64{p3}, "", "", 1, "admin"); !res[0].OK {
 		t.Fatalf("decline: %+v", res)
 	}
 	if refs := inboxRefs(t, s, 7); len(refs) != 4 { // three approved/declined above, plus this
@@ -87,7 +87,7 @@ func TestBulkUsesSearchQueue(t *testing.T) {
 		}
 		ids = append(ids, r.ID)
 	}
-	for _, r := range s.Bulk(ctx, BulkApprove, ids, "", 1, "admin") {
+	for _, r := range s.Bulk(ctx, BulkApprove, ids, "", "", 1, "admin") {
 		if !r.OK {
 			t.Fatalf("approve %d: %s", r.ID, r.Error)
 		}

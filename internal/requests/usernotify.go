@@ -415,18 +415,31 @@ func (s *Service) notifyReady(ctx context.Context, req Request) error {
 }
 
 // notifyDecision tells the requester and subscribers a request was approved or declined,
-// except the users in skip.
+// except the users in skip. A decline says why when staff gave a reason.
+//
+// Each decision has its own inbox reference (the decision's time on the end), so after a
+// re-request the second decline — or a later approval — is told too; repeating the same
+// decision's notice still reaches nobody twice.
 func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool, skip map[int64]bool) {
 	if approved {
 		body := fmt.Sprintf("Your request for %s was approved — we're on it.", requestedWhat(req))
 		if req.notApproved != "" {
 			body += " " + req.notApproved
 		}
-		_, _ = s.notifyPartiesCount(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved", skip)
+		_, _ = s.notifyPartiesCount(ctx, req, "Request approved", body, decisionRef(req, "approved"), "request-approved", skip)
 		return
 	}
 	body := fmt.Sprintf("Your request for %s was declined.", requestedWhat(req))
-	_, _ = s.notifyPartiesCount(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined", skip)
+	if req.DeclineReason != "" {
+		body = fmt.Sprintf("Your request for %s was declined: %s", requestedWhat(req), req.DeclineReason)
+	}
+	_, _ = s.notifyPartiesCount(ctx, req, "Request declined", body, decisionRef(req, "declined"), "request-declined", skip)
+}
+
+// decisionRef is a decision notice's inbox reference: "<request ref>:declined:<unix>".
+// Anything reading refs relies on the first parts only.
+func decisionRef(req Request, what string) string {
+	return fmt.Sprintf("%s:%s:%d", requestRef(req), what, req.DecidedAt)
 }
 
 // notifyPartiesCount fans one notification out to the requester and every subscriber,

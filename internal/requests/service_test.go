@@ -93,7 +93,7 @@ func TestCreateResurrectsDeclined(t *testing.T) {
 	}
 
 	// Bob re-requests → back to pending under bob, alice kept as subscriber.
-	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{})
+	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", RequestedBy: 8, RequestedByName: "bob", Note: "still keen"}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("resurrect: %v", err)
 	}
@@ -150,8 +150,8 @@ func TestDeclineNotifiesAllParties(t *testing.T) {
 		if !strings.Contains(inbox[0].Body, "declined") || !strings.Contains(inbox[0].Body, "Tron") {
 			t.Errorf("user %d body = %q, want declined + title", uid, inbox[0].Body)
 		}
-		if inbox[0].Ref != "movie:5:declined" {
-			t.Errorf("user %d ref = %q, want movie:5:declined", uid, inbox[0].Ref)
+		if !strings.HasPrefix(inbox[0].Ref, "movie:5:declined:") {
+			t.Errorf("user %d ref = %q, want movie:5:declined:<when>", uid, inbox[0].Ref)
 		}
 	}
 }

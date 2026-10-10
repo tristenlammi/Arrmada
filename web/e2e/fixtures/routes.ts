@@ -43,6 +43,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     { method: "POST", path: "/api/v1/requests/bulk", respond: ({ body }) => discover.bulk(body) },
     { method: "GET", path: /^\/api\/v1\/requests\/(\d+)$/, respond: ({ params }) => discover.requestDetail(Number(params[0])) },
     { method: "POST", path: /^\/api\/v1\/requests\/(\d+)\/approve$/, respond: ({ params, body }) => discover.approved(Number(params[0]), body) },
+    { method: "POST", path: /^\/api\/v1\/requests\/(\d+)\/decline$/, body: { status: "declined" } },
     get("/api/v1/discover/trending", discover.items),
     get("/api/v1/discover/popular", discover.items),
     get("/api/v1/discover/upcoming", discover.items),

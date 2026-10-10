@@ -59,7 +59,7 @@ describe("RequestSheet", () => {
     open(rq());
     expect(await screen.findByText("alice")).toBeTruthy();
     expect(screen.getByText("the director's cut please")).toBeTruthy();
-    expect(has("Decline") && has("Delete")).toBe(true);
+    expect(has("Decline…") && has("Delete")).toBe(true);
     expect(has("Withdraw") || has("Stop following")).toBe(false);
     const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     await screen.findByRole("option", { name: "Ultra-HD 2160p" });
@@ -69,13 +69,35 @@ describe("RequestSheet", () => {
     await vi.waitFor(() => expect(approve).toHaveBeenCalledWith(5, { quality_profile: "uhd" }));
   });
 
-  it("asks before declining", async () => {
+  // REQ-08: declining asks for a reason first (a quick pick or typed), and sends it.
+  it("asks for a reason before declining, and sends it", async () => {
     me.user = user(1, "manager");
     const decline = vi.spyOn(api, "declineRequest").mockResolvedValue({ status: "declined" });
     open(rq());
-    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Decline…" }));
     expect(decline).not.toHaveBeenCalled();
-    expect(await screen.findByRole("dialog", { name: /Decline “Heat”/ })).toBeTruthy();
+    expect(screen.getByText(/Decline “Heat” for alice\?/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Couldn’t find a good copy" }));
+    expect((screen.getByRole("textbox", { name: /Reason/ }) as HTMLTextAreaElement).value).toBe("Couldn’t find a good copy");
+    fireEvent.click(screen.getByRole("button", { name: "Decline and tell them" }));
+    await vi.waitFor(() => expect(decline).toHaveBeenCalledWith(5, "Couldn’t find a good copy"));
+  });
+
+  it("shows staff a re-request with the earlier reason, and who decided", async () => {
+    me.user = user(1, "admin");
+    open(rq({ rerequest: 1, decline_reason: "Not for now", note: "It's on sale" }));
+    expect(await screen.findByText("Re-request")).toBeTruthy();
+    expect(screen.getByText("Declined before: Not for now")).toBeTruthy();
+    cleanup();
+    open(rq({ status: "approved", tracking: { stage: "searching" }, decided_by_name: "sam", decided_at: Math.floor(Date.now() / 1000) - 7200 }));
+    expect(await screen.findByText(/Approved by sam · /)).toBeTruthy();
+  });
+
+  it("tells a requester why their request was declined", async () => {
+    me.user = user(7, "requester");
+    open(rq({ relation: "owner", status: "declined", tracking: { stage: "declined" }, decline_reason: "Already on Netflix" }));
+    expect(await screen.findByText("Already on Netflix")).toBeTruthy();
+    expect(screen.queryByText("Re-request")).toBeNull();
   });
 
   it("offers the owner Withdraw on a pending request and nothing a staff member gets", async () => {

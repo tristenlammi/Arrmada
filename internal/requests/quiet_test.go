@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -206,7 +207,7 @@ func TestAutoApproveSendsNoDecisionNotification(t *testing.T) {
 	if refs := inboxRefs(t, s, 7); len(refs) != 0 {
 		t.Errorf("requester inbox = %v, want empty", refs)
 	}
-	if refs := inboxRefs(t, s, 8); len(refs) != 1 || refs[0] != "movie:604:approved" {
+	if refs := inboxRefs(t, s, 8); len(refs) != 1 || !strings.HasPrefix(refs[0], "movie:604:approved:") {
 		t.Errorf("follower inbox = %v, want the approval", refs)
 	}
 }
@@ -235,7 +236,7 @@ func TestStaffApprovingOwnRequestIsSilent(t *testing.T) {
 	if _, err := s.Approve(ctx, theirs.ID, ApproveOptions{DecidedBy: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if refs := inboxRefs(t, s, 7); len(refs) != 1 || refs[0] != "movie:2:approved" {
+	if refs := inboxRefs(t, s, 7); len(refs) != 1 || !strings.HasPrefix(refs[0], "movie:2:approved:") {
 		t.Errorf("requester inbox = %v, want one approval", refs)
 	}
 	if got := push.sent(); len(got) != 1 || got[0] != 7 {
