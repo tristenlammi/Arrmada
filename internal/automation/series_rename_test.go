@@ -474,3 +474,30 @@ func TestSeriesRenameSkipsPastLeftoverTemp(t *testing.T) {
 		t.Error("the leftover temporary file must be left alone")
 	}
 }
+
+// A rename that moved files tells Plex's scanner about the show folder, once; a rename
+// with nothing to move tells it nothing.
+func TestSeriesRenameReportsShowFolder(t *testing.T) {
+	f := newRenameFixture(t, [2]int{1, 1}, [2]int{1, 2})
+	var got []string
+	f.c.SetLibraryChanged(func(kind, dir string) { got = append(got, kind+"|"+dir) })
+	dir := filepath.Dir(f.canonical(1, 1))
+	f.place(t, 1, 1, filepath.Join(dir, "odd name one.mkv"), "one")
+	f.place(t, 1, 2, filepath.Join(dir, "odd name two.mkv"), "two")
+
+	res, err := f.c.SeriesRename(f.ctx, f.id, nil)
+	if err != nil || res.Moved != 2 {
+		t.Fatalf("rename: %+v, %v", res, err)
+	}
+	want := "show|" + series.ShowFolder(f.canonical(1, 1))
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("reported %v, want [%s]", got, want)
+	}
+	got = nil
+	if _, err := f.c.SeriesRename(f.ctx, f.id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a rename with nothing to move reported %v", got)
+	}
+}

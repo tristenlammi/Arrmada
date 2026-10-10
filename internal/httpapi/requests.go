@@ -219,6 +219,7 @@ func (a *api) trackRequests(r *http.Request, list []requests.Request) bool {
 		queue, known = snap.Items, ok
 	}
 	a.deps.Requests.Track(r.Context(), list, queue, known)
+	a.setRequestPlexURLs(r.Context(), list) // Watch on Plex on delivered ones
 	return known
 }
 

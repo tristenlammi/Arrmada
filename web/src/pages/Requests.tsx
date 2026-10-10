@@ -341,6 +341,9 @@ function RequestRow({ rq, staff, own, queueKnown, selectable, selected, onSelect
             <Button size="sm" className="min-h-[36px]" onClick={() => onDecide("decline")} busy={busy === `decline:${rq.id}`} disabled={!!busy}>Decline</Button>
           </div>
         )}
+        {rq.plex_url && (
+          <a href={rq.plex_url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-[36px] flex-none items-center rounded-md bg-accent-grad px-2.5 text-[11.5px] font-semibold text-accent-ink">▶ Watch on Plex</a>
+        )}
       </div>
       {error && <div className="mt-2 text-[11.5px] font-medium" style={{ color: "var(--reject)" }} role="alert">{error}</div>}
     </li>

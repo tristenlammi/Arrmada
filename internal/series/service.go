@@ -47,6 +47,21 @@ type Service struct {
 	seriesLocks sync.Map // series id → *sync.Mutex: one refresh or apply per show at a time
 
 	monitorDefault func(ctx context.Context) string // the series_monitor_default setting
+
+	// libraryChanged is told about a show folder whose files a delete changed, so Plex can
+	// rescan it (plexscan). nil = nobody listening.
+	libraryChanged func(kind, dir string)
+}
+
+// SetLibraryChanged installs who hears that a show folder's files changed through a
+// delete here (Plex's scanner). Call it at startup, before anything runs.
+func (s *Service) SetLibraryChanged(fn func(kind, dir string)) { s.libraryChanged = fn }
+
+// changed reports a show folder whose files changed.
+func (s *Service) changed(dir string) {
+	if s.libraryChanged != nil && dir != "" && dir != "." {
+		s.libraryChanged("show", dir)
+	}
 }
 
 // SetSceneMapper installs the TheXEM client used to reconcile split-season anime.
@@ -124,6 +139,9 @@ func (s *Service) DeleteEpisodeFile(ctx context.Context, seriesID int64, season,
 	if err := s.repo.ClearEpisodeFile(ctx, seriesID, season, episode); err != nil {
 		return err
 	}
+	if path != "" {
+		s.changed(ShowFolder(path))
+	}
 	detail := fmt.Sprintf("S%02dE%02d file deleted", season, episode)
 	if len(subFailed) > 0 {
 		detail += " (subtitles left in place: " + strings.Join(subFailed, ", ") + ")"
@@ -164,6 +182,11 @@ func (s *Service) List(ctx context.Context) ([]Series, error) {
 // ByTMDBIDs returns the library shows with these TMDB ids, each with its Stats roll-up.
 func (s *Service) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Series, error) {
 	return s.repo.ByTMDBIDs(ctx, tmdbIDs)
+}
+
+// GetSummary returns one series' own record, without its seasons and episodes.
+func (s *Service) GetSummary(ctx context.Context, id int64) (Series, error) {
+	return s.repo.Get(ctx, id)
 }
 
 // Get returns one series with its seasons and episodes.
@@ -1413,6 +1436,14 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) (Delet
 		}
 	}
 	s.pruneEmptyDirs(dirs)
+	// Plex drops what went, even when the delete stopped partway.
+	shows := map[string]bool{}
+	for _, v := range movedVideos {
+		shows[ShowFolder(v)] = true
+	}
+	for d := range shows {
+		s.changed(d)
+	}
 
 	if failure != nil {
 		// The moved videos are in the bin now; their episodes must read as missing.
@@ -1493,11 +1524,28 @@ func (s *Service) ExistingFolderName(ctx context.Context, seriesID int64) string
 	// files directly under <root>/<Show>/ used to walk two levels up to the TV ROOT
 	// itself, so every later grab imported into <root>/<rootname>/Season N/… — a bogus
 	// nested library folder.
-	parent := filepath.Dir(path)
-	if isSeasonFolder(filepath.Base(parent)) {
-		return filepath.Base(filepath.Dir(parent))
+	return filepath.Base(ShowFolder(path))
+}
+
+// FolderPath is the full path of the show's library folder — the folder above a season
+// folder, or the episode's own folder in a flat layout — taken from any episode on disk
+// ("" when the show has no files).
+func (s *Service) FolderPath(ctx context.Context, seriesID int64) string {
+	path, err := s.repo.AnyEpisodeFilePath(ctx, seriesID)
+	if err != nil || path == "" {
+		return ""
 	}
-	return filepath.Base(parent)
+	return ShowFolder(path)
+}
+
+// ShowFolder is the show folder an episode file lives in: two levels up when its folder
+// is a season folder ("Season 04", "Specials"), one level up otherwise.
+func ShowFolder(episodePath string) string {
+	parent := filepath.Dir(episodePath)
+	if isSeasonFolder(filepath.Base(parent)) {
+		return filepath.Dir(parent)
+	}
+	return parent
 }
 
 // reSeasonFolder matches the folder names episode files are stored under inside a

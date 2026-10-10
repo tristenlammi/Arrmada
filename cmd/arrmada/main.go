@@ -52,6 +52,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/outbox"
+	"github.com/tristenlammi/arrmada/internal/plexscan"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
@@ -792,6 +793,29 @@ func main() {
 	// Convert pauses its encodes while someone is watching — which it can only know while
 	// monitoring is on, so its settings page says so when it isn't.
 	convertSvc.SetWatching(insightsSvc.Watching, func() bool { return insightsSvc.MonitoringActive(runCtx) })
+	// Tell Plex which folder changed after an import, upgrade, rename, delete or Convert
+	// swap: one debounced partial scan per folder, translated to Plex's own paths. Plex
+	// being down or unset never holds anything up — requests are queued in memory and
+	// the worker logs what it couldn't send.
+	plexScanner := plexscan.New(plexscan.Options{
+		Client:     func(ctx context.Context) plexscan.Client { return insightsSvc.PlexClient(ctx) },
+		Configured: insightsSvc.Configured,
+		Settings:   settingsSvc,
+		Roots: func(ctx context.Context) map[string]string {
+			return map[string]string{plexscan.KindMovie: roots.Movies(ctx), plexscan.KindShow: roots.TV(ctx)}
+		},
+		Log: log,
+	})
+	grp.Loop("plex: library scans", plexScanner.Run)
+	// The Plex library index (TMDB/TVDB/IMDb → rating key) behind Watch on Plex: rebuilt
+	// every 30 minutes and about 90 seconds after each scan, once Plex has added the files.
+	grp.Loop("plex: library index", insightsSvc.RunPlexIndex)
+	plexScanner.OnRefreshed(func(string, string, string) { insightsSvc.PlexIndexStale(90 * time.Second) })
+	// Imports, upgrades and movie renames/deletes reach it through the outbox (registered
+	// below); the changes that don't go through the outbox call it directly.
+	seriesSvc.SetLibraryChanged(plexScanner.Request)   // episode and show deletes
+	coordinator.SetLibraryChanged(plexScanner.Request) // series renames
+	convertSvc.SetLibraryChanged(plexScanner.Request)  // a converted file swapped in
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
 	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
 	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.
@@ -894,6 +918,14 @@ func main() {
 	// dispatcher starts.
 	importConsumers{
 		convert: convertSvc, subtitles: subtitlesSvc, requests: requestsSvc, audio: audioSrv, grp: grp,
+		plex: plexScanner, showFolder: seriesSvc.FolderPath,
+		// With scans switched off nothing calls OnRefreshed; Plex's own watcher adds the
+		// file in its own time, so look again a few minutes after the import.
+		plexIndexStale: func() {
+			if !plexScanner.Enabled(context.Background()) {
+				insightsSvc.PlexIndexStale(3 * time.Minute)
+			}
+		},
 	}.register(box)
 	grp.Loop("outbox: dispatcher", box.Run)
 	// Alert deliveries are each connection's log on the Alerts page: a month of it.
@@ -980,6 +1012,8 @@ func main() {
 		Scheduler: sched,
 		Jobs:      jobRunner,
 		Attention: needsYou,
+		PlexScan:  plexScanner,
+		PlexLinks: insightsSvc,
 		// Everything else reads the folders live; the bundled qBittorrent's default save
 		// path is the one thing that has to be told. Same retries as at boot — the client
 		// may be restarting — and each try reads the folder afresh, so of two quick saves

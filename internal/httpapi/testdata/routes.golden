@@ -117,6 +117,7 @@ GET /api/v1/insights/import/tautulli admin -
 GET /api/v1/insights/libraries staff -
 GET /api/v1/insights/plex staff -
 GET /api/v1/insights/plex/auth/{id} staff -
+GET /api/v1/insights/plex/scan staff -
 GET /api/v1/insights/recently-added staff -
 GET /api/v1/insights/reliability staff -
 GET /api/v1/insights/stats staff -
@@ -153,6 +154,7 @@ GET /api/v1/movies/{id}/manualimport staff -
 GET /api/v1/movies/{id}/releases staff -
 GET /api/v1/movies/{id}/rename staff -
 GET /api/v1/movies/{id}/versions staff -
+GET /api/v1/movies/{id}/watch-stats staff -
 GET /api/v1/music/albums/{id} staff -
 GET /api/v1/music/artists staff -
 GET /api/v1/music/artists/{id} staff -
@@ -162,6 +164,7 @@ GET /api/v1/notifications staff -
 GET /api/v1/notifications/catalog staff -
 GET /api/v1/notifications/{id}/deliveries staff -
 GET /api/v1/parse staff -
+GET /api/v1/plex/link user ext
 GET /api/v1/quality/preview staff -
 GET /api/v1/quality/profiles staff -
 GET /api/v1/quality/profiles/{ref} staff -
@@ -190,6 +193,7 @@ GET /api/v1/series/{id}/numbering staff -
 GET /api/v1/series/{id}/releases staff -
 GET /api/v1/series/{id}/rename staff -
 GET /api/v1/series/{id}/scene-map staff -
+GET /api/v1/series/{id}/watch-stats staff -
 GET /api/v1/settings staff -
 GET /api/v1/setup admin -
 GET /api/v1/status public ext
@@ -259,6 +263,7 @@ POST /api/v1/insights/import/overlaps/remove admin -
 POST /api/v1/insights/import/runs/{id}/retry admin -
 POST /api/v1/insights/import/tautulli admin -
 POST /api/v1/insights/plex/auth staff -
+POST /api/v1/insights/plex/scan/test staff -
 POST /api/v1/insights/plex/test staff -
 POST /api/v1/jobs/{id}/cancel staff -
 POST /api/v1/library/fit/preview staff -
@@ -365,6 +370,7 @@ PUT /api/v1/downloadclients/{id} staff -
 PUT /api/v1/downloadclients/{id}/settings staff -
 PUT /api/v1/indexers/{id} staff -
 PUT /api/v1/insights/plex staff -
+PUT /api/v1/insights/plex/scan staff -
 PUT /api/v1/me/apprise user ext
 PUT /api/v1/me/audio/password user ext
 PUT /api/v1/movies/{id}/availability staff -

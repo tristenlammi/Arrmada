@@ -815,6 +815,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		return
 	}
 	s.clearSwap(part)
+	s.swapped(job, finalPath)
 	s.measured.forget(ctx, src)
 	s.reindexConverted(ctx, job)
 	s.update(job, func(j *Job) { j.OutBytes = outSize })

@@ -1437,6 +1437,9 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
               {moreSeasons && ((done && subscribed) || (badge && !declined)) && !picking && (
                 <Button variant="primary" onClick={() => setPicking(true)}>Request more seasons</Button>
               )}
+              {d?.plex_url && (
+                <a href={d.plex_url} target="_blank" rel="noopener noreferrer" className="inline-block rounded-lg bg-accent-grad px-3.5 py-2 text-[12.5px] font-semibold text-accent-ink">▶ Watch on Plex</a>
+              )}
               {d?.trailer_url && (
                 <a href={d.trailer_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>

@@ -3,6 +3,7 @@ import type {
   PlexConfig, SubtitleCoverage, SubtitleJob, SubtitleSettings, TautulliConfig,
 } from "../../src/lib/api";
 import { NOW } from "./clock";
+import type { PlexScanView } from "../../src/lib/plexLibraryApi";
 
 // The optional modules (Convert, Subtitles, Insights, Music), idle and empty: the
 // admin smoke only needs each page to load cleanly.
@@ -45,6 +46,15 @@ export const subtitleSettings: SubtitleSettings = {
 export const subtitleJobs: { jobs: SubtitleJob[] } = { jobs: [] };
 
 export const plexConfig: PlexConfig = { url: "", token_set: false, enabled: false, poll_seconds: 30, status: "unconfigured" };
+
+// Settings → Plex's library updates card, with no Plex server connected.
+export const plexScan: PlexScanView = {
+  enabled: true, configured: false, path_map: [], last_scan: null, pending: 0,
+  roots: [
+    { kind: "movie", arrmada_root: "/movies", sections: [], plex_path: "" },
+    { kind: "show", arrmada_root: "/tv", sections: [], plex_path: "" },
+  ],
+};
 
 // No imported watch history either, so Insights shows its setup state and nothing else.
 export const insightsStats: InsightsStats = {

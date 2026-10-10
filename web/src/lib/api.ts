@@ -1218,6 +1218,8 @@ export interface MediaRequest {
   decided_at?: number;
   /** How often it was asked for again after a decline; > 0 flags a re-request. */
   rerequest?: number;
+  /** Delivered and in the owner's Plex: the title's app.plex.tv page. */
+  plex_url?: string;
 }
 
 /** A section of the request list (GET /api/v1/requests?section=). */
@@ -1414,6 +1416,7 @@ export interface MediaDetail {
   seasons?: SeasonSummary[]; // series: regular seasons, specials left out
   /** The title as a Discover card with this viewer's badge state, for a sheet opened cold from its address. */
   card?: DiscoverCard;
+  plex_url?: string; // app.plex.tv page for the title, when the owner's Plex has it
 }
 
 export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }
@@ -2041,7 +2044,8 @@ export function releaseErrorMessage(e: unknown): string {
 }
 
 // req is a JSON call. Exported for the few call groups that live in their own lazily
-// loaded module (lib/plexApi.ts), so they stay out of a requester's first download.
+// loaded modules (lib/plexApi.ts, lib/plexLibraryApi.ts), so they stay out of a
+// requester's first download.
 export async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await send(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },

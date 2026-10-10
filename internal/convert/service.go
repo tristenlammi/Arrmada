@@ -133,6 +133,8 @@ type Service struct {
 	// together can't both fit into the same room.
 	binHeadroom atomic.Pointer[binHeadroomFunc]
 	binMu       sync.Mutex
+	// libraryChanged hears about the folder of each swapped-in file (Plex's scanner).
+	libraryChanged atomic.Pointer[func(kind, dir string)]
 
 	indexMu       sync.Mutex // serializes index sweeps
 	indexScanning atomic.Bool
@@ -291,6 +293,30 @@ func (s *Service) watchingKnown() bool {
 		return w.known()
 	}
 	return false
+}
+
+// SetLibraryChanged tells Convert who to tell when a converted file replaces its original
+// (kind "movie" or "show", and the file's folder), so Plex rescans it and plays the new
+// file. nil = nobody.
+func (s *Service) SetLibraryChanged(fn func(kind, dir string)) {
+	if fn == nil {
+		s.libraryChanged.Store(nil)
+		return
+	}
+	s.libraryChanged.Store(&fn)
+}
+
+// swapped reports a finished swap's folder.
+func (s *Service) swapped(job *Job, finalPath string) {
+	fn := s.libraryChanged.Load()
+	if fn == nil || finalPath == "" {
+		return
+	}
+	kind := "movie"
+	if job.Kind == "episode" {
+		kind = "show"
+	}
+	(*fn)(kind, filepath.Dir(finalPath))
 }
 
 // binHeadroomFunc reports how many more bytes the recycle bin takes before its cap purges

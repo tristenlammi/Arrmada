@@ -12,9 +12,10 @@ const PLEX_STUB = "<!doctype html><title>Plex</title><p>Plex sign-in (e2e stub)<
 test.describe("admin", () => {
   test.use({ persona: "admin" });
 
-  test("Settings → Plex holds the connection and the sign-in policy", async ({ page }) => {
+  test("Settings → Plex holds the connection, library updates and the sign-in policy", async ({ page }) => {
     await page.goto("/settings/plex");
     await expect(page.getByRole("heading", { name: "Plex connection" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Plex library updates" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Plex sign-in" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign in with Plex" })).toBeVisible();
   });
@@ -84,9 +85,10 @@ test.describe("admin", () => {
 test.describe("manager", () => {
   test.use({ persona: "manager" });
 
-  test("sees the Plex connection but not who may sign in", async ({ page }) => {
+  test("sees the Plex connection and library updates but not who may sign in", async ({ page }) => {
     await page.goto("/settings/plex");
     await expect(page.getByRole("heading", { name: "Plex connection" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Plex library updates" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Plex sign-in" })).toHaveCount(0);
   });
 });

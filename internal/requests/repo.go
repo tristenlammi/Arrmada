@@ -42,6 +42,9 @@ type Request struct {
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
 	// Tracking is where the request has got to, from request to ready (see Track).
 	Tracking *Tracking `json:"tracking,omitempty"`
+	// PlexURL opens the title in app.plex.tv once it's delivered and Plex has it. Filled
+	// by the HTTP layer from the Plex library index; never stored.
+	PlexURL string `json:"plex_url,omitempty"`
 	// ReadyAt is when the requester (and followers) were told it's ready, unix seconds;
 	// 0 until then. It also sorts approved requests into in progress and ready.
 	ReadyAt   int64  `json:"ready_at"`

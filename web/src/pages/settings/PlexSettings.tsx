@@ -7,20 +7,22 @@ import { plexApi, type PlexConnectResult } from "../../lib/plexApi";
 import { usePlexPinSignIn, type PlexFlow } from "../../lib/plexSignIn";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { useToast } from "../../ui";
+import { PlexLibraryUpdates } from "./PlexLibraryUpdates";
 import { requesterPages } from "./roles";
 import { AutoApproveChecks, typesFromCSV, typesToCSV } from "./UsersSettings";
 
 // Settings → Plex: everything about the Plex server in one place — the connection Insights
-// records from, and (admins) who may sign in with Plex. Insights' old Settings tab and the
-// Plex card that used to sit under Users both live here now.
+// records from, the scans Arrmada sends after it changes a file, and (admins) who may sign
+// in with Plex. Insights' old Settings tab and the Plex card that used to sit under Users
+// both live here now.
 export function PlexSettings() {
   const { user } = useMe();
   const admin = isAdmin(user);
   return (
     <div className="flex flex-col gap-6">
       <PlexConnection />
-      {/* PLEX-04 (Plex scans): the path mapping and last-scan status card goes here,
-          as <Section id="plex-scans" …>; register it in sections.ts' search index. */}
+      {/* Path mapping and the last scan; its own load and Save. */}
+      <PlexLibraryUpdates />
       {admin && <PlexSignIn />}
     </div>
   );

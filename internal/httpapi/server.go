@@ -32,6 +32,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/plexscan"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
@@ -121,6 +122,11 @@ type Deps struct {
 	// Attention is the Needs-you feed: GET /attention serves its snapshot (the services
 	// whose changes it reports kick its refresh themselves). nil = an empty, stale answer.
 	Attention *attention.Service
+	// PlexScan tells Plex which folder changed; the Plex settings card reads and edits
+	// its toggle and path mappings. nil = the card's routes answer 503.
+	PlexScan *plexscan.Scanner
+	// PlexLinks finds titles in Plex for Watch on Plex links. nil = no links anywhere.
+	PlexLinks PlexLinker
 }
 
 type api struct {
@@ -367,6 +373,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/movies/search", a.requireRole(auth.RoleManager, a.handleBulkMovieSearch))
 	mux.HandleFunc("POST /api/v1/movies/import", a.requireRole(auth.RoleManager, a.handleMovieImportFolder))
 	mux.HandleFunc("GET /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie))
+	// Who has played it on Plex: staff only, never a requester.
+	mux.HandleFunc("GET /api/v1/movies/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleMovieWatchStats))
 	mux.HandleFunc("POST /api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))
 	mux.HandleFunc("POST /api/v1/movies/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchMovie))
 	mux.HandleFunc("GET /api/v1/movies/{id}/releases", a.requireRole(auth.RoleManager, a.handleMovieReleases))
@@ -397,6 +405,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
 	mux.HandleFunc("GET /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries))
+	mux.HandleFunc("GET /api/v1/series/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleSeriesWatchStats))
 	mux.HandleFunc("GET /api/v1/series/{id}/downloads", a.requireRole(auth.RoleManager, a.handleSeriesDownloads))
 	mux.HandleFunc("PUT /api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT /api/v1/series/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetSeriesProfile))
@@ -495,6 +504,13 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/insights/plex/test", a.requireRole(auth.RoleManager, a.handleInsightsTest))
 	mux.HandleFunc("POST /api/v1/insights/plex/auth", a.requireRole(auth.RoleManager, a.handleInsightsPlexAuthStart))
 	mux.HandleFunc("GET /api/v1/insights/plex/auth/{id}", a.requireRole(auth.RoleManager, a.handleInsightsPlexAuthPoll))
+	// Library updates: scan-after-changes toggle, path mappings, Test / Scan now.
+	mux.HandleFunc("GET /api/v1/insights/plex/scan", a.requireRole(auth.RoleManager, a.handlePlexScanView))
+	mux.HandleFunc("PUT /api/v1/insights/plex/scan", a.requireRole(auth.RoleManager, a.handlePlexScanSave))
+	mux.HandleFunc("POST /api/v1/insights/plex/scan/test", a.requireRole(auth.RoleManager, a.handlePlexScanTest))
+	// Watch on Plex: anyone signed in may ask for a title's app.plex.tv link (no token,
+	// no server address in it); 204 when Plex doesn't have it.
+	mux.HandleFunc("GET /api/v1/plex/link", a.signedIn(a.handlePlexLink).ext())
 	mux.HandleFunc("GET /api/v1/insights/activity", a.requireRole(auth.RoleManager, a.handleInsightsActivity))
 	mux.HandleFunc("GET /api/v1/insights/history", a.requireRole(auth.RoleManager, a.handleInsightsHistory))
 	mux.HandleFunc("GET /api/v1/insights/stats", a.requireRole(auth.RoleManager, a.handleInsightsStats))
