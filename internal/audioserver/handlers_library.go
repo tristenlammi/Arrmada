@@ -130,13 +130,14 @@ func (s *Server) progressMap(ctx context.Context, userID int64) map[string]liste
 
 // applyFilter keeps items matching an Audiobookshelf filter ("authors.<base64 id>",
 // "series.…", "genres.…", "progress.finished|not-finished|in-progress|not-started").
+//
+// It always returns a new slice: items is the shared cached catalogue, and callers sort
+// the result in place — sorting the cache itself would race between requests and
+// reorder it for everyone.
 func applyFilter(items []Item, filter string, prog map[string]listening.Progress) []Item {
-	if filter == "" {
-		return items
-	}
 	key, enc, ok := strings.Cut(filter, ".")
-	if !ok {
-		return items
+	if filter == "" || !ok {
+		return append([]Item(nil), items...)
 	}
 	// Apps percent-encode the base64 value, and some (ShelfPlayer) encode a value that's
 	// already encoded ("…%3D" arrives as "…%253D"), so undo that as Audiobookshelf does; a
