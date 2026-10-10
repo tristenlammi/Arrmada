@@ -3,6 +3,7 @@ package requests
 import (
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -60,6 +61,32 @@ func positiveID(s string) bool {
 		}
 	}
 	return true
+}
+
+// readySeasonRef is what a series 'ready' reference may carry after the show's id: the
+// request it was for, and the season of a per-season notice.
+var readySeasonRef = regexp.MustCompile(`^r[1-9]\d*(:s[1-9]\d*)?$`)
+
+// ReadyRef reports whether an inbox reference is a movie's or show's 'ready' notice
+// ("movie:603", "series:1399", "series:1399:r12", "series:1399:r12:s2"), and for which
+// title. Decision notices (":approved:…", ":declined:…") and everything else are not.
+func ReadyRef(ref string) (media string, tmdbID int, ok bool) {
+	kind, rest, _ := strings.Cut(ref, ":")
+	if kind != "movie" && kind != "series" {
+		return "", 0, false
+	}
+	id, more, _ := strings.Cut(rest, ":")
+	if !positiveID(id) || len(id) > 9 {
+		return "", 0, false
+	}
+	if more != "" && (kind != "series" || !readySeasonRef.MatchString(more)) {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		return "", 0, false
+	}
+	return kind, n, true
 }
 
 // pushPath is where a Web Push for ref opens: its own address, else Discover.

@@ -10,8 +10,8 @@ import type { Tone } from "../ui";
 // Order for a requester's strip: what's moving first, then what's waiting, then what's
 // done. Staff use the server's order instead (waiting for approval first).
 export const STAGE_ORDER: Record<string, number> = {
-  downloading: 0, importing: 1, queued: 2, paused: 3, failed: 4, searching: 5, pending: 6,
-  partial: 7, available: 8, declined: 9,
+  downloading: 0, importing: 1, adding: 2, queued: 3, paused: 4, failed: 5, searching: 6, pending: 7,
+  partial: 8, available: 9, declined: 10,
 };
 
 // Stages read off the download queue: while downloads can't be checked, these can't be told.
@@ -54,6 +54,9 @@ export function requestStage(rq: MediaRequest, queueKnown = true): RequestStage 
     }
     case "importing":
       return { badge: "Importing", tone: "accent", detail: "Adding to the library…", detailTone: "var(--accent-text)" };
+    case "adding":
+      // On disk; the 'ready' notice waits until Plex shows it (or half an hour passes).
+      return { badge: "Almost ready", tone: "good", detail: "Adding to Plex…", detailTone: "var(--good-text)" };
     case "queued":
       return { badge: "Starting", tone: "accent", detail: tr.note || "Starting the download" };
     case "paused":
@@ -81,7 +84,7 @@ export function requestStage(rq: MediaRequest, queueKnown = true): RequestStage 
 export function sortForRequester(items: MediaRequest[]): MediaRequest[] {
   return [...items].sort(
     (a, b) =>
-      (STAGE_ORDER[a.tracking?.stage ?? ""] ?? 6) - (STAGE_ORDER[b.tracking?.stage ?? ""] ?? 6) ||
+      (STAGE_ORDER[a.tracking?.stage ?? ""] ?? 7) - (STAGE_ORDER[b.tracking?.stage ?? ""] ?? 7) ||
       b.updated_at.localeCompare(a.updated_at),
   );
 }

@@ -141,3 +141,37 @@ func TestListRequestsPlexURLOnlyWhenAvailable(t *testing.T) {
 		t.Fatalf("not ready: url %q after %d lookups", list[0].PlexURL, len(idle.asked))
 	}
 }
+
+// A 'ready' notice in the inbox carries the title's Watch on Plex page — Plex's current
+// one when the index has the title, else the one saved with it — and nothing else does.
+// While Plex isn't set up or its index isn't built, every link is hidden.
+func TestInboxPlexLinks(t *testing.T) {
+	link := &fakeLinker{known: map[string]string{"movie:603": "live603", "series:1399": "live1399"}}
+	a := &api{deps: Deps{PlexLinks: link}}
+	items := func() []requests.UserNotification {
+		return []requests.UserNotification{
+			{Ref: "movie:603"},                      // ready, Plex has it now
+			{Ref: "movie:604", PlexURL: "saved604"}, // ready, saved link (legacy-agent match)
+			{Ref: "series:1399:r12:s2"},             // a season's ready notice
+			{Ref: "movie:603:approved:1700000000"},  // a decision: no link
+			{Ref: "book:OL1W"},                      // books aren't in Plex
+			{Ref: "request:40"},                     // staff 'new request'
+		}
+	}
+	got := items()
+	a.inboxPlexLinks(context.Background(), got)
+	want := []string{"live603", "saved604", "live1399", "", "", ""}
+	for i, n := range got {
+		if n.PlexURL != want[i] {
+			t.Errorf("%s: plex_url %q, want %q", n.Ref, n.PlexURL, want[i])
+		}
+	}
+	link.notReady = true
+	got = items()
+	a.inboxPlexLinks(context.Background(), got)
+	for _, n := range got {
+		if n.PlexURL != "" {
+			t.Errorf("Plex not ready: %s still links %q", n.Ref, n.PlexURL)
+		}
+	}
+}

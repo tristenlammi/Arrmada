@@ -77,16 +77,18 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
   // about, by its reference: the exact title (Dune 2021, not 1984), the book on Discover's
   // Books tab, or a staff "New request". Only an old notice whose reference says nothing
   // falls back to searching Discover for the quoted title.
-  const clickItem = async (n: UserNotification) => {
-    if (!n.read) {
-      try {
-        await api.markNotificationRead(n.id);
-        setItems((xs) => xs.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
-        setUnread((u) => Math.max(0, u - 1));
-      } catch (e) {
-        console.warn("mark notification read failed", e);
-      }
+  const markRead = async (n: UserNotification) => {
+    if (n.read) return;
+    try {
+      await api.markNotificationRead(n.id);
+      setItems((xs) => xs.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+      setUnread((u) => Math.max(0, u - 1));
+    } catch (e) {
+      console.warn("mark notification read failed", e);
     }
+  };
+  const clickItem = async (n: UserNotification) => {
+    await markRead(n);
     const path = refToPath(n.ref);
     if (path) {
       setOpen(false);
@@ -129,13 +131,19 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
         {items.length === 0 ? (
           <div className="px-3.5 py-8 text-center text-[12px] text-ink-faint">Nothing yet. When a request you made is ready, it’ll show up here.</div>
         ) : items.map((n) => (
-          <button key={n.id} onClick={() => clickItem(n)} className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left" style={{ borderTop: "1px solid var(--line-soft)", background: n.read ? "transparent" : "var(--accent-soft)" }}>
-            <span className="mt-1 h-2 w-2 flex-none rounded-full" style={{ background: n.read ? "transparent" : "var(--accent)" }} />
-            <span className="min-w-0">
-              <span className="block text-[12.5px] font-semibold">{n.title}</span>
-              <span className="block whitespace-pre-line text-[11.5px] text-ink-dim">{n.body}</span>
-            </span>
-          </button>
+          <div key={n.id} style={{ borderTop: "1px solid var(--line-soft)", background: n.read ? "transparent" : "var(--accent-soft)" }}>
+            <button onClick={() => clickItem(n)} className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left">
+              <span className="mt-1 h-2 w-2 flex-none rounded-full" style={{ background: n.read ? "transparent" : "var(--accent)" }} />
+              <span className="min-w-0">
+                <span className="block text-[12.5px] font-semibold">{n.title}</span>
+                <span className="block whitespace-pre-line text-[11.5px] text-ink-dim">{n.body}</span>
+              </span>
+            </button>
+            {/* A ready title Plex has: straight to it in Plex (the row itself opens it here). */}
+            {n.plex_url && (
+              <a href={n.plex_url} target="_blank" rel="noopener noreferrer" onClick={() => { void markRead(n); }} className="-mt-1 mb-2.5 ml-[30px] inline-flex min-h-[30px] items-center rounded-md bg-accent-grad px-2.5 text-[11.5px] font-semibold text-accent-ink">▶ Watch on Plex</a>
+            )}
+          </div>
         ))}
       </div>
     </div>

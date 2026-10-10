@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
@@ -25,6 +27,7 @@ func (a *api) handleMyNotifications(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []requests.UserNotification{}
 	}
+	a.inboxPlexLinks(r.Context(), items)
 	unread := 0
 	for _, n := range items {
 		if !n.Read {
@@ -32,6 +35,27 @@ func (a *api) handleMyNotifications(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"notifications": items, "unread": unread})
+}
+
+// inboxPlexLinks gives each 'ready' notice its Watch on Plex link: the title's page as the
+// Plex index has it now (from memory — a notice sent during the grace period gains one
+// once Plex has the title), else the one saved when it was sent. While Plex isn't set up
+// or its index isn't built, every link is hidden, so the bell never offers a Watch button
+// that can't work.
+func (a *api) inboxPlexLinks(ctx context.Context, items []requests.UserNotification) {
+	ready := a.plexReady(ctx)
+	for i := range items {
+		n := &items[i]
+		if !ready {
+			n.PlexURL = ""
+			continue
+		}
+		if media, id, ok := requests.ReadyRef(n.Ref); ok {
+			if u := a.watchURL(ctx, media, insights.ExternalIDs{TMDB: id}); u != "" {
+				n.PlexURL = u
+			}
+		}
+	}
 }
 
 // handleMarkNotificationRead marks one inbox item read.

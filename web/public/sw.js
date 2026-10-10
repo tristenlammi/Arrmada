@@ -69,10 +69,12 @@ self.addEventListener("fetch", (e) => {
 });
 
 // --- Web Push -------------------------------------------------------------
-// The server sends an encrypted JSON payload: { title, body, url }.
+// The server sends an encrypted JSON payload: { title, body, url, plex_url? }. plex_url is
+// on a 'ready' notice for a title the owner's Plex has: its app.plex.tv page.
 self.addEventListener("push", (e) => {
   let data = { title: "Arrmada", body: "", url: "/discover" };
   try { data = { ...data, ...e.data.json() }; } catch { /* body may be empty */ }
+  const plex = plexURL(data.plex_url);
   e.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
@@ -80,19 +82,36 @@ self.addEventListener("push", (e) => {
       // (only its alpha is used).
       icon: "/icon-192.png",
       badge: "/badge-96.png",
-      data: { url: data.url },
+      data: { url: data.url, plex_url: plex },
+      // Where the platform shows actions (Android, desktop Chrome): Watch on Plex, or the
+      // request in Arrmada. Elsewhere a plain tap is all there is, and opens Plex.
+      ...(plex ? { actions: [{ action: "plex", title: "Watch on Plex" }, { action: "open", title: "Details" }] } : {}),
       tag: data.body || data.title, // collapse duplicate pings for the same item
     })
   );
 });
+
+// plexURL keeps a Watch on Plex link only when it really is an app.plex.tv page.
+function plexURL(u) {
+  return typeof u === "string" && u.startsWith("https://app.plex.tv/") ? u : "";
+}
 
 // Tapping the notification opens what it's about (the server sends the exact title's
 // address): it focuses an open Arrmada tab and takes it there, or opens one. Only a page
 // this worker controls can be navigated; for any other (one opened before the worker
 // took over) navigate() rejects, and a fresh window opens instead. Only same-origin
 // paths are followed.
+//
+// A 'ready' notice whose title is in Plex opens it in Plex — from its Watch on Plex
+// action, or a plain tap (iOS and others show no actions) — and its Details action opens
+// it here.
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
+  const plex = plexURL(e.notification.data && e.notification.data.plex_url);
+  if (plex && e.action !== "open") {
+    e.waitUntil(clients.openWindow(plex));
+    return;
+  }
   let url = (e.notification.data && e.notification.data.url) || "/discover";
   if (typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) url = "/discover";
   e.waitUntil(

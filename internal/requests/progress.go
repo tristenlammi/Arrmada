@@ -22,8 +22,18 @@ const (
 	StageFailed      = "failed"      // its download errored
 	StageImporting   = "importing"   // downloaded; being moved into the library
 	StagePartial     = "partial"     // a series with some episodes ready
+	StageAdding      = "adding"      // on disk; waiting for Plex to show it before saying it's ready
 	StageAvailable   = "available"   // ready to watch / read / listen
 )
+
+// addingToPlex reports whether a complete request is still waiting for Plex: approved, a
+// movie or show, nobody told yet, and either seen waiting (on_disk_at) or Plex is set up
+// so its 'ready' will wait. The card then says 'Adding to Plex…' rather than Ready until
+// the notice goes out, so card and message agree.
+func addingToPlex(rq Request, gated bool) bool {
+	return rq.Status == StatusApproved && rq.ReadyAt == 0 && (rq.MediaType == "movie" || rq.MediaType == "series") &&
+		(rq.onDiskAt > 0 || gated)
+}
 
 // Tracking is where a request has got to, for the requester's progress view.
 type Tracking struct {
@@ -85,12 +95,16 @@ func (s *Service) Track(ctx context.Context, reqs []Request, queue []download.It
 		}
 	}
 	now := time.Now()
+	gated := s.plex != nil && s.plex.Configured(ctx)
 	for i := range reqs {
 		var mine []automation.Acquisition
 		if reqs[i].libID > 0 {
 			mine = acqs[reqs[i].MediaType][reqs[i].libID]
 		}
 		reqs[i].Tracking = track(&reqs[i], mine, byHash, queueKnown, now)
+		if t := reqs[i].Tracking; t != nil && t.Stage == StageAvailable && addingToPlex(reqs[i], gated) {
+			t.Stage = StageAdding
+		}
 		// Keep the older field in step for anything still reading it.
 		if t := reqs[i].Tracking; t != nil && t.Stage == StageDownloading {
 			reqs[i].DownloadProgress = t.Progress
