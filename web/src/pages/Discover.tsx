@@ -510,7 +510,12 @@ function DiscoverTab({ ctx }: { ctx: RowCtx }) {
         {/* Requests first, above everything: admins see everyone's (to act on), everyone
             else their own, each with how far along it is. */}
         <MyRequestsRow />
+        {/* What the viewer asked for that has arrived: the payoff, with Watch on Plex. */}
+        <ReadyForYouRow />
         <Hero ctx={ctx} />
+        {/* What just arrived in the library, for everyone. It doesn't claim cards from the
+            rows below: those are things to request, this is what's already here. */}
+        <PosterRow hideUntilLoaded hideOnError title="Recently added" load={() => api.discoverRecentlyAdded()} ctx={ctx} />
         {/* Personalized to the viewer's watch history/requests. Hidden entirely (no header,
             no skeleton) when the backend returns nothing to recommend, or on error. At
             order 0 it claims the top slot so the rows below dedupe against it. */}
@@ -649,8 +654,6 @@ function MyRequestsRow() {
   const staff = isStaff(user);
   const [items, setItems] = useState<MediaRequest[] | null>(null);
   const [waiting, setWaiting] = useState(0);
-  const [openID, setOpenID] = useState<number | null>(null);
-  const scroller = useRef<HTMLDivElement>(null);
 
   // false while downloads can't be checked: a request's progress is then unknown.
   const [queueKnown, setQueueKnown] = useState(true);
@@ -667,28 +670,49 @@ function MyRequestsRow() {
   if (!items || items.length === 0) return null;
   // Staff keep the server's order: waiting (oldest first), then in progress.
   const sorted = staff ? items : sortForRequester(items);
+  const heading = (
+    <>
+      {staff ? "Requests" : "Your requests"}
+      {staff && waiting > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--avoid-text)" }}>{waiting} waiting</span>}
+      {moving > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--accent)" }}>{moving} on the way</span>}
+    </>
+  );
+  return <RequestRail heading={heading} seeAll={staff && waiting > 0 ? "/requests?tab=needs" : "/requests"} items={sorted} staff={staff} queueKnown={queueKnown} onChanged={load} />;
+}
+
+// ReadyForYouRow is what the viewer asked for (or follows) that arrived in the last month,
+// newest first, each with Watch on Plex when the owner's Plex has it. Staff see their own
+// here too, not everyone's. Nothing renders when nothing is ready.
+function ReadyForYouRow() {
+  const [items, setItems] = useState<MediaRequest[] | null>(null);
+  const load = useCallback(() => api.requests({ section: "ready", ready_within_days: 30, mine: 1, limit: 20 })
+    .then((r) => setItems(r.requests)).catch(() => setItems([])), []);
+  usePoll(load, 60000);
+  if (!items || items.length === 0) return null;
+  return <RequestRail heading="Ready for you" seeAll="/requests?tab=ready" items={items} staff={false} onChanged={load} />;
+}
+
+// RequestRail is a strip of request posters, each opening its RequestSheet.
+function RequestRail({ heading, seeAll, items, staff, queueKnown = true, onChanged }: { heading: React.ReactNode; seeAll: string; items: MediaRequest[]; staff: boolean; queueKnown?: boolean; onChanged: () => void }) {
+  const [openID, setOpenID] = useState<number | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
-  const seeAll = staff && waiting > 0 ? "/requests?tab=needs" : "/requests";
   const open = openID ? items.find((rq) => rq.id === openID) : undefined;
   return (
     <div>
       <div className="mb-2.5 flex items-center justify-between gap-2">
-        <h2 className="m-0 min-w-0 text-[15px] font-bold">
-          {staff ? "Requests" : "Your requests"}
-          {staff && waiting > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--avoid-text)" }}>{waiting} waiting</span>}
-          {moving > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--accent)" }}>{moving} on the way</span>}
-        </h2>
+        <h2 className="m-0 min-w-0 text-[15px] font-bold">{heading}</h2>
         <div className="flex flex-none items-center gap-2">
           <Link to={seeAll} className="text-[12px] font-semibold" style={{ color: "var(--accent)" }}>See all →</Link>
           <div className="hidden gap-1 sm:flex"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
         </div>
       </div>
       <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
-        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} queueKnown={queueKnown} onOpen={() => setOpenID(rq.id)} />)}
+        {items.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} queueKnown={queueKnown} onOpen={() => setOpenID(rq.id)} />)}
       </div>
       {openID !== null && (
         <Suspense fallback={null}>
-          <RequestSheet key={openID} requestId={openID} initial={open} onChanged={() => { void load(); }} onClose={() => setOpenID(null)} />
+          <RequestSheet key={openID} requestId={openID} initial={open} onChanged={onChanged} onClose={() => setOpenID(null)} />
         </Suspense>
       )}
     </div>

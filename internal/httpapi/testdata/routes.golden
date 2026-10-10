@@ -92,6 +92,7 @@ GET /api/v1/discover/genres user ext
 GET /api/v1/discover/popular user ext
 GET /api/v1/discover/provider user ext
 GET /api/v1/discover/providers user ext
+GET /api/v1/discover/recently-added user ext
 GET /api/v1/discover/recommended user ext
 GET /api/v1/discover/rows/{kind} user ext
 GET /api/v1/discover/search user ext

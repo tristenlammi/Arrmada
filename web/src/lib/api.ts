@@ -2484,7 +2484,9 @@ export const api = {
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   // Without a section: every request the viewer may see, newest first. With one: a page
   // of that section (default 50), plus counts for every section.
-  requests: (opts: { section?: RequestSection; limit?: number; offset?: number; media_type?: string; q?: string; status?: string } = {}) => {
+  // ready_within_days keeps ready requests stamped in the last N days; mine=1 narrows staff
+  // to their own and followed requests too (everyone else always is).
+  requests: (opts: { section?: RequestSection; limit?: number; offset?: number; media_type?: string; q?: string; status?: string; ready_within_days?: number; mine?: 1 } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== "") qs.set(k, String(v));
     const s = qs.toString();
@@ -2546,6 +2548,8 @@ export const api = {
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/provider?media=${media}&id=${id}`).then((r) => r.items),
   discoverBecause: () => req<{ rows: DiscoverRow[] }>(`/api/v1/discover/because`).then((r) => r.rows),
   discoverCollections: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/collections`).then((r) => r.items),
+  // What just arrived in the library (Arrmada's imports, plus Plex's when it's set up).
+  discoverRecentlyAdded: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/recently-added`).then((r) => r.items),
   discoverByGenre: (media: string, genre: number) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover?media=${media}&genre=${genre}`).then((r) => r.items),
   discoverGenres: (media: string) =>

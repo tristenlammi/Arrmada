@@ -163,6 +163,12 @@ func (s *Service) Lookup(ctx context.Context, query string) ([]metadata.SeriesRe
 	return s.meta.SearchSeries(ctx, query)
 }
 
+// RecentlyImported is the shows with an episode imported in the last `days` days, newest
+// first, one row per show.
+func (s *Service) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	return s.repo.RecentlyImported(ctx, days, limit)
+}
+
 // List returns the library with roll-up stats.
 func (s *Service) List(ctx context.Context) ([]Series, error) {
 	all, err := s.repo.List(ctx)

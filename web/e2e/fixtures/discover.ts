@@ -128,6 +128,27 @@ export const requests: RequestList = {
   ],
 };
 
+// GET /api/v1/requests?section=ready (REQ-18's "Ready for you"): one delivered movie the
+// owner's Plex has, so its poster carries Watch on Plex.
+export const readyRequests: RequestList = {
+  client_health: { ok: true },
+  auto_approve: false,
+  counts: { needs_approval: 0, in_progress: 0, ready: 1, declined: 0 },
+  total: 1,
+  requests: [
+    { id: 5, media_type: "movie", tmdb_id: 1007, title: "The Cartographer", year: 2021, poster_url: poster(7), status: "approved", requested_by: 3, requested_by_name: "deckhand", relation: "owner", available: true, ready_at: Date.parse(at) / 1000, tracking: { stage: "available" }, plex_url: "https://app.plex.tv/desktop/#!/server/fixture/details?key=%2Flibrary%2Fmetadata%2F1007", created_at: at, updated_at: at },
+  ],
+};
+
+// requestList answers GET /api/v1/requests: the ready section its own row, every other
+// section and the Discover strip the same rows.
+export function requestList(url: URL): RequestList {
+  return url.searchParams.get("section") === "ready" ? readyRequests : requests;
+}
+
+// recentlyAdded is GET /api/v1/discover/recently-added: what's in the library.
+export const recentlyAdded = { items: [cards[6], { ...cards[5], has_file: true }] };
+
 // A pending request for three seasons of a show, opened by its id (?id=7) but kept off the
 // lists so the Requests page's counts and bulk selection stay as they are.
 export const seasonsRequest: MediaRequest = {
