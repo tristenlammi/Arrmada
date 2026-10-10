@@ -104,16 +104,25 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.call(ctx, "get_history", url.Values{"length": {"1"}, "grouping": {"0"}}, &data)
 }
 
-// History pages through the full watch history, invoking fn for each batch (so a large history can
+// Page is one page of history: its usable rows, how many rows it skipped as unusable (no
+// start time), and Tautulli's count of all the rows there are, for a progress bar.
+type Page struct {
+	Rows    []Row
+	Skipped int
+	Total   int
+}
+
+// History pages through the full watch history, invoking fn for each page (so a large history can
 // stream into the importer rather than buffering it all).
-func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
+func (c *Client) History(ctx context.Context, fn func(Page) error) error {
 	const length = 500
 	for start := 0; ; start += length {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		var data struct {
-			Data []map[string]any `json:"data"`
+			RecordsFiltered int              `json:"recordsFiltered"`
+			Data            []map[string]any `json:"data"`
 		}
 		// grouping=0: one row per real session. Tautulli's default groups a user's
 		// consecutive sittings of one item into a single row spanning all of them, which
@@ -122,7 +131,7 @@ func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
 		if err := c.call(ctx, "get_history", params, &data); err != nil {
 			return err
 		}
-		batch := make([]Row, 0, len(data.Data))
+		page := Page{Rows: make([]Row, 0, len(data.Data)), Total: data.RecordsFiltered}
 		for _, m := range data.Data {
 			r := Row{
 				UserID: asInt(m["user_id"]),
@@ -151,12 +160,13 @@ func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
 				UserThumb:        asStr(m["user_thumb"]),
 			}
 			if r.Started == 0 {
-				continue // group headers / bad rows
+				page.Skipped++ // group headers / bad rows
+				continue
 			}
-			batch = append(batch, r)
+			page.Rows = append(page.Rows, r)
 		}
-		if len(batch) > 0 {
-			if err := fn(batch); err != nil {
+		if len(data.Data) > 0 {
+			if err := fn(page); err != nil {
 				return err
 			}
 		}

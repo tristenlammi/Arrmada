@@ -39,6 +39,9 @@ type ImportOptions struct {
 	// import plays from before Arrmada started recording". The overlap check already
 	// skips plays recorded live; this is for owners who'd rather not mix sources at all.
 	Before int64
+	// RunID stamps every play this pass inserts with its import run, so "Remove this
+	// import" can find exactly those rows again. 0 = not part of a tracked run.
+	RunID int64
 }
 
 // ImportCounts is what one import pass did with each row. Every row lands in exactly one
@@ -164,7 +167,7 @@ func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession, opt
 			Player: r.Player, Platform: r.Platform, Product: r.Product, IPAddress: r.IPAddress,
 			Decision:  normalizeDecision(r.Decision),
 			StartedAt: r.StartedAt, StoppedAt: stopped, DurationMS: r.DurationMS,
-			WatchedMS: r.WatchedMS, PausedMS: r.PausedMS,
+			WatchedMS: r.WatchedMS, PausedMS: r.PausedMS, ImportRunID: opts.RunID,
 		}); err != nil {
 			c.fail(err)
 			continue

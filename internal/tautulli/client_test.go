@@ -23,11 +23,12 @@ func TestHistoryAsksForUngroupedRows(t *testing.T) {
 
 	c := New(srv.URL, "k")
 	var got []Row
-	if err := c.History(context.Background(), func(rows []Row) error { got = append(got, rows...); return nil }); err != nil {
+	total := 0
+	if err := c.History(context.Background(), func(p Page) error { got, total = append(got, p.Rows...), p.Total; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].RatingKey != "100" || got[0].DurationSec != 2900 {
-		t.Fatalf("rows = %+v", got)
+	if len(got) != 1 || got[0].RatingKey != "100" || got[0].DurationSec != 2900 || total != 1 {
+		t.Fatalf("rows = %+v, total %d", got, total)
 	}
 	if err := c.Ping(context.Background()); err != nil {
 		t.Fatal(err)

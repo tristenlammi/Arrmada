@@ -781,6 +781,13 @@ func main() {
 	geoResolver := geoip.New(geoDB)
 	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, bus, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
+	// A Tautulli import the last run was in the middle of will never finish: say so,
+	// rather than showing it as running forever.
+	if n, err := insightsSvc.MarkInterruptedImports(runCtx); err != nil {
+		log.Warn("insights: couldn't close imports left running", "err", err)
+	} else if n > 0 {
+		log.Info("insights: marked imports left unfinished by the last run as interrupted", "runs", n)
+	}
 	grp.Loop("insights: poller", insightsSvc.Run) // Plex watch-monitoring poller (records when enabled + configured)
 	// Convert pauses its encodes while someone is watching.
 	convertSvc.SetWatching(insightsSvc.Watching)
