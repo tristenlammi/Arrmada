@@ -252,6 +252,7 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
+		normalizePathIDs(r) // item and library ids in either shape (ids.go)
 		ctx := context.WithValue(r.Context(), userKey, u)
 		ctx = context.WithValue(ctx, familyKey, family)
 		ctx = context.WithValue(ctx, tokenKey, tok)

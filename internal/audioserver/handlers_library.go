@@ -37,7 +37,7 @@ func (s *Server) libraryTotals(ctx context.Context) obj {
 }
 
 func (s *Server) checkLibrary(w http.ResponseWriter, r *http.Request) bool {
-	if r.PathValue("lib") != libraryID {
+	if !isLibraryID(r.PathValue("lib")) {
 		writeError(w, http.StatusNotFound, "Library not found")
 		return false
 	}
@@ -158,12 +158,12 @@ func applyFilter(items []Item, filter string, prog map[string]listening.Progress
 		case "authors":
 			keep = false
 			for _, a := range splitAuthors(it.Book.Author) {
-				if authorID(a) == val {
+				if isAuthorID(val, a) {
 					keep = true
 				}
 			}
 		case "series":
-			keep = it.Book.SeriesName != "" && seriesID(it.Book.SeriesName) == val
+			keep = it.Book.SeriesName != "" && isSeriesID(val, it.Book.SeriesName)
 		case "narrators":
 			keep = false // no narrators are recorded, so none match (rather than all)
 		case "genres":
@@ -559,7 +559,7 @@ func (s *Server) handleAuthor(w http.ResponseWriter, r *http.Request) {
 	var mine []Item
 	for _, it := range items {
 		for _, a := range splitAuthors(it.Book.Author) {
-			if authorID(a) == id {
+			if isAuthorID(id, a) {
 				name = a
 				mine = append(mine, it)
 			}
@@ -569,6 +569,7 @@ func (s *Server) handleAuthor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Author not found")
 		return
 	}
+	id = authorID(name) // replies use the classic id, whichever shape was asked for
 	var img any
 	if s.books.KnownAuthorImages(ctx)[name] != "" {
 		img = "/api/authors/" + id + "/image"
@@ -599,7 +600,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	var mine []Item
 	name := ""
 	for _, it := range items {
-		if it.Book.SeriesName != "" && seriesID(it.Book.SeriesName) == id {
+		if it.Book.SeriesName != "" && isSeriesID(id, it.Book.SeriesName) {
 			name = it.Book.SeriesName
 			mine = append(mine, it)
 		}
@@ -608,6 +609,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Series not found")
 		return
 	}
+	id = seriesID(name) // replies use the classic id, whichever shape was asked for
 	sortItems(mine, "sequence", false, nil)
 	list := make([]obj, 0, len(mine))
 	for _, it := range mine {

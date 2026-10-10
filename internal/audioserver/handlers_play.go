@@ -273,7 +273,8 @@ func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSessio
 	if ls.EpisodeID != "" {
 		return false, errors.New("podcast episodes aren't served here")
 	}
-	if _, err := s.item(ctx, string(ls.LibraryItemID)); err != nil {
+	it, err := s.item(ctx, string(ls.LibraryItemID))
+	if err != nil {
 		return false, errors.New("item not found")
 	}
 	di := ls.DeviceInfo
@@ -282,7 +283,7 @@ func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSessio
 	}
 	client := firstNonEmpty(di.ClientName, fallback.ClientName, clientName(r))
 	d, err := s.listen.SyncOffline(ctx, userOf(r).ID, listening.OfflineSession{
-		ID: string(ls.ID), ItemKey: string(ls.LibraryItemID), DeviceID: di.DeviceID, Device: firstNonEmpty(di.name(), client),
+		ID: string(ls.ID), ItemKey: it.Key, DeviceID: di.DeviceID, Device: firstNonEmpty(di.name(), client),
 		Client: client, StartTime: float64(ls.StartTime), Position: float64(ls.CurrentTime), Duration: float64(ls.Duration),
 		Listened: float64(ls.TimeListening), StartedAt: int64(ls.StartedAt), UpdatedAt: int64(ls.UpdatedAt),
 	})
@@ -431,8 +432,8 @@ func (s *Server) handleBatchProgress(w http.ResponseWriter, r *http.Request) {
 		if b.LibraryItemID == "" {
 			continue
 		}
-		if _, err := s.item(r.Context(), b.LibraryItemID); err == nil {
-			_, _ = s.patchProgress(r.Context(), userOf(r).ID, b.LibraryItemID, b)
+		if it, err := s.item(r.Context(), b.LibraryItemID); err == nil {
+			_, _ = s.patchProgress(r.Context(), userOf(r).ID, it.Key, b)
 		}
 	}
 	writeOK(w)
