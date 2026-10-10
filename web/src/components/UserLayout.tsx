@@ -5,6 +5,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { PageSkeleton } from "./PageSkeleton";
 import { NotificationBell } from "./NotificationBell";
 import { BottomTabs } from "./BottomTabs";
+import { PushPromptHost } from "./PushPromptHost";
 import { useMe } from "../lib/me";
 import { signOut } from "../lib/session";
 import { useDocumentTitle } from "../lib/title";
@@ -66,6 +67,7 @@ export function UserLayout() {
                   <div className="truncate px-2.5 py-1.5 text-[12px] text-ink-dim" title={user?.username}>{user?.username || "Guest"}</div>
                   <div className="my-1 h-px" style={{ background: "var(--line)" }} />
                   <MenuLink to="/me" onClick={() => setMenu(false)}>Me &amp; notifications</MenuLink>
+                  <MenuLink to="/me#account" onClick={() => setMenu(false)}>Password &amp; devices</MenuLink>
                   <MenuLink to="/audiobooks" onClick={() => setMenu(false)}>Audiobook apps &amp; password</MenuLink>
                   <button onClick={signOut} className="flex min-h-[44px] w-full items-center rounded-lg px-2.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--reject)" }}>Sign out</button>
                 </div>
@@ -84,6 +86,8 @@ export function UserLayout() {
         </ErrorBoundary>
       </main>
       <BottomTabs items={nav.filter((n) => n.tab)} />
+      {/* "Get notified when it's ready?" once, right after a first request. */}
+      <PushPromptHost />
     </div>
   );
 }

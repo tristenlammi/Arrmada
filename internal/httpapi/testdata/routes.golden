@@ -13,6 +13,7 @@ DELETE /api/v1/insights/import/runs/{id}/rows admin -
 DELETE /api/v1/me/audio/devices/{family} user ext
 DELETE /api/v1/me/audio/password user ext
 DELETE /api/v1/me/plex/link user ext
+DELETE /api/v1/me/sessions/{id} user ext
 DELETE /api/v1/movies/{id} staff -
 DELETE /api/v1/movies/{id}/blocklist/{bid} staff -
 DELETE /api/v1/movies/{id}/file staff -
@@ -127,16 +128,19 @@ GET /api/v1/jobs/{id} staff -
 GET /api/v1/library/fit staff -
 GET /api/v1/library/fit/profiles staff -
 GET /api/v1/logs admin -
+GET /api/v1/me/account user ext
 GET /api/v1/me/apprise user ext
 GET /api/v1/me/audio user ext
 GET /api/v1/me/audio/history user ext
 GET /api/v1/me/audio/listening user ext
 GET /api/v1/me/books user ext
 GET /api/v1/me/notifications user ext
+GET /api/v1/me/notify-prefs user ext
 GET /api/v1/me/plex user ext
 GET /api/v1/me/plex/link/{id} user ext
 GET /api/v1/me/push/key user ext
 GET /api/v1/me/quota user ext
+GET /api/v1/me/sessions user ext
 GET /api/v1/media/series/{id}/seasons user ext
 GET /api/v1/media/{media}/{id} user ext
 GET /api/v1/movies staff -
@@ -271,10 +275,12 @@ POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
+POST /api/v1/me/password user ext
 POST /api/v1/me/plex/link user ext
 POST /api/v1/me/push/status user ext
 POST /api/v1/me/push/subscribe user ext
 POST /api/v1/me/push/unsubscribe user ext
+POST /api/v1/me/sessions/revoke-others user ext
 POST /api/v1/movies staff -
 POST /api/v1/movies/import staff -
 POST /api/v1/movies/scan staff -
@@ -355,6 +361,7 @@ POST /api/v1/system/tasks/{name}/run admin -
 POST /api/v1/users admin -
 POST /api/v1/users/{id}/block-plex admin -
 POST /api/v1/users/{id}/plex/merge admin -
+POST /api/v1/users/{id}/sessions/revoke admin -
 POST /api/v1/wanted/{kind}/{id}/search staff -
 PUT /api/v1/apikeys/{id} admin -
 PUT /api/v1/audioserver admin -
@@ -373,6 +380,7 @@ PUT /api/v1/insights/plex staff -
 PUT /api/v1/insights/plex/scan staff -
 PUT /api/v1/me/apprise user ext
 PUT /api/v1/me/audio/password user ext
+PUT /api/v1/me/notify-prefs user ext
 PUT /api/v1/movies/{id}/availability staff -
 PUT /api/v1/movies/{id}/monitor staff -
 PUT /api/v1/movies/{id}/profile staff -

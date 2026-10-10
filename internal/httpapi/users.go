@@ -203,7 +203,16 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		a.deps.Log.Info("users: sign-in changed", "user_id", id, "disabled", disabled)
 	}
 	if req.Password != nil && *req.Password != "" {
-		if err := a.deps.Auth.SetPassword(r.Context(), id, *req.Password); err != nil {
+		set := func() error { return a.deps.Auth.SetPassword(r.Context(), id, *req.Password) }
+		if me, ok := userFrom(r); ok && me.ID == id {
+			// Your own password from Edit user: every other session ends, but not the one
+			// you're using (it used to sign you out mid-save).
+			set = func() error {
+				_, err := a.deps.Auth.ChangePassword(r.Context(), id, *req.Password, sessionToken(r))
+				return err
+			}
+		}
+		if err := set(); err != nil {
 			if errors.Is(err, auth.ErrWeakPassword) {
 				a.writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 				return

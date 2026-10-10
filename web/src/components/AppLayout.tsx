@@ -6,6 +6,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { PageSkeleton } from "./PageSkeleton";
 import { RestartBanner } from "./RestartBanner";
 import { NotificationBell } from "./NotificationBell";
+import { PushPromptHost } from "./PushPromptHost";
 import { useDocumentTitle } from "../lib/title";
 import { prefetchStaffPages } from "../lib/prefetch";
 import { useAttention, useAttentionPoll } from "../lib/useAttention";
@@ -80,6 +81,7 @@ export function AppLayout() {
           {!wide && <div className="ml-auto"><NotificationBell /></div>}
         </div>
         <RestartBanner />
+        <PushPromptHost />
         <main className="min-w-0 flex-1 overflow-y-auto">
           {/* Keyed by path: a broken page shows its error card inside the shell, and
               navigating elsewhere clears it. */}

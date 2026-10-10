@@ -1,14 +1,13 @@
-import { Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, type UserNotification } from "../lib/api";
-import { lazyPage } from "../lib/lazyPage";
 import { refToPath } from "../lib/refLink";
 import { usePoll } from "../lib/usePoll";
 
-// The settings panel (push on this device, a personal Apprise link) loads when ⚙ is
-// first tapped, keeping lib/webpush out of the requester first load.
-const NotificationSettings = lazyPage(() => import("./NotificationSettings"), "NotificationSettings");
+// Where the bell's Settings button goes: the Me page's "Get notified" card, the one place
+// push and Apprise are set up.
+const SETTINGS = "/me#notifications";
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
 // watch — the quoted part is the title. Falls back to the whole body if nothing is
@@ -20,7 +19,7 @@ function searchTitleOf(n: UserNotification): string {
 
 // NotificationBell is everyone's inbox: a bell with an unread badge that opens a dropdown
 // of notifications (a request ready, approved or declined; staff also hear of new
-// requests), plus a place to set up push. Every layout mounts exactly one, in its top bar
+// requests), and a Settings button to the Me page, where push is set up. Every layout mounts exactly one, in its top bar
 // or, on a wide staff screen, the sidebar. Polls the unread count on an interval.
 //
 // placement "side": the bell sits in the sidebar, which scrolls and so would clip a
@@ -29,7 +28,6 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
   const [items, setItems] = useState<UserNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
-  const [settings, setSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -115,21 +113,18 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
         <span className="text-[13px] font-bold">Notifications</span>
         <div className="flex items-center gap-3 text-[11px]">
           {items.some((i) => !i.read) && <button onClick={markAll} style={{ color: "var(--accent)" }}>Mark all read</button>}
-          <button onClick={() => setSettings((s) => !s)} className="text-ink-faint hover:text-[var(--ink)]" aria-label="Notification settings">⚙</button>
+          <Link to={SETTINGS} onClick={() => setOpen(false)} className="font-medium text-ink-dim hover:text-[var(--ink)]">Settings</Link>
         </div>
       </div>
 
       {error && <div className="px-3.5 py-1.5 text-[11px] font-medium" style={{ color: "var(--reject)", borderBottom: "1px solid var(--line-soft)" }}>{error}</div>}
 
-      {settings && (
-        <Suspense fallback={<div className="px-3.5 py-2.5 text-[11px] text-ink-faint">Loading…</div>}>
-          <NotificationSettings />
-        </Suspense>
-      )}
-
       <div className="thin-scroll max-h-[360px] overflow-y-auto">
         {items.length === 0 ? (
-          <div className="px-3.5 py-8 text-center text-[12px] text-ink-faint">Nothing yet. When a request you made is ready, it’ll show up here.</div>
+          <div className="px-3.5 py-8 text-center text-[12px] text-ink-faint">
+            Nothing yet. When a request you made is ready, it’ll show up here.
+            <div className="mt-1.5"><Link to={SETTINGS} onClick={() => setOpen(false)} style={{ color: "var(--accent)" }}>Turn on notifications in Settings</Link></div>
+          </div>
         ) : items.map((n) => (
           <div key={n.id} style={{ borderTop: "1px solid var(--line-soft)", background: n.read ? "transparent" : "var(--accent-soft)" }}>
             <button onClick={() => clickItem(n)} className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left">

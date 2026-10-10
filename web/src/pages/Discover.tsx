@@ -13,6 +13,7 @@ import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
+import { announceRequested } from "../lib/pushPrompt";
 import { Button, IconButton, Sheet, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
@@ -85,6 +86,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
       const status = res.request.status;
       setRequested((m) => new Map(m).set(key, status));
       flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status, res.request.seasons));
+      announceRequested();
       return { subscribed: res.subscribed, status };
     } catch (e) {
       flash((e as Error).message, { tone: "error" });

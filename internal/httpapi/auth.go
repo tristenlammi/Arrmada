@@ -228,7 +228,8 @@ func (a *api) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) startSession(w http.ResponseWriter, r *http.Request, u *auth.User, code int) {
-	token, expires, err := a.deps.Auth.CreateSession(r.Context(), u.ID)
+	// The browser and a coarse network go with the session, for its owner's device list.
+	token, expires, err := a.deps.Auth.CreateSessionFrom(r.Context(), u.ID, auth.SessionClient{UserAgent: r.UserAgent(), IP: netutil.ClientIP(r)})
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not create session")
 		return

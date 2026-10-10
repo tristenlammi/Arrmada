@@ -36,9 +36,18 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/notifications", discover.notifications),
     { method: "POST", path: /^\/api\/v1\/me\/notifications\/\d+\/read$/, status: 204 },
     get("/api/v1/me/quota", sys.quota(p)),
-    // The Me page's notification settings: no push key (push stays hidden), no Apprise link.
+    // The Me page's notification settings: no push key (it says push isn't set up), no Apprise link.
     get("/api/v1/me/push/key", { key: "" }),
     get("/api/v1/me/apprise", { set: false, hint: "" }),
+    // Which notices reach your phones: everything, until changed.
+    get("/api/v1/me/notify-prefs", { approved: true, declined: true, ready: true, new_request: true }),
+    { method: "PUT", path: "/api/v1/me/notify-prefs", respond: ({ body }) => ({ approved: true, declined: true, ready: true, new_request: true, ...(body as object) }) },
+    // Me → Account: a password-holding account, signed in here and on one other device.
+    get("/api/v1/me/account", { password_set: true }),
+    get("/api/v1/me/sessions", { sessions: [
+      { id: "a1b2c3d4e5f6", created_at: new Date(NOW - 86_400_000).toISOString(), last_seen_at: new Date(NOW).toISOString(), device: "Chrome on Android", network: "local", current: true },
+      { id: "0f9e8d7c6b5a", created_at: new Date(NOW - 20 * 86_400_000).toISOString(), last_seen_at: new Date(NOW - 3 * 86_400_000).toISOString(), device: "Safari on Mac", network: "203.0.113.x", current: false },
+    ] }),
     // Your own Plex link (sidebar footer, Me page): not linked.
     get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 

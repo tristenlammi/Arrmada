@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
@@ -145,6 +146,46 @@ func (a *api) handleSetMyApprise(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeMyApprise(w, r, u)
+}
+
+// handleGetNotifyPrefs is the caller's own per-event choices (which notices reach their
+// phones and Apprise link), every known key filled in. Requesters only have use for the
+// first three; new_request is staff's "Someone requests something".
+func (a *api) handleGetNotifyPrefs(w http.ResponseWriter, r *http.Request) {
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "not signed in")
+		return
+	}
+	p, err := a.deps.Requests.NotifyPrefs(r.Context(), u.ID)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load your notification choices")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, p)
+}
+
+// handleSetNotifyPrefs changes the caller's own choices: a JSON object of key → bool.
+// Unknown keys are ignored (an older or newer page can't break it), and keys left out
+// keep their value.
+func (a *api) handleSetNotifyPrefs(w http.ResponseWriter, r *http.Request) {
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "not signed in")
+		return
+	}
+	// Not decodeJSON: that refuses unknown fields, and these are ignored by design.
+	var change map[string]bool
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&change); err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	p, err := a.deps.Requests.SetNotifyPrefs(r.Context(), u.ID, change)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not save your notification choices")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, p)
 }
 
 // resolver is what personal Apprise URLs are checked against: the system resolver, or

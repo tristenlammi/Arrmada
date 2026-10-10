@@ -1,16 +1,19 @@
-import { lazy, Suspense, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { lazyPage } from "../lib/lazyPage";
 import { useMe } from "../lib/me";
 import { signOut } from "../lib/session";
 import type { UserRole } from "../lib/api";
 
-// Push on this device and a personal Apprise link: the same panel as the bell's ⚙.
+// "Get notified": push on this device, then a personal Apprise link under Advanced. The
+// bell's Settings button lands here (/me#notifications).
 const NotificationSettings = lazyPage(() => import("../components/NotificationSettings"), "NotificationSettings");
 // Linking your Plex account (Discover's "Recommended for you", Sign in with Plex). Its own
 // chunk, with the Plex sign-in code behind it.
 const PlexAccountLink = lazy(() => import("../components/PlexAccountLink"));
+// Your password and your other devices (every role).
+const AccountSettings = lazyPage(() => import("../components/AccountSettings"), "AccountSettings");
 
 const ROLE: Record<UserRole, string> = {
   admin: "Admin",
@@ -20,18 +23,19 @@ const ROLE: Record<UserRole, string> = {
 };
 
 // Me is the one page about you: who you're signed in as, how Arrmada reaches you, and the
-// places that don't get a tab of their own. It's the phone's last tab and the avatar
-// menu's first item. Each part is its own MeSection, in this order, so later work slots in
-// without a second account page:
-//   Notifications — APP-13 turns it into the one 'Get notified' switch (Apprise under
-//                   Advanced), APP-15 adds per-event choices;
-//   Plex          — link your Plex account (PLEX-14); plex.tv's redirect comes back here;
-//   Account       — CFG-12 adds change password, SEC-15 the device list and 'sign out
-//                   other devices';
+// places that don't get a tab of their own. It's the phone's last tab, the avatar menu's
+// first item and the staff sidebar's name. Each part is its own MeSection, in this order,
+// so later work slots in without a second account page:
+//   Get notified — the one push switch for this device, with a plain answer when it can't
+//                  be on, then Apprise under Advanced;
+//   Plex         — link your Plex account (PLEX-14); plex.tv's redirect comes back here;
+//   Account      — change your password (or set a first one after Plex sign-in) and sign
+//                  out your other devices;
 //   More, Sign out.
 export function Me({ chrome = false }: { chrome?: boolean }) {
   const { user, external } = useMe();
   const name = user?.username || "Guest";
+  useHashScroll();
   return (
     <>
       {chrome && <PageHeader title="Me" crumb={null} />}
@@ -46,15 +50,21 @@ export function Me({ chrome = false }: { chrome?: boolean }) {
           </div>
         </div>
 
-        <MeSection id="notifications" title="Notifications">
-          <Suspense fallback={<div className="px-3.5 py-3 text-[12px] text-ink-faint">Loading…</div>}>
+        <MeSection id="notifications" title="Get notified">
+          <Suspense fallback={<Loading />}>
             <NotificationSettings />
           </Suspense>
         </MeSection>
 
         <MeSection id="plex" title="Plex">
-          <Suspense fallback={<div className="px-3.5 py-3 text-[12px] text-ink-faint">Loading…</div>}>
+          <Suspense fallback={<Loading />}>
             <PlexAccountLink variant="me" />
+          </Suspense>
+        </MeSection>
+
+        <MeSection id="account" title="Account">
+          <Suspense fallback={<Loading />}>
+            <AccountSettings />
           </Suspense>
         </MeSection>
 
@@ -73,6 +83,20 @@ export function Me({ chrome = false }: { chrome?: boolean }) {
       </div>
     </>
   );
+}
+
+function Loading() {
+  return <div className="px-3.5 py-3 text-[12px] text-ink-faint">Loading…</div>;
+}
+
+// useHashScroll brings /me#notifications (the bell's Settings button) to its section. The
+// router doesn't scroll to a hash, and the bell can send you here from /me itself.
+function useHashScroll() {
+  const { hash } = useLocation();
+  useEffect(() => {
+    const id = hash.slice(1);
+    if (id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+  }, [hash]);
 }
 
 // MeSection is one card on the Me page; id makes it linkable (/me#notifications).
