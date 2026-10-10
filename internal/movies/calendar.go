@@ -6,6 +6,7 @@ import "context"
 type UpcomingMovie struct {
 	ReleaseDate string `json:"release_date"`
 	ID          int64  `json:"id"`
+	TMDBID      int    `json:"tmdb_id"`
 	Title       string `json:"title"`
 	Year        int    `json:"year"`
 	PosterURL   string `json:"poster_url"`
@@ -32,7 +33,7 @@ func (s *Service) Upcoming(ctx context.Context, from, to string) ([]UpcomingMovi
 		rd = rd[:10] // guard against a time component
 		if rd >= from && rd <= to {
 			out = append(out, UpcomingMovie{
-				ReleaseDate: rd, ID: m.ID, Title: m.Title, Year: m.Year,
+				ReleaseDate: rd, ID: m.ID, TMDBID: m.TMDBID, Title: m.Title, Year: m.Year,
 				PosterURL: m.PosterURL, HasFile: m.HasFile, Monitored: m.Monitored,
 			})
 		}

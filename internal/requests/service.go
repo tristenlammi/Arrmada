@@ -249,6 +249,12 @@ func (s *Service) Detail(ctx context.Context, id, viewer int64, staff bool) (Req
 	return reqs[0], nil
 }
 
+// MediaKeysForUser is the movies and shows user uid asked for or follows (not declined
+// ones), keyed by MediaKey. The Calendar's 'My requests' filter.
+func (s *Service) MediaKeysForUser(ctx context.Context, uid int64) (map[string]bool, error) {
+	return s.repo.MediaKeysForUser(ctx, uid)
+}
+
 // Unsubscribe stops user uid following request id: no more notifications about it, and
 // it leaves their list. ErrNotFound when they didn't follow it.
 func (s *Service) Unsubscribe(ctx context.Context, id, uid int64) error {
