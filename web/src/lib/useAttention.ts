@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { api, SIGNED_OUT_EVENT, type Attention, type AttentionCounts } from "./api";
 import type { NavItem } from "./nav";
 import { usePoll } from "./usePoll";
@@ -40,6 +40,8 @@ function subscribe(fn: () => void) {
 /** The poller. Mount exactly once, in the staff layout. */
 export function useAttentionPoll() {
   usePoll(loadAttention, ATTENTION_POLL_MS);
+  // And the live line that asks again the moment the counts move (lib/attentionLive).
+  useEffect(() => { void import("./attentionLive").then((m) => m.startAttentionLive(), () => {}); }, []);
 }
 
 /** The latest Needs-you snapshot; undefined until the first answer. Never fetches itself. */

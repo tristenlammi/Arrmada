@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -262,6 +262,26 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 		u.Disabled = disabled != 0
 		u.AutoApprove = autoApprove != 0
 		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// StaffIDs returns the enabled managers and admins, oldest first: who hears that a new
+// request is waiting.
+func (s *Service) StaffIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM users WHERE disabled = 0 AND role IN (?, ?) ORDER BY id`, string(RoleManager), string(RoleAdmin))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }

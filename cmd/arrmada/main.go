@@ -656,6 +656,17 @@ func main() {
 		u, err := authSvc.UserByID(ctx, uid)
 		return err == nil && !u.Disabled && u.Role.AtLeast(auth.RoleManager)
 	})
+	// A new request waiting for approval reaches staff: the "New request" alert on the
+	// admin's connections (queued exactly once), and each manager's and admin's inbox and
+	// Web Push — skipping a push the admin's own "This device" connection already sends.
+	requestsSvc.SetStaffAlerts(requests.StaffAlerts{
+		Emit: func(ctx context.Context, key, dedupe string, data map[string]any) error {
+			_, err := notifySvc.EmitOnce(ctx, key, dedupe, data)
+			return err
+		},
+		Staff:          authSvc.StaffIDs,
+		PushedByAlerts: notifySvc.PushUsersFor,
+	})
 	// Book requests made before they remembered their library row are linked to it by
 	// title and author, so the ones whose book was re-matched to a new catalogue key
 	// stop showing "Searching" and get their "ready".

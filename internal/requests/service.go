@@ -47,6 +47,8 @@ type Service struct {
 	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
 	// attentionKick asks the Needs-you feed to refresh after a request changes (pending.go).
 	attentionKick atomic.Pointer[func()]
+	// staffAlerts tells staff a new request is waiting (staffalert.go).
+	staffAlerts StaffAlerts
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -347,8 +349,9 @@ func (s *Service) Create(ctx context.Context, in Request, opts CreateOptions) (c
 
 // announceCreated is where every new ask passes once it's stored: a fresh request
 // (pending, or approved by the requester's own auto-approve) or a declined title asked for
-// again. Today it tells open pages about a pending one; an approved one was announced by
-// Approve. A staff alert for new requests belongs here and nowhere else.
+// again. It tells open pages about a pending one and alerts staff that it's waiting (the
+// one place the "New request" alert is raised); an approved one was announced by Approve
+// and needs nobody's decision.
 func (s *Service) announceCreated(ctx context.Context, req Request, opts CreateOptions) {
 	if opts.Silent {
 		// Nobody is told, but the staff Needs-you count still moves (an import's pending rows).
@@ -359,6 +362,7 @@ func (s *Service) announceCreated(ctx context.Context, req Request, opts CreateO
 		return
 	}
 	s.publishUpdated(req, StatusPending, s.parties(ctx, req))
+	s.alertStaff(ctx, req)
 }
 
 // attachAndPublish is attachToExisting that tells open pages about it: the request is
