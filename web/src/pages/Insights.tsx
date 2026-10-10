@@ -5,7 +5,7 @@ import { LINKS } from "../lib/links";
 import { useTabParam } from "../lib/useTabParam";
 import { usePoll } from "../lib/usePoll";
 import { TabPanel, Tabs } from "../ui/Tabs";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
+import { api, type PlexConfig, type PlexStatus, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
 // Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
 // Users, Graphs, Reliability (buffering), and the Plex connection in Settings. Alerts used to
@@ -19,6 +19,44 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "reliability", label: "Reliability" },
   { key: "settings", label: "Settings" },
 ];
+// The tabs that read recorded plays: they only grow while monitoring is on, so they carry
+// the "monitoring is off" banner when it isn't.
+const RECORDED_TABS: Tab[] = ["history", "users", "graphs", "reliability"];
+
+// The header badge says what monitoring is doing, not just that a URL and token are saved:
+// Activity asks Plex directly and works either way, so a green "connected" used to hide
+// that nothing was being recorded.
+const BADGE: Record<PlexStatus, { label: string; color: string; soft: string }> = {
+  unconfigured: { label: "Not connected", color: "var(--avoid)", soft: "var(--avoid-soft)" },
+  off: { label: "Connected · not recording", color: "var(--avoid)", soft: "var(--avoid-soft)" },
+  recording: { label: "Recording", color: "var(--good)", soft: "var(--good-soft)" },
+  unreachable: { label: "Plex unreachable", color: "var(--reject)", soft: "var(--reject-soft)" },
+};
+
+function MonitoringBadge({ c }: { c: PlexConfig }) {
+  const b = BADGE[c.status] ?? BADGE.unconfigured;
+  const title = c.status === "unreachable" && c.last_error ? c.last_error
+    : c.status === "recording" && c.last_poll_at ? `Last answer from Plex ${fmtDate(c.last_poll_at)}` : undefined;
+  return (
+    <span title={title} className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${b.color}`, background: b.soft }}>
+      <span className="h-2 w-2 rounded-full" style={{ background: b.color }} />
+      {b.label}
+    </span>
+  );
+}
+
+// MonitoringOff sits above the recorded-plays tabs while Plex is connected but monitoring
+// is switched off, so an empty or stale History isn't mistaken for nobody watching.
+function MonitoringOff({ busy, onTurnOn }: { busy: boolean; onTurnOn: () => void }) {
+  return (
+    <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3.5 py-2 text-[12px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--ink)" }}>
+      <span>Monitoring is off — nothing new is recorded.</span>
+      <button onClick={onTurnOn} disabled={busy} className="rounded-lg px-3 py-1 text-[12px] font-semibold disabled:opacity-60" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+        {busy ? "Turning on…" : "Turn on"}
+      </button>
+    </div>
+  );
+}
 
 export function Insights() {
   // The old Notifications tab's address (bookmarks, earlier copy) opens Alerts instead.
@@ -37,10 +75,28 @@ function InsightsPage() {
   // wait, so a connected server doesn't flash the "imported history" notice or the
   // Connect state while its settings load.
   const [cfgDone, setCfgDone] = useState(false);
-  useEffect(() => {
-    api.insightsConfig().then(setCfg).catch(() => flash("Could not load Plex settings")).finally(() => setCfgDone(true));
-  }, []);
-  const connected = cfg?.token_set && !!cfg?.url;
+  // live is the same settings, re-read every 15 s for the monitoring status, so the badge
+  // turns "unreachable" (and back) on its own. It is kept apart from cfg, which feeds the
+  // settings form: a poll must not overwrite what someone is typing.
+  const [live, setLive] = useState<PlexConfig | null>(null);
+  usePoll(() => api.insightsConfig()
+    .then((c) => { setLive(c); setCfg((prev) => prev ?? c); })
+    .catch(() => { if (!cfgDone) flash("Could not load Plex settings"); })
+    .finally(() => setCfgDone(true)), 15000);
+  const saved = (c: PlexConfig) => { setCfg(c); setLive(c); };
+  const status = (live ?? cfg)?.status;
+  const connected = !!status && status !== "unconfigured";
+
+  // Turn on is the banner's one-click fix; it saves only the switch (the URL goes back
+  // unchanged because the endpoint always writes it).
+  const [turningOn, setTurningOn] = useState(false);
+  const turnOn = async () => {
+    const c = live ?? cfg;
+    if (!c) return;
+    setTurningOn(true);
+    try { saved(await api.updateInsightsConfig({ url: c.url, enabled: true })); flash("Monitoring is on"); }
+    catch (e) { flash((e as Error).message); } finally { setTurningOn(false); }
+  };
 
   return (
     <>
@@ -48,15 +104,14 @@ function InsightsPage() {
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
-            {cfg && !connected && <> <button onClick={() => setTab("settings")} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your Plex server in the Settings tab</button> to begin.</>}
+            {status === "unconfigured" && <> <Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your server</Link> to begin.</>}
           </p>
-          <span className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${connected ? "var(--good)" : "var(--avoid)"}`, background: connected ? "var(--good-soft)" : "var(--avoid-soft)" }}>
-            <span className="h-2 w-2 rounded-full" style={{ background: connected ? "var(--good)" : "var(--avoid)" }} />
-            {connected ? "Plex connected" : "Not connected"}
-          </span>
+          {status && <MonitoringBadge c={(live ?? cfg)!} />}
         </div>
 
         <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="insights" label="Insights sections" />
+
+        {status === "off" && RECORDED_TABS.includes(tab) && <MonitoringOff busy={turningOn} onTurnOn={turnOn} />}
 
         <TabPanel idPrefix="insights" value={tab}>
           {tab === "settings" ? (
@@ -65,7 +120,7 @@ function InsightsPage() {
               <Link to={LINKS.alerts} className="mb-3 block max-w-[640px] rounded-xl px-4 py-3 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--accent)" }}>
                 Alert settings moved to Settings → Alerts →
               </Link>
-              <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
+              <PlexSettings cfg={cfg} onSaved={saved} flash={flash} />
             </>
           ) : !cfgDone ? (
             <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading…</div>

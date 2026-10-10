@@ -43,7 +43,7 @@ func TestRealConversions(t *testing.T) {
 	mv := movies.NewService(db, nil, nil, lib, recycle, eventbus.New(log), log)
 	s := NewService(db, mv, nil, cfg, "ffmpeg", "ffprobe", scratch, recycle, log)
 	var watching atomic.Bool
-	s.SetWatching(watching.Load)
+	s.SetWatching(watching.Load, func() bool { return true })
 
 	ff := func(args ...string) {
 		t.Helper()

@@ -782,8 +782,9 @@ func main() {
 	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, bus, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
 	grp.Loop("insights: poller", insightsSvc.Run) // Plex watch-monitoring poller (records when enabled + configured)
-	// Convert pauses its encodes while someone is watching.
-	convertSvc.SetWatching(insightsSvc.Watching)
+	// Convert pauses its encodes while someone is watching — which it can only know while
+	// monitoring is on, so its settings page says so when it isn't.
+	convertSvc.SetWatching(insightsSvc.Watching, func() bool { return insightsSvc.MonitoringActive(runCtx) })
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
 	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
 	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.

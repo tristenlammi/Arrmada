@@ -37,7 +37,7 @@ type Settings struct {
 	// Read-only context for the page.
 	ServerTime    string `json:"server_time"` // the hours are read on this clock
 	ServerTZ      string `json:"server_tz"`
-	PlexWatching  bool   `json:"plex_watching_known"` // Insights is connected, so pausing can work
+	PlexWatching  bool   `json:"plex_watching_known"` // Plex monitoring is on, so pausing can work
 	CanPause      bool   `json:"can_pause"`           // running encodes can be frozen on this platform
 	HasGPU        bool   `json:"has_gpu"`             // a working hardware encoder exists
 	GPUDoesAV1    bool   `json:"gpu_does_av1"`
@@ -61,7 +61,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		ScratchDir: g.Get(ctx, keyScratchDir, ""), VaapiDevice: g.Get(ctx, keyVaapiDevice, ""),
 		CPUCores: cores, Workers: s.workerCount(ctx), ScanAt: g.Get(ctx, keyScanAt, defaultScanAt),
 		ServerTime: time.Now().Format("15:04"), ServerTZ: zone,
-		PlexWatching: s.watching.Load() != nil, CanPause: canSuspend,
+		PlexWatching: s.watchingKnown(), CanPause: canSuspend,
 		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, HDR10PlusTool: s.hdr10plusTool != "",
 	}
 }

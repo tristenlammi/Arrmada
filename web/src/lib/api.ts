@@ -1873,7 +1873,18 @@ export interface ConvertCompareStatus { running: boolean; key?: string; title?: 
 
 // Insights (Plex watch monitoring).
 export interface PlexLibrary { key: string; title: string; type: string }
-export interface PlexConfig { url: string; token_set: boolean; enabled: boolean; poll_seconds: number }
+// How Plex monitoring is actually going, worked out server-side from the poller's record:
+// unconfigured (no URL/token), off (saved but not recording), recording, or unreachable
+// (monitoring on, Plex not answering).
+export type PlexStatus = "unconfigured" | "off" | "recording" | "unreachable";
+export interface PlexConfig {
+  url: string; token_set: boolean; enabled: boolean; poll_seconds: number;
+  status: PlexStatus;
+  /** Unix seconds of Plex's last answer. */
+  last_poll_at?: number;
+  /** Why the last exchange with Plex failed, while it's failing. */
+  last_error?: string;
+}
 export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
 export interface GeoLocation { ip: string; local: boolean; city?: string; country?: string; country_code?: string; lat?: number; lon?: number }
 export interface StreamDetail { src: string; stream?: string }

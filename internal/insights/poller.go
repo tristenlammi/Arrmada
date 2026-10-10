@@ -57,8 +57,7 @@ func (s *Service) Run(ctx context.Context) {
 		start := time.Now()
 		interval := time.Duration(s.pollSeconds(ctx)) * time.Second
 		enabled := s.settings.GetBool(ctx, keyEnabled, false)
-		configured := s.settings.Get(ctx, keyURL, "") != "" && s.settings.Get(ctx, keyToken, "") != ""
-		if enabled && configured {
+		if enabled && s.configured(ctx) {
 			s.poll(ctx)
 		} else {
 			// Disabled or unconfigured: finalize live sessions now (first cycle only; s.live is

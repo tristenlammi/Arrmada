@@ -70,22 +70,39 @@ func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, bus *eve
 	return &Service{settings: set, geo: geo, repo: &repo{db: db}, bus: bus, log: log, live: map[string]*liveSession{}}
 }
 
-// Config is the connection config exposed to the UI (token is never returned in full).
+// Config is the connection config exposed to the UI (token is never returned in full), plus
+// how monitoring is actually going, so the page can say "not recording" or "unreachable"
+// instead of a green badge that only means a URL and token are saved.
 type Config struct {
 	URL         string `json:"url"`
 	TokenSet    bool   `json:"token_set"`
 	Enabled     bool   `json:"enabled"`
 	PollSeconds int    `json:"poll_seconds"`
+	Status      Status `json:"status"`
+	LastPollAt  int64  `json:"last_poll_at,omitempty"` // unix seconds of the last answer from Plex
+	LastError   string `json:"last_error,omitempty"`   // why the last exchange failed, while it's failing
 }
 
-// Config returns the current connection settings.
+// Config returns the current connection settings and monitoring status.
 func (s *Service) Config(ctx context.Context) Config {
-	return Config{
+	h := s.PollHealth(ctx)
+	c := Config{
 		URL:         s.settings.Get(ctx, keyURL, ""),
 		TokenSet:    s.settings.Get(ctx, keyToken, "") != "",
 		Enabled:     s.settings.GetBool(ctx, keyEnabled, false),
 		PollSeconds: s.pollSeconds(ctx),
+		Status:      h.Status,
+		LastError:   h.LastErr,
 	}
+	if !h.LastOKAt.IsZero() {
+		c.LastPollAt = h.LastOKAt.Unix()
+	}
+	return c
+}
+
+// configured reports whether there is a server to talk to: both a URL and a token.
+func (s *Service) configured(ctx context.Context) bool {
+	return s.settings.Get(ctx, keyURL, "") != "" && s.settings.Get(ctx, keyToken, "") != ""
 }
 
 func (s *Service) pollSeconds(ctx context.Context) int {
