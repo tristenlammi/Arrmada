@@ -18,4 +18,12 @@ export const accountApi = {
   /** Changes only the keys given. */
   setNotifyPrefs: (change: Partial<NotifyPrefs>) =>
     req<NotifyPrefs>("/api/v1/me/notify-prefs", { method: "PUT", body: JSON.stringify(change) }),
+
+  /** password_set: somebody knows a password for this account (false: Plex sign-in only). */
+  account: () => req<{ password_set: boolean }>("/api/v1/me/account"),
+  /** current is ignored when the account has no password yet. signed_out: other devices ended. */
+  changePassword: (current: string, next: string) =>
+    req<{ password_set: boolean; signed_out: number }>("/api/v1/me/password", { method: "POST", body: JSON.stringify({ current, new: next }) }),
+  /** Signs out every other browser; this one stays. */
+  signOutOthers: () => req<{ signed_out: number }>("/api/v1/me/sessions/revoke-others", { method: "POST" }),
 };

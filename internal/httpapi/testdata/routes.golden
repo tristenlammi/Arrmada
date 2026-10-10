@@ -127,6 +127,7 @@ GET /api/v1/jobs/{id} staff -
 GET /api/v1/library/fit staff -
 GET /api/v1/library/fit/profiles staff -
 GET /api/v1/logs admin -
+GET /api/v1/me/account user ext
 GET /api/v1/me/apprise user ext
 GET /api/v1/me/audio user ext
 GET /api/v1/me/audio/history user ext
@@ -272,10 +273,12 @@ POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
+POST /api/v1/me/password user ext
 POST /api/v1/me/plex/link user ext
 POST /api/v1/me/push/status user ext
 POST /api/v1/me/push/subscribe user ext
 POST /api/v1/me/push/unsubscribe user ext
+POST /api/v1/me/sessions/revoke-others user ext
 POST /api/v1/movies staff -
 POST /api/v1/movies/import staff -
 POST /api/v1/movies/scan staff -

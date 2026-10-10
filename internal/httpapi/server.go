@@ -254,6 +254,10 @@ func (a *api) registerRoutes(mux *router) {
 	// Which of your notices reach your phones and Apprise link (the inbox keeps them all).
 	mux.HandleFunc("GET /api/v1/me/notify-prefs", a.signedIn(a.handleGetNotifyPrefs).ext())
 	mux.HandleFunc("PUT /api/v1/me/notify-prefs", a.signedIn(a.handleSetNotifyPrefs).ext())
+	// Your own account (every role): password and your other devices.
+	mux.HandleFunc("GET /api/v1/me/account", a.signedIn(a.handleMyAccount).ext())
+	mux.HandleFunc("POST /api/v1/me/password", a.signedIn(a.handleChangeMyPassword).ext())
+	mux.HandleFunc("POST /api/v1/me/sessions/revoke-others", a.signedIn(a.handleRevokeMyOtherSessions).ext())
 
 	// User management (admin only).
 	mux.HandleFunc("GET /api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))

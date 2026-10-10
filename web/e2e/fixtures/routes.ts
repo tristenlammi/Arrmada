@@ -42,6 +42,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // Which notices reach your phones: everything, until changed.
     get("/api/v1/me/notify-prefs", { approved: true, declined: true, ready: true, new_request: true }),
     { method: "PUT", path: "/api/v1/me/notify-prefs", respond: ({ body }) => ({ approved: true, declined: true, ready: true, new_request: true, ...(body as object) }) },
+    // Me → Account: a password-holding account.
+    get("/api/v1/me/account", { password_set: true }),
     // Your own Plex link (sidebar footer, Me page): not linked.
     get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 

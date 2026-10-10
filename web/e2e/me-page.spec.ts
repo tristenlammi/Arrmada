@@ -284,3 +284,69 @@ test.describe("the push prompt on an iPhone outside the Home Screen app", () => 
     expect(await page.evaluate(() => localStorage.getItem("arrmada.pushPrompt"))).toBe("dismissed");
   });
 });
+
+// CFG-12: change your own password, sign out your other devices.
+const account = (page: Page) => page.getByRole("region", { name: "Account" });
+const fitsScreen = async (page: Page) => {
+  const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+  expect(w.doc, "page width").toBeLessThanOrEqual(w.viewport);
+};
+
+test.describe("account at 375px", () => {
+  test.use({ persona: "requester" });
+
+  test("changes the password with the current one, and says a wrong one is wrong", async ({ page, api }) => {
+    await override(page, api, [{ method: "POST", path: "/api/v1/me/password", body: { password_set: true, signed_out: 2 } }]);
+    // A wrong current password answers 400, as the server does (registered last, so first).
+    await page.route("**/api/v1/me/password", async (route) => {
+      const body = route.request().postDataJSON() as { current: string };
+      if (body.current !== "oldpassword") return route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ message: "Current password is wrong" }) });
+      return route.fallback();
+    });
+    await page.goto("/me#account");
+    await account(page).getByRole("button", { name: "Change" }).tap();
+    const form = account(page).getByRole("form", { name: "Change password" });
+    await form.getByLabel("Current password").fill("guess");
+    await form.getByLabel("New password", { exact: true }).fill("brandnewpass");
+    await form.getByLabel("New password again").fill("brandnewpass");
+    await fitsScreen(page);
+    await form.getByRole("button", { name: "Change password" }).tap();
+    await expect(form.getByRole("alert")).toHaveText("Current password is wrong");
+
+    await form.getByLabel("Current password").fill("oldpassword");
+    await form.getByRole("button", { name: "Change password" }).tap();
+    await expect(page.getByText("Password changed — 2 other devices were signed out")).toBeVisible();
+    await expect(form).toHaveCount(0);
+    expect(api.callsTo("POST", "/api/v1/me/password").slice(-1)[0]?.body).toEqual({ current: "oldpassword", new: "brandnewpass" });
+  });
+
+  test("a Plex-only account sets its first password without a current one", async ({ page, api }) => {
+    await override(page, api, [
+      { method: "GET", path: "/api/v1/me/account", body: { password_set: false } },
+      { method: "POST", path: "/api/v1/me/password", body: { password_set: true, signed_out: 0 } },
+    ]);
+    await page.goto("/me");
+    await expect(account(page).getByText("You sign in with Plex.", { exact: false })).toBeVisible();
+    await account(page).getByRole("button", { name: "Set a password" }).tap();
+    const form = account(page).getByRole("form", { name: "Set a password" });
+    await expect(form.getByLabel("Current password")).toHaveCount(0);
+    await form.getByLabel("New password", { exact: true }).fill("firstpassword");
+    await form.getByLabel("New password again").fill("firstpassword");
+    await form.getByRole("button", { name: "Set password" }).tap();
+    await expect(page.getByText("Password set")).toBeVisible();
+    expect(api.callsTo("POST", "/api/v1/me/password")[0].body).toEqual({ current: "", new: "firstpassword" });
+    await expect(account(page).getByRole("button", { name: "Change" })).toBeVisible();
+  });
+
+  test("sign out other devices asks first and keeps this one", async ({ page, api }) => {
+    await override(page, api, [{ method: "POST", path: "/api/v1/me/sessions/revoke-others", body: { signed_out: 3 } }]);
+    await page.goto("/me");
+    await account(page).getByRole("button", { name: "Sign out others" }).tap();
+    const dialog = page.getByRole("dialog", { name: "Sign out your other devices?" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Sign out others" }).tap();
+    await expect(page.getByText("Signed out of 3 other devices")).toBeVisible();
+    expect(api.callsTo("POST", "/api/v1/me/sessions/revoke-others")).toHaveLength(1);
+    await expect(page.getByRole("heading", { level: 1, name: "deckhand" })).toBeVisible();
+  });
+});

@@ -12,6 +12,8 @@ const NotificationSettings = lazyPage(() => import("../components/NotificationSe
 // Linking your Plex account (Discover's "Recommended for you", Sign in with Plex). Its own
 // chunk, with the Plex sign-in code behind it.
 const PlexAccountLink = lazy(() => import("../components/PlexAccountLink"));
+// Your password and your other devices (every role).
+const AccountSettings = lazyPage(() => import("../components/AccountSettings"), "AccountSettings");
 
 const ROLE: Record<UserRole, string> = {
   admin: "Admin",
@@ -27,6 +29,8 @@ const ROLE: Record<UserRole, string> = {
 //   Get notified — the one push switch for this device, with a plain answer when it can't
 //                  be on, then Apprise under Advanced;
 //   Plex         — link your Plex account (PLEX-14); plex.tv's redirect comes back here;
+//   Account      — change your password (or set a first one after Plex sign-in) and sign
+//                  out your other devices;
 //   More, Sign out.
 export function Me({ chrome = false }: { chrome?: boolean }) {
   const { user, external } = useMe();
@@ -55,6 +59,12 @@ export function Me({ chrome = false }: { chrome?: boolean }) {
         <MeSection id="plex" title="Plex">
           <Suspense fallback={<Loading />}>
             <PlexAccountLink variant="me" />
+          </Suspense>
+        </MeSection>
+
+        <MeSection id="account" title="Account">
+          <Suspense fallback={<Loading />}>
+            <AccountSettings />
           </Suspense>
         </MeSection>
 
