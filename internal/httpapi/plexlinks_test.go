@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/insights"
@@ -72,6 +73,12 @@ func TestPlexLinkRoute(t *testing.T) {
 
 func mediaDetailJSON(t *testing.T, a *api) map[string]any {
 	t.Helper()
+	// The response carries the title's card too; give it an empty library to read
+	// instead of real services.
+	if _, ok := enrichSnaps.Load(a); !ok {
+		enrichSnaps.Store(a, &enrichSnapEntry{at: time.Now().Add(time.Hour), snap: emptySnap()})
+		t.Cleanup(func() { enrichSnaps.Delete(a) })
+	}
 	r := httptest.NewRequest("GET", "/api/v1/media/movie/603", nil)
 	r.SetPathValue("media", "movie")
 	r.SetPathValue("id", "603")
