@@ -42,6 +42,10 @@ beforeEach(() => {
     ],
     formats: [],
   });
+  vi.spyOn(api, "seriesSeasons").mockResolvedValue([1, 2, 3, 4].map((n) => ({
+    number: n, name: `Season ${n}`, episode_count: 8, have: n === 1 ? 8 : 0, aired: 8,
+    state: n === 1 ? "in_library" as const : "requested" as const, requestable: false,
+  })));
 });
 afterEach(() => {
   cleanup();
@@ -106,5 +110,31 @@ describe("RequestSheet", () => {
     cleanup();
     open(rq({ media_type: "series", title: "Silo" }));
     expect(await screen.findByText(/All seasons/)).toBeTruthy();
+  });
+
+  // REQ-13: staff untick seasons to approve only part of a series request.
+  it("lets staff trim a series request to the seasons left ticked", async () => {
+    me.user = user(1, "admin");
+    const approve = vi.spyOn(api, "approveRequest").mockResolvedValue(rq({ status: "approved" }));
+    open(rq({ media_type: "series", title: "Silo", seasons: [2, 3, 4] }));
+    const s3 = await screen.findByRole("checkbox", { name: "Season 3" });
+    expect((s3 as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(s3);
+    fireEvent.click(screen.getByRole("button", { name: "Approve S2, S4" }));
+    await vi.waitFor(() => expect(approve).toHaveBeenCalledWith(5, { quality_profile: undefined, seasons: [2, 4] }));
+  });
+
+  it("approves a whole-show request as asked unless a season is unticked, and never with none", async () => {
+    me.user = user(1, "admin");
+    const approve = vi.spyOn(api, "approveRequest").mockResolvedValue(rq({ status: "approved" }));
+    open(rq({ media_type: "series", title: "Silo" }));
+    // The show's seasons, all ticked; the one on disk says so.
+    expect(await screen.findByRole("checkbox", { name: /Season 4/ })).toBeTruthy();
+    expect(screen.getByText("In library ✓")).toBeTruthy();
+    for (const n of [1, 2, 3, 4]) fireEvent.click(screen.getByRole("checkbox", { name: new RegExp(`Season ${n}`) }));
+    expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Season 4/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve S4" }));
+    await vi.waitFor(() => expect(approve).toHaveBeenCalledWith(5, { quality_profile: undefined, seasons: [4] }));
   });
 });

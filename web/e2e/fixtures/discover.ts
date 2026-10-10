@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, RequestList, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -40,6 +40,33 @@ export const cards: DiscoverCard[] = [
   card(10, "Long Haul"),
 ];
 
+// Shows for the season picker (REQ-13), kept out of the poster rows: a spec serves them
+// where it needs them. One nobody has, one held up to its newest season, and one with 35
+// seasons for the in-sheet scroll.
+export const newShow = card(12, "Tidewater");
+export const partlyOwnedShow = card(15, "The Lighthouse Keepers", { in_library: true, has_file: true });
+export const longShow = card(18, "Evergreen Tide");
+
+// seriesSeasons is GET /api/v1/media/series/{id}/seasons.
+export function seriesSeasons(tmdbID: number): { seasons: SeriesSeason[] } {
+  const s = (n: number, over: Partial<SeriesSeason> = {}): SeriesSeason => ({
+    number: n, name: `Season ${n}`, episode_count: 10, air_date: `${1990 + n}-04-01`, have: 0, aired: 10,
+    state: "requestable", requestable: true, ...over,
+  });
+  if (tmdbID === partlyOwnedShow.tmdb_id) {
+    return { seasons: [1, 2, 3].map((n) => s(n, { state: "in_library", have: 10, requestable: false })).concat(s(4)) };
+  }
+  if (tmdbID === longShow.tmdb_id) return { seasons: Array.from({ length: 35 }, (_, i) => s(i + 1)) };
+  // Anything else: two out, one asked for by someone else, one not out yet.
+  return {
+    seasons: [
+      s(1), s(2),
+      s(3, { state: "requested", requestable: false, request: { request_id: 40, status: "pending", mine: false } }),
+      s(4, { state: "unaired", aired: 0, air_date: "2027-02-01", requestable: false }),
+    ],
+  };
+}
+
 export const items = { items: cards };
 
 export const because: { rows: DiscoverRow[] } = {
@@ -55,7 +82,7 @@ export const providers: { providers: WatchProvider[] } = {
 };
 
 export function mediaDetail(media: string, tmdbID: number): MediaDetail {
-  const c = cards.find((x) => x.tmdb_id === tmdbID) ?? requestableCard;
+  const c = [...cards, newShow, partlyOwnedShow, longShow].find((x) => x.tmdb_id === tmdbID) ?? requestableCard;
   return {
     media_type: media === "series" ? "series" : "movie",
     tmdb_id: c.tmdb_id,
@@ -96,9 +123,26 @@ export const requests: RequestList = {
   ],
 };
 
+// A pending request for three seasons of a show, opened by its id (?id=7) but kept off the
+// lists so the Requests page's counts and bulk selection stay as they are.
+export const seasonsRequest: MediaRequest = {
+  id: 7, media_type: "series", tmdb_id: newShow.tmdb_id, title: newShow.title, year: newShow.year, poster_url: newShow.poster_url,
+  status: "pending", requested_by: 3, requested_by_name: "deckhand", relation: "owner", seasons: [1, 2, 3], available: false,
+  tracking: { stage: "pending" }, created_at: at, updated_at: at,
+};
+
 // requestDetail is GET /api/v1/requests/{id}: the listed request with that id.
 export function requestDetail(id: number): { request: MediaRequest; client_health: { ok: boolean } } {
-  return { request: requests.requests.find((r) => r.id === id) ?? requests.requests[0], client_health: { ok: true } };
+  const all = [...requests.requests, seasonsRequest];
+  return { request: all.find((r) => r.id === id) ?? requests.requests[0], client_health: { ok: true } };
+}
+
+// approved is POST /api/v1/requests/{id}/approve: the request, approved (trimmed to the
+// seasons sent, if any).
+export function approved(id: number, body: unknown): MediaRequest {
+  const r = requestDetail(id).request;
+  const seasons = ((body ?? {}) as { seasons?: number[] }).seasons;
+  return { ...r, status: "approved", tracking: { stage: "searching" }, ...(seasons ? { seasons } : {}) };
 }
 
 // bulk is POST /api/v1/requests/bulk: every id goes through.
@@ -109,11 +153,11 @@ export function bulk(body: unknown): { results: { id: number; ok: boolean }[] } 
 
 // created is what POST /api/v1/requests answers: a pending request for the card sent.
 export function created(p: PersonaInfo, body: unknown): { request: MediaRequest; subscribed: boolean } {
-  const b = (body ?? {}) as Partial<DiscoverCard>;
+  const b = (body ?? {}) as Partial<DiscoverCard> & { seasons?: number[] };
   return {
     subscribed: false,
     request: {
-      id: 99, media_type: b.media_type ?? "movie", tmdb_id: b.tmdb_id ?? 0, title: b.title ?? "", year: b.year ?? 0,
+      id: 99, media_type: b.media_type ?? "movie", tmdb_id: b.tmdb_id ?? 0, title: b.title ?? "", year: b.year ?? 0, seasons: b.seasons,
       status: p.user.auto_approve ? "approved" : "pending", requested_by: p.user.id, requested_by_name: p.user.username,
       available: false, created_at: at, updated_at: at,
     },
