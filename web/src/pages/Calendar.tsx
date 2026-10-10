@@ -1,17 +1,19 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type CalendarItem } from "../lib/api";
 import { AGENDA_WEEKS, agendaRange, dayLabel, groupByDate, itemHref, itemLine, itemStatus, monthCells, shortDay, ymd } from "../lib/calendar";
 import { posterThumb } from "../lib/img";
 import { isStaff, useMe } from "../lib/me";
+import { usePersisted } from "../lib/persist";
 import { pickTab } from "../lib/useTabParam";
 import { Button, ErrorState, Sheet, StaleBanner, StatusChip, type Tone } from "../ui";
 
 // Calendar — upcoming episodes and movie releases. Visible to everyone (staff and
 // requesters). Two views: a month grid (the desktop default) and an agenda list (the
 // default on a phone, where a 7-column month leaves each day ~45px wide). Items open their
-// title: staff go to the library page, requesters to the title's Discover page.
+// title: staff go to the library page, requesters to the title's Discover page. 'My
+// requests' narrows it to what the viewer asked for or follows (the requester's default).
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -29,6 +31,9 @@ function initialView(): View {
   } catch { /* storage blocked */ }
   try { return window.matchMedia(PHONE).matches ? "agenda" : "month"; } catch { return "month"; }
 }
+
+const SCOPES = ["mine", "all"] as const;
+type Scope = (typeof SCOPES)[number];
 
 const STATUS_TONE: Record<ReturnType<typeof itemStatus>, Tone> = { Downloaded: "good", Upcoming: "accent", Wanted: "avoid", Unmonitored: "faint" };
 
@@ -48,6 +53,11 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
     // Replace, not push: the view is a display choice, not a place Back should step through.
     setParams((p) => { const n = new URLSearchParams(p); n.set("view", v); return n; }, { replace: true });
   };
+
+  // 'My requests' or 'Everything': requesters start on their own, staff on everything.
+  // Remembered per person, so a shared tablet doesn't hand the kids the owner's choice.
+  const [scope, setScope] = usePersisted<Scope>(`calendar.scope.${user?.id ?? 0}`, staff ? "all" : "mine", SCOPES);
+  const mine = scope === "mine";
 
   const [cursor, setCursor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const cells = useMemo(() => monthCells(cursor), [cursor]);
@@ -84,6 +94,8 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
     if (view === "agenda" && loaded.start === range.start) return loaded.items.filter((it) => it.date <= range.end);
     return null;
   }, [loaded, rangeKey, view, range.start, range.end]);
+  // The filter is applied here rather than by the server (?mine=1), so switching is instant.
+  const shown = useMemo(() => (items && mine ? items.filter((it) => it.requested_by_me) : items), [items, mine]);
   const loading = loaded?.key !== rangeKey && failed?.key !== rangeKey;
   const error = failed?.key === rangeKey && loaded?.key !== rangeKey ? failed.message : null;
   const retry = () => { setFailed(null); setAttempt((n) => n + 1); };
@@ -115,6 +127,7 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
           <h2 className="m-0 text-[18px] font-bold">{view === "month" ? `${MONTHS[monthIdx]} ${cursor.getFullYear()}` : "Coming up"}</h2>
           {/* Wraps on a narrow phone rather than pushing the page sideways. */}
           <div className="flex flex-wrap items-center gap-2">
+            <Segmented label="Show" value={scope} onChange={setScope} options={[{ v: "mine", l: "My requests" }, { v: "all", l: "Everything" }]} />
             <Segmented label="View" value={view} onChange={setView} options={[{ v: "month", l: "Month" }, { v: "agenda", l: "Agenda" }]} />
             {view === "month" && (
               <>
@@ -135,15 +148,17 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
           <ErrorState what="the calendar" message={error} onRetry={retry} />
         ) : view === "month" ? (
           <>
-            <MonthGrid cells={cells} monthIdx={monthIdx} todayStr={todayStr} items={items ?? []} staff={staff} onMore={setDaySheet} />
+            <MonthGrid cells={cells} monthIdx={monthIdx} todayStr={todayStr} items={shown ?? []} staff={staff} onMore={setDaySheet} />
             {loading && <div className="mt-3 text-center text-[11.5px] text-ink-faint">Loading…</div>}
-            {!loading && items?.length === 0 && <div className="mt-4 rounded-xl p-8 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>Nothing scheduled this month. Upcoming episodes and movie releases from your library appear here.</div>}
+            {!loading && shown?.length === 0 && (mine
+              ? <MineEmpty onShowAll={() => setScope("all")} />
+              : <div className="mt-4 rounded-xl p-8 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>Nothing scheduled this month. Upcoming episodes and movie releases from your library appear here.</div>)}
           </>
         ) : (
           <AgendaList
-            items={items} today={today} end={range.end} staff={staff} stickyTop={chrome ? headH : 0}
+            items={shown} today={today} end={range.end} staff={staff} stickyTop={chrome ? headH : 0}
             loadingMore={loading && !!items} onMore={() => (error ? retry() : setMore((n) => n + 1))}
-            error={error}
+            error={error} markMine={!mine} empty={mine ? <MineEmpty onShowAll={() => setScope("all")} /> : null}
           />
         )}
       </div>
@@ -151,13 +166,24 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
       {daySheet && (
         <Sheet onClose={() => setDaySheet(null)} title={dayLabel(daySheet, today)} size="md">
           <div className="px-3 pb-4 sm:px-0 sm:pb-0">
-            {groupByDate(items ?? []).find((g) => g.date === daySheet)?.items.map((it, i) => (
-              <AgendaRow key={i} it={it} staff={staff} todayStr={todayStr} replace />
+            {groupByDate(shown ?? []).find((g) => g.date === daySheet)?.items.map((it, i) => (
+              <AgendaRow key={i} it={it} staff={staff} todayStr={todayStr} markMine={!mine} replace />
             ))}
           </div>
         </Sheet>
       )}
     </>
+  );
+}
+
+// MineEmpty is 'My requests' with nothing in the window: say so plainly, and offer the
+// whole schedule rather than a blank page that looks broken.
+function MineEmpty({ onShowAll }: { onShowAll: () => void }) {
+  return (
+    <div className="mt-4 rounded-xl p-6 text-center text-[12.5px] text-ink-dim" style={{ border: "1px dashed var(--line)" }}>
+      <p className="m-0">Nothing you asked for is airing in this window.</p>
+      <Button className="mt-3" onClick={onShowAll}>Show everything</Button>
+    </div>
   );
 }
 
@@ -246,8 +272,9 @@ function DayItem({ it, staff }: { it: CalendarItem; staff: boolean }) {
 
 // AgendaList is the phone's calendar: one section per day that has something (and always
 // Today, so there's somewhere to land), sticky date headers, opening scrolled to Today.
-function AgendaList({ items, today, end, staff, stickyTop, loadingMore, onMore, error }: {
-  items: CalendarItem[] | null; today: Date; end: string; staff: boolean; stickyTop: number; loadingMore: boolean; onMore: () => void; error: string | null;
+function AgendaList({ items, today, end, staff, stickyTop, loadingMore, onMore, error, markMine, empty }: {
+  items: CalendarItem[] | null; today: Date; end: string; staff: boolean; stickyTop: number; loadingMore: boolean; onMore: () => void;
+  error: string | null; markMine: boolean; empty: ReactNode;
 }) {
   const todayStr = ymd(today);
   const days = useMemo(() => {
@@ -283,17 +310,17 @@ function AgendaList({ items, today, end, staff, stickyTop, loadingMore, onMore, 
             <div className="px-2 pb-3 text-[12px] text-ink-faint">Nothing today.</div>
           ) : (
             <div className="mb-2 flex flex-col">
-              {g.items.map((it, i) => <AgendaRow key={i} it={it} staff={staff} todayStr={todayStr} />)}
+              {g.items.map((it, i) => <AgendaRow key={i} it={it} staff={staff} todayStr={todayStr} markMine={markMine} />)}
             </div>
           )}
         </section>
         );
       })}
-      {items.length === 0 && (
+      {items.length === 0 && (empty ?? (
         <div className="mt-2 rounded-xl p-6 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>
           Nothing scheduled through {untilLabel}. Upcoming episodes and movie releases from the library appear here.
         </div>
-      )}
+      ))}
       {error && <div className="mt-3"><StaleBanner message={error} onRetry={onMore} /></div>}
       <div className="mt-4 flex justify-center">
         <Button onClick={onMore} busy={loadingMore} busyLabel="Loading…">Show {AGENDA_WEEKS} more weeks</Button>
@@ -304,7 +331,9 @@ function AgendaList({ items, today, end, staff, stickyTop, loadingMore, onMore, 
 
 // AgendaRow is one item as a 44px+ tappable row: a small poster, the title, 'S02E05 ·
 // Episode name' or 'Movie · 2026', and where it stands. Shared by the agenda and the day sheet.
-function AgendaRow({ it, staff, todayStr, replace }: { it: CalendarItem; staff: boolean; todayStr: string; replace?: boolean }) {
+// markMine adds 'You asked for this' under the title (in 'Everything', where it tells
+// the viewer's titles apart; in 'My requests' every row would say it).
+function AgendaRow({ it, staff, todayStr, markMine, replace }: { it: CalendarItem; staff: boolean; todayStr: string; markMine?: boolean; replace?: boolean }) {
   const status = itemStatus(it, todayStr);
   const href = itemHref(it, staff);
   const body = (
@@ -315,6 +344,7 @@ function AgendaRow({ it, staff, todayStr, replace }: { it: CalendarItem; staff: 
       <div className="min-w-0 flex-1">
         <div className="truncate text-[13px] font-semibold" style={{ color: "var(--ink)" }}>{it.title}</div>
         <div className="truncate text-[11.5px] text-ink-dim">{itemLine(it)}</div>
+        {markMine && it.requested_by_me && <StatusChip tone="accent" size="xs" className="mt-0.5 inline-block">You asked for this</StatusChip>}
       </div>
       <StatusChip tone={STATUS_TONE[status]} className="flex-none">{status === "Downloaded" ? "✓ Downloaded" : status}</StatusChip>
     </>

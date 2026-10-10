@@ -570,6 +570,8 @@ export interface CalendarItem {
   date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean;
   // The title's TMDB id and kind open its Discover page (APP-16); the episode's numbers and name.
   tmdb_id?: number; media_type?: "movie" | "series"; year?: number; season?: number; episode?: number; episode_title?: string;
+  // The viewer asked for this title or follows a request for it (APP-17).
+  requested_by_me?: boolean;
 }
 
 export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }

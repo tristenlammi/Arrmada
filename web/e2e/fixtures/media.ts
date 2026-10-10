@@ -23,6 +23,7 @@ export const dashboard: DashboardData = {
 // The Calendar's library schedule. day(0) is "today" in the browser. Busy day(5) has five
 // items, so the month grid shows three and a '+2 more' button. Items carry the TMDB ids of
 // Discover's fixture titles, so a requester's tap opens a title the fixtures know.
+// requested_by_me marks what the requester persona owns or follows (Saltwind, Undertow).
 const ep = (offset: number, ref: number, tmdb: number, title: string, season: number, episode: number, name: string, over: Partial<CalendarItem> = {}): CalendarItem => ({
   date: day(offset), type: "episode", title, subtitle: `S${season} · E${episode} · ${name}`, poster_url: poster(ref), ref_id: ref,
   has_file: false, monitored: true, tmdb_id: tmdb, media_type: "series", season, episode, episode_title: name, ...over,
@@ -32,11 +33,11 @@ const mv = (offset: number, ref: number, tmdb: number, title: string, over: Part
   has_file: false, monitored: true, tmdb_id: tmdb, media_type: "movie", year: 2026, ...over,
 });
 export const calendarItems: CalendarItem[] = [
-  ep(0, 9, 1009, "Undertow", 1, 3, "Rip Current"),
+  ep(0, 9, 1009, "Undertow", 1, 3, "Rip Current", { requested_by_me: true }),
   mv(0, 2, 1002, "Lanterns Over the Northern Sea and Other Very Long Titles"),
-  ep(3, 9, 1009, "Undertow", 1, 4, "Slack Water"),
+  ep(3, 9, 1009, "Undertow", 1, 4, "Slack Water", { requested_by_me: true }),
   mv(-2, 7, 1007, "The Cartographer", { has_file: true }),
-  ep(5, 3, 1003, "Saltwind", 2, 1, "New Moorings"),
+  ep(5, 3, 1003, "Saltwind", 2, 1, "New Moorings", { requested_by_me: true }),
   ep(5, 6, 1006, "Anchor Point", 1, 8, "Ballast"),
   ep(5, 12, 1012, "Tidewater", 3, 2, "Neap"),
   ep(5, 15, 1015, "The Lighthouse Keepers", 4, 9, "Fog Signal", { monitored: false }),

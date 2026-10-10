@@ -530,6 +530,36 @@ type Follower struct {
 	Name string `json:"name"`
 }
 
+// MediaKeysForUser is the movies and shows a user asked for or follows, as
+// "movie:<tmdb>" / "series:<tmdb>" keys. Declined requests don't count: the user was
+// told no, so it isn't theirs to look forward to.
+func (r *Repo) MediaKeysForUser(ctx context.Context, userID int64) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT media_type, tmdb_id FROM requests
+		WHERE media_type IN ('movie', 'series') AND tmdb_id > 0 AND status <> ?
+		  AND (requested_by = ? OR id IN (SELECT request_id FROM request_subscribers WHERE user_id = ?))`,
+		StatusDeclined, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var media string
+		var tmdb int
+		if err := rows.Scan(&media, &tmdb); err != nil {
+			return nil, err
+		}
+		out[MediaKey(media, tmdb)] = true
+	}
+	return out, rows.Err()
+}
+
+// MediaKey is the key MediaKeysForUser returns for a title: "movie:603", "series:1399".
+func MediaKey(mediaType string, tmdbID int) string {
+	return fmt.Sprintf("%s:%d", mediaType, tmdbID)
+}
+
 // Subscribers lists the extra users attached to a request.
 func (r *Repo) Subscribers(ctx context.Context, requestID int64) ([]Subscriber, error) {
 	rows, err := r.db.QueryContext(ctx,

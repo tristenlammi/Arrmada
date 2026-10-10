@@ -5,6 +5,8 @@ import { calendarItems } from "./fixtures/media";
 // APP-16: the Calendar on a phone. It opens as an agenda with readable, tappable rows;
 // the month grid's '+N more' opens the whole day in a sheet that Back closes; and paging
 // months quickly never shows an older month's answer.
+// APP-17: 'My requests' (what you asked for or follow) is a requester's default; staff
+// open on everything.
 
 async function open(page: Page, path: string, api: MockedApi) {
   await page.goto(path);
@@ -13,6 +15,7 @@ async function open(page: Page, path: string, api: MockedApi) {
 }
 
 const row = (page: Page, title: string) => page.getByRole("link").filter({ hasText: title });
+const scope = (page: Page, name: "My requests" | "Everything") => page.getByRole("group", { name: "Show" }).getByRole("button", { name });
 
 test.describe("requester at 375px", () => {
   test.use({ persona: "requester" });
@@ -24,6 +27,7 @@ test.describe("requester at 375px", () => {
     await expect(today).toBeInViewport();
     // The episode's number and name are on the row itself, not in a tooltip.
     await expect(today.getByText("S01E03 · Rip Current")).toBeVisible();
+    await scope(page, "Everything").click();
     await expect(today.getByText("Movie · 2026")).toBeVisible();
     await expect(page.getByRole("region", { name: "Tomorrow" })).toHaveCount(0); // nothing tomorrow
     // Two days before today is outside the agenda's window.
@@ -44,6 +48,7 @@ test.describe("requester at 375px", () => {
 
   test("'+2 more' in the month grid opens the whole day, and Back closes it", async ({ page, api }) => {
     await open(page, "/calendar", api);
+    await scope(page, "Everything").click();
     await page.getByRole("button", { name: "Month", exact: true }).click();
     await expect(page).toHaveURL(/\?view=month$/);
     await page.getByRole("button", { name: /^\+2 more on / }).click();
@@ -88,7 +93,7 @@ test.describe("requester at 375px", () => {
       const a = answers[start];
       if (!a) return route.fallback(); // October: the normal fixture
       await new Promise((r) => setTimeout(r, a.delay));
-      const items = [{ date: "2026-12-10", type: "movie", title: a.title, subtitle: "", ref_id: 1, has_file: false, monitored: true, tmdb_id: 1004, media_type: "movie" }];
+      const items = [{ date: "2026-12-10", type: "movie", title: a.title, subtitle: "", ref_id: 1, has_file: false, monitored: true, tmdb_id: 1004, media_type: "movie", requested_by_me: true }];
       try {
         await route.fulfill({ contentType: "application/json", body: JSON.stringify({ start, end: url.searchParams.get("end"), items }) });
       } catch { /* the page gave up on it, which is the point */ }
@@ -109,8 +114,52 @@ test.describe("requester at 375px", () => {
   });
 });
 
+test.describe("requester's 'My requests' at 375px", () => {
+  test.use({ persona: "requester" });
+
+  test("is the default, shows only what they asked for, and switches to everything", async ({ page, api }) => {
+    await open(page, "/calendar", api);
+    await expect(scope(page, "My requests")).toHaveAttribute("aria-pressed", "true");
+    await expect(row(page, "Rip Current")).toBeVisible();
+    await expect(row(page, "New Moorings")).toBeVisible();
+    // Someone else's titles stay out.
+    await expect(row(page, "Lanterns Over")).toHaveCount(0);
+    await expect(row(page, "Ballast")).toHaveCount(0);
+    // Every row here is theirs, so none needs the chip.
+    await expect(page.getByText("You asked for this")).toHaveCount(0);
+
+    await scope(page, "Everything").click();
+    await expect(row(page, "Lanterns Over")).toBeVisible();
+    // In everything, their own titles are marked.
+    await expect(row(page, "Rip Current").getByText("You asked for this")).toBeVisible();
+    await expect(row(page, "Lanterns Over").getByText("You asked for this")).toHaveCount(0);
+
+    // The choice is remembered.
+    await open(page, "/calendar", api);
+    await expect(scope(page, "Everything")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("says so when nothing they asked for is on, and offers everything", async ({ page, api }) => {
+    await open(page, "/calendar?view=month", api);
+    await page.getByRole("button", { name: "Next month" }).click();
+    await expect(page.getByRole("heading", { name: "November 2026" })).toBeVisible();
+    await expect(page.getByText("Nothing you asked for is airing in this window.")).toBeVisible();
+    const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }));
+    expect(w.doc).toBeLessThanOrEqual(w.viewport);
+    await page.getByRole("button", { name: "Show everything" }).click();
+    await expect(scope(page, "Everything")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("link", { name: /Iron Tide/ })).toBeVisible();
+  });
+});
+
 test.describe("staff at 375px", () => {
   test.use({ persona: "admin" });
+
+  test("opens on everything", async ({ page, api }) => {
+    await open(page, "/calendar", api);
+    await expect(scope(page, "Everything")).toHaveAttribute("aria-pressed", "true");
+    await expect(row(page, "Lanterns Over")).toBeVisible();
+  });
 
   test("rows go to the library page", async ({ page, api }) => {
     await open(page, "/calendar", api);

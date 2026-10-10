@@ -97,3 +97,64 @@ func TestCalendarIncludesTMDBID(t *testing.T) {
 		t.Errorf("an item without a TMDB id: %+v", b.Items)
 	}
 }
+
+// 'My requests' is what the viewer asked for or follows: never someone else's request,
+// and never one that was declined. Every item says whether it's the viewer's own.
+func TestCalendarMineFilter(t *testing.T) {
+	s := calendarServer(t)
+	kid, kidCookie := s.user(t, "kid@example.com", auth.RoleRequester)
+	bob, bobCookie := s.user(t, "bob@example.com", auth.RoleRequester)
+	seedCalendar(t, s)
+	add := func(media string, tmdb int, status string, by int64) int64 {
+		t.Helper()
+		res, err := s.st.DB().Exec(`INSERT INTO requests (media_type, tmdb_id, title, status, requested_by, requested_by_name)
+			VALUES (?, ?, 'x', ?, ?, 'someone')`, media, tmdb, status, by)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return id
+	}
+	add("movie", 601, "approved", kid.ID)           // kid's own
+	shared := add("series", 501, "pending", bob.ID) // bob's, kid follows it
+	add("movie", 602, "approved", bob.ID)           // bob's alone
+	add("series", 502, "declined", kid.ID)          // kid's, declined
+	if _, err := s.st.DB().Exec(`INSERT INTO request_subscribers (request_id, user_id, user_name) VALUES (?, ?, ?)`, shared, kid.ID, kid.Username); err != nil {
+		t.Fatal(err)
+	}
+
+	tmdbs := func(items []CalendarItem) map[int]bool {
+		m := map[int]bool{}
+		for _, it := range items {
+			m[it.TMDBID] = true
+		}
+		return m
+	}
+	const window = "/api/v1/calendar?start=2026-10-01&end=2026-10-31"
+
+	mine := getCalendar(t, s, window+"&mine=1", kidCookie)
+	if got := tmdbs(mine.Items); len(got) != 2 || !got[601] || !got[501] {
+		t.Errorf("kid's 'My requests' = %v, want their own movie (601) and the show they follow (501)", got)
+	}
+	for _, it := range mine.Items {
+		if !it.RequestedByMe {
+			t.Errorf("a 'mine' item not marked as the viewer's: %+v", it)
+		}
+	}
+
+	all := getCalendar(t, s, window, kidCookie)
+	if len(all.Items) != 4 {
+		t.Fatalf("everything = %d items, want all 4", len(all.Items))
+	}
+	for _, it := range all.Items {
+		want := it.TMDBID == 601 || it.TMDBID == 501
+		if it.RequestedByMe != want {
+			t.Errorf("kid: %s (%d) requested_by_me = %v, want %v", it.Title, it.TMDBID, it.RequestedByMe, want)
+		}
+	}
+
+	// Bob's own view is about bob: his two requests, not the kid's.
+	if got := tmdbs(getCalendar(t, s, window+"&mine=1", bobCookie).Items); len(got) != 2 || !got[501] || !got[602] {
+		t.Errorf("bob's 'My requests' = %v, want 501 and 602", got)
+	}
+}

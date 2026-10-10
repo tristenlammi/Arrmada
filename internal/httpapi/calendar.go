@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
 // CalendarItem is one dated entry (episode or movie) in the Calendar.
@@ -24,10 +26,14 @@ type CalendarItem struct {
 	Season       int    `json:"season,omitempty"`
 	Episode      int    `json:"episode,omitempty"`
 	EpisodeTitle string `json:"episode_title,omitempty"`
+	// RequestedByMe: the viewer asked for this title or follows a request for it (and it
+	// wasn't declined). Only ever about the viewer's own requests.
+	RequestedByMe bool `json:"requested_by_me"`
 }
 
 // handleCalendar returns upcoming episodes + movie releases in a date window. Defaults to a
-// window around today when start/end aren't given. Available to any signed-in user.
+// window around today when start/end aren't given. Available to any signed-in user. Each
+// item says whether the viewer requested it; ?mine=1 keeps only those.
 func (a *api) handleCalendar(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	start := q.Get("start")
@@ -42,6 +48,12 @@ func (a *api) handleCalendar(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	items := a.calendarItems(ctx, start, end)
+	mine := q.Get("mine") == "1"
+	if u, ok := userFrom(r); ok && u != nil {
+		items = a.markRequestedBy(ctx, items, u.ID, mine)
+	} else if mine {
+		items = []CalendarItem{}
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "start": start, "end": end})
 }
 
@@ -77,6 +89,29 @@ func (a *api) calendarItems(ctx context.Context, start, end string) []CalendarIt
 		}
 	}
 	return items
+}
+
+// markRequestedBy sets RequestedByMe on the items user uid asked for or follows, and with
+// only set drops the rest. If the requests can't be read, 'mine' is empty rather than the
+// whole library passed off as theirs.
+func (a *api) markRequestedBy(ctx context.Context, items []CalendarItem, uid int64, only bool) []CalendarItem {
+	var keys map[string]bool
+	if a.deps.Requests != nil {
+		k, err := a.deps.Requests.MediaKeysForUser(ctx, uid)
+		if err != nil {
+			a.deps.Log.Warn("calendar: reading the viewer's requests failed", "err", err)
+		}
+		keys = k
+	}
+	out := items[:0]
+	for _, it := range items {
+		it.RequestedByMe = keys[requests.MediaKey(it.MediaType, it.TMDBID)]
+		if only && !it.RequestedByMe {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 func validDate(s string) bool {
