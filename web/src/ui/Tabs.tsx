@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 export interface TabItem<T extends string> {
   key: T;
@@ -23,6 +23,14 @@ export function rovingTarget(key: string, index: number, count: number): number 
     default:
       return null;
   }
+}
+
+// scrollDelta is how far a sideways-scrolling bar must move so a tab is fully in view:
+// negative to reveal it on the left, positive on the right, 0 when it already shows.
+export function scrollDelta(row: { left: number; right: number }, tab: { left: number; right: number }): number {
+  if (tab.left < row.left) return tab.left - row.left;
+  if (tab.right > row.right) return tab.right - row.right;
+  return 0;
 }
 
 // tabIds ties a tab to its panel for screen readers (aria-controls / aria-labelledby).
@@ -55,8 +63,19 @@ export function Tabs<T extends string>({
   className?: string;
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const bar = useRef<HTMLDivElement | null>(null);
   const current = tabs.findIndex((t) => t.key === value);
   const focusable = current >= 0 ? current : 0;
+
+  // On a phone the bar scrolls sideways; a deep link or Back to a far tab would leave the
+  // active one out of sight. Scroll the bar itself (never the page) to bring it in.
+  useEffect(() => {
+    const el = refs.current[current];
+    const row = bar.current;
+    if (!el || !row) return;
+    const delta = scrollDelta(row.getBoundingClientRect(), el.getBoundingClientRect());
+    if (delta !== 0) row.scrollLeft += delta > 0 ? Math.ceil(delta) : Math.floor(delta); // whole pixels, or a sliver stays hidden
+  }, [current]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     const to = rovingTarget(e.key, i, tabs.length);
@@ -68,6 +87,7 @@ export function Tabs<T extends string>({
 
   return (
     <div
+      ref={bar}
       role="tablist"
       aria-label={label}
       className={`thin-scroll flex min-w-0 gap-1 overflow-x-auto overflow-y-hidden ${className}`}

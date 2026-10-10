@@ -9,20 +9,20 @@ import { TabPanel, Tabs } from "../ui/Tabs";
 import { api, type PlexConfig, type PlexStatus, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
 // Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
-// Users, Graphs, Reliability (buffering), and the Plex connection in Settings. Alerts used to
+// People, Graphs, Reliability (buffering), and the Plex connection in Settings. Alerts used to
 // be a tab here; they live in Settings → Alerts now.
-type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "settings";
+type Tab = "activity" | "history" | "people" | "graphs" | "reliability" | "settings";
 const TABS: { key: Tab; label: string }[] = [
   { key: "activity", label: "Activity" },
   { key: "history", label: "History" },
-  { key: "users", label: "Users" },
+  { key: "people", label: "People" },
   { key: "graphs", label: "Graphs" },
   { key: "reliability", label: "Reliability" },
   { key: "settings", label: "Settings" },
 ];
 // The tabs that read recorded plays: they only grow while monitoring is on, so they carry
 // the "monitoring is off" banner when it isn't.
-const RECORDED_TABS: Tab[] = ["history", "users", "graphs", "reliability"];
+const RECORDED_TABS: Tab[] = ["history", "people", "graphs", "reliability"];
 
 // The header badge says what monitoring is doing, not just that a URL and token are saved:
 // Activity asks Plex directly and works either way, so a green "connected" used to hide
@@ -67,6 +67,8 @@ export function Insights() {
   // The old Notifications tab's address (bookmarks, earlier copy) opens Alerts instead.
   const [params] = useSearchParams();
   if (params.get("tab") === "notifications") return <Navigate to={LINKS.alerts} replace />;
+  // Users was renamed People; old links keep working.
+  if (params.get("tab") === "users") return <Navigate to="/insights?tab=people" replace />;
   return <InsightsPage />;
 }
 
@@ -134,7 +136,7 @@ function InsightsPage() {
             <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
           ) : tab === "history" ? (
             <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
-          ) : tab === "users" ? (
+          ) : tab === "people" ? (
             <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
           ) : tab === "graphs" ? (
             <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
@@ -257,7 +259,7 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
         {streams.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No active streams.</div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(360px, 100%), 1fr))" }}>
             {streams.map((s) => <StreamCard key={s.session_key} s={s} offsetMs={liveOffset(s)} onOpen={() => setDetail(s)} />)}
           </div>
         )}
@@ -316,7 +318,7 @@ function HomeExtras({ live }: { live: boolean }) {
         {!hasStats ? (
           <div className="rounded-xl p-6 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No watch data yet — statistics build up as people stream.</div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(300px, 100%), 1fr))" }}>
             <StatCard title="Most watched movies" rows={stats!.most_watched_movies.map((m) => ({ label: m.title, thumb: m.thumb_url, v: metric === "plays" ? m.plays : m.secs }))} metric={metric} />
             <StatCard title="Most watched TV" rows={stats!.most_watched_shows.map((m) => ({ label: m.title, thumb: m.thumb_url, v: metric === "plays" ? m.plays : m.secs }))} metric={metric} />
             <StatCard title="Most active users" rows={stats!.most_active_users.map((u) => ({ label: u.name, v: metric === "plays" ? u.plays : u.secs }))} metric={metric} />
@@ -329,7 +331,7 @@ function HomeExtras({ live }: { live: boolean }) {
       {libs && libs.length > 0 && (
         <section>
           <h3 className="mb-2.5 text-[13px] font-bold">Library statistics</h3>
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(220px, 100%), 1fr))" }}>
             {libs.map((l) => (
               <div key={l.title} className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
                 <div className="font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{libTypeLabel(l.type)}</div>
@@ -391,9 +393,9 @@ function UsersView({ connected, onConfigure }: { connected: boolean; onConfigure
   const [users, setUsers] = useState<UserEntry[] | null>(null);
   // Users come from recorded plays, so an import shows here before Plex is connected.
   useEffect(() => { api.insightsUsers().then(setUsers).catch(() => setUsers([])); }, []);
-  if (!users) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading users…</div>;
-  if (users.length === 0 && !connected) return <ConnectPlex tab="users" connected={false} onConfigure={onConfigure} />;
-  if (users.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No users seen yet.</div>;
+  if (!users) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading people…</div>;
+  if (users.length === 0 && !connected) return <ConnectPlex tab="people" connected={false} onConfigure={onConfigure} />;
+  if (users.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>Nobody has watched anything yet.</div>;
   return (
     <div className="flex flex-col gap-3">
       {!connected && <ImportedNotice onConfigure={onConfigure} />}
@@ -724,7 +726,7 @@ function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigur
             ]} />
           </ChartCard>
 
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))" }}>
             <ChartCard title="Plays by day of week"><BarChart values={g.by_day_of_week} labels={DOW} /></ChartCard>
             <ChartCard title="Plays by hour of day"><BarChart values={g.by_hour} labels={g.by_hour.map((_, i) => (i % 3 === 0 ? String(i).padStart(2, "0") : ""))} /></ChartCard>
             <ChartCard title="Top platforms"><HBarChart rows={g.top_platforms.map((p) => ({ label: p.name, value: p.plays }))} /></ChartCard>
@@ -838,7 +840,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
       </div>
 
       {/* Summary tiles */}
-      {!nothing && <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+      {!nothing && <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))" }}>
         <StatTile label="Observed stall time" value={fmtStall(s.total_stall_ms)} sub="across the window" color={s.total_stall_ms ? "var(--avoid)" : "var(--good)"} />
         <StatTile label="Stall rate" value={`${s.buffer_rate_pct}%`} sub={`${s.buffered_sessions} of ${s.total_sessions} streams`} color={rateColor} />
         <StatTile label="Observed stalls" value={s.total_events.toLocaleString()} sub="sampled events" color={s.total_events ? "var(--avoid)" : "var(--good)"} />
@@ -854,7 +856,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
         </div>
       ) : (
         <>
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
             <OffenderCard title="Worst-hit users" rows={r.by_user} />
             <OffenderCard title="Worst-hit platforms" rows={r.by_platform} />
             <OffenderCard title="Worst-hit titles" rows={r.by_title} />
@@ -887,15 +889,15 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
                 const cc = CAUSE[e.cause] ?? CAUSE.unknown;
                 return (
                   <div key={i} className="py-1.5 text-[12px]" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
                       <span className="w-2 flex-none"><span className="inline-block h-2 w-2 rounded-full" style={{ background: cc.color }} /></span>
                       <span className="w-[92px] flex-none font-mono text-[10.5px] text-ink-faint">{fmtDate(e.at)}</span>
-                      <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
+                      <span className="min-w-[140px] flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
                       <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
                       {e.duration_ms > 0 && <span className="flex-none font-mono text-[10px] font-semibold" style={{ color: "var(--avoid)" }}>{fmtStall(e.duration_ms)}</span>}
                       <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
                     </div>
-                    {e.detail && <div className="pl-[112px] text-[11px]" style={{ color: cc.color }}>{e.detail}</div>}
+                    {e.detail && <div className="pl-5 text-[11px] sm:pl-[112px]" style={{ color: cc.color }}>{e.detail}</div>}
                   </div>
                 );
               })}
@@ -956,7 +958,7 @@ function OffenderCard({ title, rows }: { title: string; rows: BufferGroup[] }) {
 const ABOUT: Record<string, string> = {
   activity: "Live now-playing — who's streaming what, on which device, with progress, transcode decision, bandwidth and geolocation.",
   history: "Every play recorded — a filterable table with stream-type, geolocated IP and a click-through deep-dive.",
-  users: "Per-user activity — last seen, platform, total plays and watch time.",
+  people: "Per-person activity — last seen, platform, total plays and watch time.",
   graphs: "Plays by day, hour, platform and user, plus bandwidth over time.",
   reliability: "The buffering view — see historically when and where streams choked, by user, platform and title.",
 };
