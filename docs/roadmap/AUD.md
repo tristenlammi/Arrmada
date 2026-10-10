@@ -147,7 +147,7 @@ _An empty close never moves anyone's place. Listen Again starts from 0. App PATC
   - **Risk:** An app that saves a deliberate scrub-back only through PATCH now gets a hold instead of an instant save. The banner, 'Use this spot' and session adoption cover this. Check which route Lissen uses for a manual seek: its session sync or a PATCH. Touches the same files as AUD-01, AUD-02 and AUD-04; land them in order.
   - **Resolves:** audiobooks-2
 <a id="aud-04"></a>
-- [ ] **AUD-04 · Place timeline, backend: record rejected, held and discarded places, make discard soft and restorable** — `P1` · `M` · Phase 8
+- [x] **AUD-04 · Place timeline, backend: record rejected, held and discarded places, make discard soft and restorable** — `P1` · `M` · Phase 8
   - **Problem:** Offline reports judged 'older' or 'unproven' return Dirty=false (rules.go:149-157), and apply returns before writing history (store.go:264-266). The only trace is listen_sessions.cur_pos, which no UI reads and Prune drops after 30 days (store.go:509-513). DeleteProgress hard-deletes the row even though its comment promises the place can be put back (store.go:244-248). handleMyAudio builds places only from AllProgress (httpapi/audioserver.go:279-291), so a discarded book has no restore path. Routine history is written at most every 5 min (store.go:299-306), so the place just before a jump or discard may be missing. Plane scenario: listen offline from 1h to 4h, then briefly open the book on a tablet, and the phone's later upload is silently rejected as older.
   - **Approach:** 1. New migration `listen_timeline` (next free number ≥0090):
        - `ALTER TABLE listen_history ADD COLUMN kind TEXT NOT NULL DEFAULT 'applied'` (applied|before|rejected|held|discarded|restored)
@@ -187,7 +187,7 @@ _An empty close never moves anyone's place. Listen Again starts from 0. App PATC
   - **Risk:** There will be more history rows; per-kind pruning keeps them bounded. Every reader of listen_progress must honour discarded_at; today those are only progressSelect and writeProgress in store.go, but grep again before merging. If AUD-03 is in flight at the same time, land it first, since both touch store.go and apply().
   - **Resolves:** audiobooks-5
 <a id="aud-05"></a>
-- [ ] **AUD-05 · Place timeline, UI: reasons in words, 'later spot' offers and Recently removed on the You page** — `P1` · `S` · Phase 8
+- [x] **AUD-05 · Place timeline, UI: reasons in words, 'later spot' offers and Recently removed on the You page** — `P1` · `S` · Phase 8
   - **Problem:** Once AUD-04 records rejected, held, discarded and before rows, the person still can't see them. 'Earlier places' in PlaceRow (Audiobooks.tsx:344-391) lists bare clock times with no reasons, there's no offer for a rejected later spot, and no way to restore a discarded book. The overhaul's Listen tab will need the same widgets.
   - **Approach:** 1. Extract web/src/components/audiobooks/PlaceTimeline.tsx from PlaceRow's 'Earlier places' list. Each row shows the clock, when, device and a reason in words: played on {device} (applied), jumped back, jumped ahead, offline upload, set by an app, not used: older than your place, not used: jump not proven, held, place before a change, discarded in an app, restored. Each row has a 'Go back here' button that calls the existing restoreAudioPlace. Dismissed rejected rows are shown dimmed.
     2. web/src/components/audiobooks/OfferBanner.tsx renders 'Your {device} uploaded a later spot ({clock}) from listening offline — use it?' with 'Use it' (restore with the history id) and 'Dismiss' (dismissAudioOffer). It uses the existing banner style (var(--accent-soft)/accent-line for an offer, var(--avoid-soft) stays for the held-jump banner).
@@ -205,7 +205,7 @@ _An empty close never moves anyone's place. Listen Again starts from 0. App PATC
   - **Risk:** Copy overload: keep the reason words short, and show only the 20 newest rows with a 'Show all' link.
   - **Resolves:** audiobooks-5
 <a id="aud-06"></a>
-- [ ] **AUD-06 · Big forward jumps into the end of a book need proof before they finish it** — `P2` · `M` · Phase 8
+- [x] **AUD-06 · Big forward jumps into the end of a book need proof before they finish it** — `P2` · `M` · Phase 8
   - **Problem:** In Decide's Live branch, any report with back <= 120 s is accepted, including forward jumps of any size (rules.go:160-167). setFinished then auto-finishes within 5 s of the end (rules.go:205-207), and speedAllowance is used only for held rewinds (rules.go:171). One bad report, such as a player sending the full duration on a stream error, marks the book finished and drops it from Continue Listening (handlers_library.go:264-268). AcceptPending always passes Finished=false (store.go:435-436), which would be wrong for a forward hold.
   - **Approach:** 1. rules.go: add `endZone = 600.0`. In the Live branch, compute `fwd := pos - cur.Position` and `bigForwardIntoEnd := dur > 0 && pos >= dur-endZone && fwd > rewindThreshold && fwd > r.Listened*speedAllowance+continuitySlack`. Accept immediately only when `back <= rewindThreshold && !bigForwardIntoEnd`.
     2. Pending continuation is direction-agnostic: a report continuous with the pending position, from the same session (or adopting a no-session hold per [AUD-03](#aud-03)), adds to PendingListened. It is proven when PendingListened >= rewindProof, or when it plays on to the end: `pos >= dur-finishedTail && pos > *cur.PendingPosition+0.5 && cur.PendingListened+r.Listened > 0`. The position must actually advance, so a player stuck re-reporting the full duration never proves itself. Proof leads to accept("rewind") for a backward hold and accept("forward-proven") for a forward one. A new forward hold uses Reason "held-forward".
@@ -232,7 +232,7 @@ _An empty close never moves anyone's place. Listen Again starts from 0. App PATC
 _Arrmada has its own read and play API for audiobooks: shelves, catalogue, detail, play sessions, sync and close, Range streaming and bookmarks. It runs through the same listening guards, works through the tunnel for requesters, and logs no titles. APP can build the Listen tab and mini-player on top of it, which gives iPhone users a working path whatever happens with the apps._
 
 <a id="aud-07"></a>
-- [ ] **AUD-07 · Arrmada listening API, read side: shelves, catalogue, item detail and covers for the web player** — `P1` · `M` · Phase 8
+- [x] **AUD-07 · Arrmada listening API, read side: shelves, catalogue, item detail and covers for the web player** — `P1` · `M` · Phase 8
   - **Problem:** Listening is only possible through third-party apps on the separate audiobook port, and no iPhone app is verified. To build an in-app player (the overhaul's Listen tab, whose UI is in APP), Arrmada needs its own routes for browsing. Shelf logic lives only inside the ABS handler handlePersonalized (handlers_library.go:234-288). The books cover route `/api/v1/books/{id}/cover-image` isn't in externalAllowedPrefixes (httpapi/external.go:89-98), so covers would fail for requesters through the tunnel. The main API request log writes `r.URL.Path` at debug level (httpapi/middleware.go:25-41), so item keys would land in the log.
   - **Approach:** 1. New internal/audioserver/player.go (exported API for Arrmada's own player, kept separate from the ABS JSON):
        - `type Card struct{Key string; BookID, VersionID int64; Title, Author, Series, SeriesSeq, Cover string; Duration float64; Progress *listening.Progress}`. Cover is the relative `/api/v1/me/audio/items/{key}/cover?v=<updatedAt>`.
@@ -258,7 +258,7 @@ _Arrmada has its own read and play API for audiobooks: shelves, catalogue, detai
   - **Risk:** Gating on the same switch as the third-party port is intentional, so there is one on/off; the copy says so. Detail probes files on first open (seconds of ffprobe for a big book), the same as ABS's expanded item.
   - **Resolves:** audiobooks-7
 <a id="aud-08"></a>
-- [ ] **AUD-08 · Arrmada listening API, play side: sessions, sync and close, Range streaming, bookmarks (same guards as the apps)** — `P1` · `M` · Phase 8
+- [x] **AUD-08 · Arrmada listening API, play side: sessions, sync and close, Range streaming, bookmarks (same guards as the apps)** — `P1` · `M` · Phase 8
   - **Problem:** The web player needs to start sessions, stream audio with seeking, and save its place. Those must go through listening.Store, so the durable sessions, held jumps, newer-only rules, history and the privacy-preserving listen_log apply to it exactly as to Lissen. Today serveFile (media.go:34-60) and sync (handlers_play.go:88-117) are reachable only through the ABS port with an ABS token.
   - **Approach:** 1. internal/audioserver/player.go:
        - `func (s *Server) StartSession(ctx, userID int64, key, deviceID, deviceName string) (PlayStart, error)` calls `Listen().OpenSession(u, key, deviceID, "Web player · "+deviceName, "Arrmada web")` and returns `{session_id, start_time, duration, tracks, chapters, restart}`. restart comes from [AUD-02](#aud-02)'s Session.Restart. Track urls are relative: `/api/v1/me/audio/items/{key}/file/{ino}`.
@@ -289,7 +289,7 @@ _Arrmada has its own read and play API for audiobooks: shelves, catalogue, detai
 _CI diffs every reply against recorded real Audiobookshelf replies. The cheap gaps are closed. An admin can trace an app's whole conversation for 24 h without exposing what anyone plays. ShelfPlayer and/or the official Audiobookshelf app are verified on an iPhone and encoded as conversation tests, and setup copy names only verified apps._
 
 <a id="aud-09"></a>
-- [ ] **AUD-09 · Compatibility harness: record real Audiobookshelf replies and diff Arrmada's against them in CI** — `P2` · `M` · Phase 8
+- [x] **AUD-09 · Compatibility harness: record real Audiobookshelf replies and diff Arrmada's against them in CI** — `P2` · `M` · Phase 8
   - **Problem:** The contract test (server_test.go:150-290) only uses need() to check that a few keys exist; it never checks JSON types, nested shapes or id formats. Every new client is debugged one guess and one commit at a time, and nobody can see what's actually different from a real server (Plappa stalls right after /api/libraries).
   - **Approach:** 1. cmd/abs-capture/main.go, a dev-only Go main (the Dockerfile builds only ./cmd/arrmada; confirm this stays true).
        - It reads ABS_URL, ABS_USER and ABS_PASS from env, so nothing is hardcoded, committed or pasted in chat.
@@ -315,7 +315,7 @@ _CI diffs every reply against recorded real Audiobookshelf replies. The cheap ga
   - **Risk:** Fixtures age as Audiobookshelf changes; the version is recorded, the container is pinned to ServerVersion, and you re-capture when ServerVersion is bumped. The harness book has 0-duration files (no ffprobe in CI), so some numeric fields are 0, which is still the right kind.
   - **Resolves:** audiobooks-6
 <a id="aud-10"></a>
-- [ ] **AUD-10 · Close the reply gaps the compatibility diff shows** — `P2` · `S` · Phase 8
+- [x] **AUD-10 · Close the reply gaps the compatibility diff shows** — `P2` · `S` · Phase 8
   - **Problem:** Known gaps against real Audiobookshelf:
 - mediaProgress has no userId (absjson.go:144-149).
 - permissions lack createEreader and selectedTagsNotAccessible (absjson.go:179-180).
@@ -339,7 +339,7 @@ AUD-09's first run will list more. Each is a chance for a strictly-typed client 
   - **Risk:** A newly added field with a wrong value could change a client's behaviour (for example a serverSettings flag). Copy ABS's defaults exactly and keep Lissen's run-through as the gate.
   - **Resolves:** audiobooks-6
 <a id="aud-11"></a>
-- [ ] **AUD-11 · Admin 'Trace app requests for 24 hours' switch that turns itself off** — `P2` · `S` · Phase 8
+- [x] **AUD-11 · Admin 'Trace app requests for 24 hours' switch that turns itself off** — `P2` · `S` · Phase 8
   - **Problem:** logRequest deliberately skips the steady play traffic: file, cover, image, sync, download, progress and GET session routes (server.go:582-599). So a client that fails silently during playback can't be seen. The only way to debug a new client is to ship a code change.
   - **Approach:** 1. New setting key `audioserver_trace_until` (unix ms). Server gets `traceUntil atomic.Int64`, loaded at New() and updated by a `SetTrace(until int64)` call from the admin handler, so there's no DB read per request.
     2. logRequest: while now < traceUntil, also log the normally skipped requests, tagged `trace=true`. They are still route patterns and query keys only, following SEC's redaction (no ids, no query values, no usernames).
@@ -384,7 +384,7 @@ AUD-09's first run will list more. Each is a chance for a strictly-typed client 
 _Every route accepts UUID-shaped ids. If the iOS verification shows a client needs UUIDs, and only with the owner's sign-off, devices that sign in afterwards can be given UUID ids while Lissen devices keep theirs and their downloads._
 
 <a id="aud-13"></a>
-- [ ] **AUD-13 · Accept UUID-shaped ids on every incoming route (id codec, no output change)** — `P3` · `S` · Phase 8
+- [x] **AUD-13 · Accept UUID-shaped ids on every incoming route (id codec, no output change)** — `P3` · `S` · Phase 8
   - **Problem:** The library id is the constant 'arrmada-audiobooks' (catalog.go:21). Items are 'b12'/'b12v3' (catalog.go:35-40), users are 'u'+id (absjson.go:176), and authors and series are 'au'/'se' plus a short hash (catalog.go:143-149). The code admits ABS clients expect UUIDs: session ids are already UUID-shaped (store.go:516-523). Switching output ids for everyone would orphan Lissen's downloads. The safe first step is to accept both shapes everywhere, so a later per-device switch is purely an output change.
   - **Approach:** 1. internal/audioserver/ids.go: an `idCodec` interface with item(key), media(key), user(id), library(), author(name) and series(name), plus parse functions.
        - `legacyCodec` reproduces today's ids exactly.

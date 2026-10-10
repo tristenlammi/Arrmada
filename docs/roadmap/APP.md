@@ -480,7 +480,7 @@ _Family members, including iPhone users, can listen to audiobooks in the browser
 This milestone needs AUD's web player API. If that isn't ready, M5 to M7 can go first._
 
 <a id="app-09"></a>
-- [ ] **APP-09 · Built-in audiobook player core: PlayerProvider, mini-player, sync, lock-screen controls, resume** — `P1` · `L` · Phase 8
+- [x] **APP-09 · Built-in audiobook player core: PlayerProvider, mini-player, sync, lock-screen controls, resume** — `P1` · `L` · Phase 8
   - **Problem:** There's no way to listen inside Arrmada. The only app the page names is Lissen (Android-only, Audiobooks.tsx:242), and no iOS client has been verified. iPhone family members can only download zip files.
 
 The overhaul calls for an HTML5 player that:
@@ -543,7 +543,7 @@ The overhaul calls for an HTML5 player that:
   - **Risk:** iOS Safari audio is the main risk: autoplay needs a gesture, background-playback limits vary by version, and Range handling is strict. Test on a real iPhone in the first session. Several tabs on one book open separate sessions; AUD's sync rules handle that, and BroadcastChannel reduces it.
   - **Resolves:** audiobooks-7
 <a id="app-10"></a>
-- [ ] **APP-10 · 'Listen' tab: shelves, all-audiobooks grid and a book sheet as the default /audiobooks view** — `P1` · `L` · Phase 8
+- [x] **APP-10 · 'Listen' tab: shelves, all-audiobooks grid and a book sheet as the default /audiobooks view** — `P1` · `L` · Phase 8
   - **Problem:** For requesters, /audiobooks (UserLayout.tsx:19) is a settings page: connect card, password form, places, stats and devices (Audiobooks.tsx:238-267). It has no catalogue, no covers and no play button. A family member expecting something like Plex finds a form.
   - **Approach:** 1. Audiobooks.tsx:
        - Everyone gets the tabs 'Listen' (the default) and 'Apps & devices' (today's YouView minus places and stats, until [APP-12](#app-12) reworks it), plus the existing admin tabs.
@@ -578,7 +578,7 @@ The overhaul calls for an HTML5 player that:
   - **Risk:** Moving places and stats out of the old 'You' view changes where returning users look, so put a one-line note on the Apps & devices tab: 'Your places moved to Listen'. Large libraries need paging to keep the grid responsive.
   - **Resolves:** audiobooks-7
 <a id="app-11"></a>
-- [ ] **APP-11 · Full player sheet: chapters, speed, sleep timer, bookmarks and the held-jump note** — `P1` · `M` · Phase 8
+- [x] **APP-11 · Full player sheet: chapters, speed, sleep timer, bookmarks and the held-jump note** — `P1` · `M` · Phase 8
   - **Problem:** The core player (APP-09) only plays, pauses and skips. Listening to a long book needs:
 - chapter navigation
 - speed control
@@ -621,7 +621,7 @@ The AUD guards hold a big backward jump until the listener carries on, so the pe
   - **Risk:** Some iOS versions ignore volume changes on HTMLAudioElement. If so, fall back to pausing at the deadline without a fade.
   - **Resolves:** audiobooks-7
 <a id="app-12"></a>
-- [ ] **APP-12 · 'Apps & devices' tab: guided setup checklist that ticks green when a device signs in, and an honest app list** — `P2` · `M` · Phase 8
+- [x] **APP-12 · 'Apps & devices' tab: guided setup checklist that ticks green when a device signs in, and an honest app list** — `P2` · `M` · Phase 8
   - **Problem:** The connect card names only Lissen ('Use Lissen (Android) or another Audiobookshelf app', Audiobooks.tsx:242). MyBooks sends people there with 'Listen in an app — audiobooks in Lissen' (MyBooks.tsx:90-93).
 
 Setup means copying three values into another app, with no confirmation that it worked. The device list exists but isn't tied into setup, and iPhone users get no guidance.
@@ -750,7 +750,7 @@ When the server has no push key, PushSetting returns null (line 189), leaving on
 _The calendar reads well on a phone as an agenda. Busy days expand, items open their title, requesters see their own requests by default, and anyone can subscribe from Google or Apple Calendar._
 
 <a id="app-16"></a>
-- [ ] **APP-16 · Calendar for phones: agenda view, tappable items, '+N more' day sheet, no stale-month race** — `P2` · `M` · Phase 8
+- [x] **APP-16 · Calendar for phones: agenda view, tappable items, '+N more' day sheet, no stale-month race** — `P2` · `M` · Phase 8
   - **Problem:** Calendar.tsx:67-90 is a fixed grid-cols-7 month at every width, with min-h 92px cells and 10px truncated titles. At 375px each cell is about 45px wide.
 - SxxEyy and the episode name appear only in a hover tooltip (lines 105-107).
 - '+N more' is a plain span (line 85).
@@ -787,7 +787,7 @@ _The calendar reads well on a phone as an agenda. Busy days expand, items open t
   - **Risk:** The requester calendar shows the whole library's schedule, as it does today; that is deliberate. It stays off the external allowlist.
   - **Resolves:** discover-11, frontend-5, product-15
 <a id="app-17"></a>
-- [ ] **APP-17 · Calendar 'My requests' filter (own and subscribed), default for requesters** — `P2` · `S` · Phase 8
+- [x] **APP-17 · Calendar 'My requests' filter (own and subscribed), default for requesters** — `P2` · `S` · Phase 8
   - **Problem:** Requesters get the Calendar as a top-level tab, but it shows the whole library rather than what they asked for. There's no way to filter it to their own or followed requests.
   - **Approach:** 1. internal/requests/repo.go: new `MediaKeysForUser(ctx, userID) (map[string]bool, error)`. It returns 'movie:<tmdb>' and 'series:<tmdb>' keys from:
        - requests WHERE requested_by=?

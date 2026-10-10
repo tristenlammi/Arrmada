@@ -900,6 +900,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 8 — Family payoff: listen in Arrmada and a deeper Discover
 
+> **Status: shipped 2026-10-11** — 19 of 21 tasks merged to main (full race suite, lint, frontend tests, typecheck, build within the size budget and Playwright e2e green; checked in a local instance incl. a web-player session whose log carries no title or item id). Open: AUD-12 — fixes and conversation tests for the official Audiobookshelf app, ShelfPlayer and Plappa are in, but on-device verification on an iPhone is the owner's (checklist in the AUD-12 commit/report); AUD-14 (UUID ids for new devices) designed, not shipped — waits on Plappa trace evidence and owner sign-off. The ABS-compat fixtures are synthesised from Audiobookshelf's source; replace with a real capture (cmd/abs-capture).
+
 **Theme:** Arrmada's own listening API and web player, a verified iPhone audiobook app, Discover browse/person/collection pages, and the phone calendar  
 **Goal:** Family members, iPhone users included, can listen to audiobooks in the browser or the home-screen app under the same place guards as the third-party apps, and can restore any lost place. At least one iOS client is verified. Discover becomes something requesters browse, not just search.  
 **Why now:** It needs the phone shell and Sheet (Phase 7) and SEC-04's route-pattern logging (Phase 0). iPhone family members currently have no working audiobook path, so this is the biggest remaining gap in what the family gets. Discover depth needs Phase 7's title routes and Phase 5's TMDB cache.  

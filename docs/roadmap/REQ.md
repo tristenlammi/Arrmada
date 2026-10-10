@@ -766,7 +766,7 @@ _'Ready' is sent only once Plex has the title, with a 30-minute fallback, and ca
 _Requesters get the payoff: Recently added and Ready for you rows. 'See all' opens filterable infinite grids, search pages past 20 results, and people and collections get their own pages. The adult filter holds on every new surface._
 
 <a id="req-18"></a>
-- [ ] **REQ-18 · Requester payoff rows: 'Recently added' and 'Ready for you' on Discover** — `P2` · `M` · Phase 8
+- [x] **REQ-18 · Requester payoff rows: 'Recently added' and 'Ready for you' on Discover** — `P2` · `M` · Phase 8
   - **Problem:** DiscoverTab has no recently-added or available-now row (Discover.tsx:386-414). Recommended and Because deliberately drop in-library titles (discover_recommended.go:77, discover_rows.go:182). /insights/recently-added is manager-only (server.go:349). Requesters never see what just arrived, and nothing lists what is ready for them.
   - **Approach:** 1. New endpoint GET /api/v1/discover/recently-added (a.protected, every role; /api/v1/discover is allowlisted).
        - Source: Arrmada's own import history. movie_events and series_events rows with event='imported' in the last 30 days, joined to movies and series for poster, overview, year and TMDB id.
@@ -786,7 +786,7 @@ _Requesters get the payoff: Recently added and Ready for you rows. 'See all' ope
   - **Risk:** Plex RecentlyAdded can include libraries Arrmada doesn't manage, so only show items that map to a TMDB id. Keep the endpoint requester-safe.
   - **Resolves:** discover-5
 <a id="req-19"></a>
-- [ ] **REQ-19 · Browse grid with filters, 'See all' on list rows, and paginated search** — `P2` · `M` · Phase 8
+- [x] **REQ-19 · Browse grid with filters, 'See all' on list rows, and paginated search** — `P2` · `M` · Phase 8
   - **Problem:** PosterRow (Discover.tsx:875-959) has no 'See all'. DiscoverByGenre and Search go through cachedDiscoverList with pages=1 (discover.go:417-419, 569-604), and the handlers take no page parameter. A genre or a search therefore tops out at about 20 titles, with no sort or filters.
   - **Approach:** 1. internal/metadata: BrowseQuery{Media; Genres []int; YearFrom, YearTo int; RatingMin float64; RuntimeMin, RuntimeMax int; Provider int; Language, Sort, List string; Page int}, and (t *TMDB) Browse(ctx, q) (items []DiscoverItem, totalPages int, err error).
        - Whitelist sort: popularity.desc, vote_average.desc, primary_release_date.desc / first_air_date.desc, revenue.desc. Clamp page to 1-500.
@@ -812,7 +812,7 @@ _Requesters get the payoff: Recently added and Ready for you rows. 'See all' ope
   - **Risk:** Free-form filters multiply cache keys and TMDB calls; the whitelist and the cache cap bound them. Don't prefetch pages.
   - **Resolves:** discover-6
 <a id="req-20"></a>
-- [ ] **REQ-20 · Person pages, clickable cast and crew, and people in search** — `P2` · `M` · Phase 8
+- [x] **REQ-20 · Person pages, clickable cast and crew, and people in search** — `P2` · `M` · Phase 8
   - **Problem:** Search uses /search/multi, and toItem drops person rows (discover.go:378-379), so searching for an actor returns nothing useful. Cast tiles are plain divs with no handler (Discover.tsx:1362-1376). CastMember and CrewMember carry no TMDB id.
   - **Approach:** 1. metadata:
        - Add ID int to tmdbCast, CastMember and CrewMember, filled in castOf and movieCrew. This stays JSON-compatible with the stored SeriesExtra and movie Extra.
@@ -842,7 +842,7 @@ _Requesters get the payoff: Recently added and Ready for you rows. 'See all' ope
   - **Risk:** Person credits are where adult titles most often leak. Every credit must pass through toItem and the adult filter, with no shortcut mapping. Adding ID to the shared CastMember type touches the Movies and Series detail pages.
   - **Resolves:** discover-6
 <a id="req-21"></a>
-- [ ] **REQ-21 · Collection pages and named 'Complete the X collection' rows** — `P3` · `M` · Phase 8
+- [x] **REQ-21 · Collection pages and named 'Complete the X collection' rows** — `P3` · `M` · Phase 8
   - **Problem:** 'Finish your collections' merges up to 8 collections into one unnamed strip capped at 30 (discover_rows.go:268-289). Users can't tell which franchise a card belongs to, and no collection can be opened on its own.
   - **Approach:** 1. metadata:
        - Collection gains Overview, PosterURL and BackdropURL (TMDB /collection/{id} returns them).
