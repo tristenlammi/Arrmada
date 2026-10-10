@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -97,7 +98,7 @@ func (s *Service) alertStaff(ctx context.Context, req Request) {
 		// Their "Someone requests something" choice silences the push; the inbox keeps the
 		// notice, as it does for every other choice.
 		if inserted && s.push != nil && !pushed[uid] && s.wantsPush(ctx, uid, PrefNewRequest) {
-			s.push.SendToUserAsync(uid, m.Title, m.Body, m.Link)
+			s.push.SendToUserAsync(uid, push.Message{Title: m.Title, Body: m.Body, URL: m.Link})
 		}
 	}
 }

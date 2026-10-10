@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/tristenlammi/arrmada/internal/push"
 )
 
 // The same vectors as web/src/lib/refLink.test.ts: Web Push (here) and the bell (there)
@@ -51,12 +53,14 @@ func TestRefPath(t *testing.T) {
 type urlPush struct {
 	mu   sync.Mutex
 	urls []string
+	plex []string
 }
 
-func (p *urlPush) SendToUserAsync(_ int64, _, _, url string) {
+func (p *urlPush) SendToUserAsync(_ int64, m push.Message) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.urls = append(p.urls, url)
+	p.urls = append(p.urls, m.URL)
+	p.plex = append(p.plex, m.PlexURL)
 }
 
 // A 'ready' push opens that exact title, and a book's decision opens the book — not the
@@ -92,6 +96,35 @@ func TestReadyPushURL(t *testing.T) {
 	for i := range want {
 		if push.urls[i] != want[i] {
 			t.Errorf("push %d opens %q, want %q", i, push.urls[i], want[i])
+		}
+	}
+}
+
+// ReadyRef picks out the 'ready' notices of movies and shows, whose titles the bell can
+// link to Plex.
+func TestReadyRef(t *testing.T) {
+	for _, tc := range []struct {
+		ref   string
+		media string
+		id    int
+	}{
+		{"movie:603", "movie", 603},
+		{"series:1399", "series", 1399},
+		{"series:1399:r12", "series", 1399},
+		{"series:1399:r12:s2", "series", 1399},
+		{"movie:603:approved:1700000000", "", 0},
+		{"series:1399:r12:declined:1700000000", "", 0},
+		{"movie:603:r12", "", 0},
+		{"series:1399:r0", "", 0},
+		{"book:OL1W", "", 0},
+		{"request:40", "", 0},
+		{"movie:0603", "", 0},
+		{"movie:99999999999", "", 0},
+		{"", "", 0},
+	} {
+		media, id, ok := ReadyRef(tc.ref)
+		if ok != (tc.media != "") || media != tc.media || id != tc.id {
+			t.Errorf("ReadyRef(%q) = %q %d %v, want %q %d", tc.ref, media, id, ok, tc.media, tc.id)
 		}
 	}
 }

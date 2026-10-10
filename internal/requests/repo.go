@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -97,6 +98,11 @@ type Request struct {
 	nextCheckAt  string
 	// Books: for a "both" request with one format here, which one and what's coming.
 	partNote string
+	// onDiskAt is when a movie or series request was first seen complete while Plex is
+	// set up, waiting for Plex to show it (plexready.go); 0 = not waiting. seasonDisk is
+	// the same per season for a request of several seasons, as stored.
+	onDiskAt   int64
+	seasonDisk string
 }
 
 // Repo persists requests in SQLite.
@@ -107,7 +113,7 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
 	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons, ready_at,
-	decline_reason, decided_by, decided_by_name, decided_at, rerequest`
+	decline_reason, decided_by, decided_by_name, decided_at, rerequest, on_disk_at, season_disk_at`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
@@ -115,7 +121,7 @@ func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var seasons string
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
 		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats, &seasons,
-		&r.ReadyAt, &r.DeclineReason, &r.DecidedBy, &r.DecidedByName, &r.DecidedAt, &r.ReRequest)
+		&r.ReadyAt, &r.DeclineReason, &r.DecidedBy, &r.DecidedByName, &r.DecidedAt, &r.ReRequest, &r.onDiskAt, &r.seasonDisk)
 	r.BookID = bookID.Int64
 	r.Seasons = decodeSeasons(seasons)
 	return r, err
@@ -310,6 +316,108 @@ func (r *Repo) ListAwaitingReady(ctx context.Context) ([]Request, error) {
 func (r *Repo) MarkReady(ctx context.Context, id, at int64) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE requests SET ready_at = ? WHERE id = ? AND ready_at = 0`, at, id)
 	return err
+}
+
+// MarkOnDisk records when a request was first seen complete while waiting for Plex. The
+// first stamp stands, so the grace period counts from then however often it is asked.
+// It answers the stamp in force.
+func (r *Repo) MarkOnDisk(ctx context.Context, id, at int64) (int64, error) {
+	if _, err := r.db.ExecContext(ctx, `UPDATE requests SET on_disk_at = ? WHERE id = ? AND on_disk_at = 0`, at, id); err != nil {
+		return 0, err
+	}
+	var got int64
+	err := r.db.QueryRowContext(ctx, `SELECT on_disk_at FROM requests WHERE id = ?`, id).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return at, nil // withdrawn meanwhile: nothing left to wait for
+	}
+	return got, err
+}
+
+// ClearOnDisk forgets that a request was complete (its file went again before anyone was
+// told), so the wait starts afresh when it is complete once more.
+func (r *Repo) ClearOnDisk(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE requests SET on_disk_at = 0 WHERE id = ? AND ready_at = 0`, id)
+	return err
+}
+
+// seasonDiskJSON is season_disk_at as a JSON object SQLite's json functions can work on
+// (an empty or unreadable value is none).
+const seasonDiskJSON = `(CASE WHEN json_valid(season_disk_at) THEN season_disk_at ELSE '{}' END)`
+
+// seasonTold marks a season whose notice has gone out, so it waits for nothing more.
+const seasonTold = -1
+
+// MarkSeasonOnDisk is MarkOnDisk for one season of a request for several: the first
+// stamp for that season stands. It answers every season's stamp (seasonTold for those
+// already announced).
+func (r *Repo) MarkSeasonOnDisk(ctx context.Context, id int64, season int, at int64) (map[int]int64, error) {
+	key := fmt.Sprintf("$.s%d", season)
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE requests SET season_disk_at = json_set(`+seasonDiskJSON+`, ?, ?)
+		  WHERE id = ? AND json_extract(`+seasonDiskJSON+`, ?) IS NULL`,
+		key, at, id, key); err != nil {
+		return nil, err
+	}
+	return r.seasonDisk(ctx, id, season, at)
+}
+
+// MarkSeasonTold records that a season's notice went out: it leaves the Plex check's list.
+func (r *Repo) MarkSeasonTold(ctx context.Context, id int64, season int) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE requests SET season_disk_at = json_set(`+seasonDiskJSON+`, ?, ?) WHERE id = ?`,
+		fmt.Sprintf("$.s%d", season), seasonTold, id)
+	return err
+}
+
+// ClearSeasonOnDisk forgets a season's wait (its files went again before anyone was told).
+// A season already announced keeps its mark.
+func (r *Repo) ClearSeasonOnDisk(ctx context.Context, id int64, season int) error {
+	key := fmt.Sprintf("$.s%d", season)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE requests SET season_disk_at = json_remove(`+seasonDiskJSON+`, ?)
+		  WHERE id = ? AND json_extract(`+seasonDiskJSON+`, ?) > 0`, key, id, key)
+	return err
+}
+
+func (r *Repo) seasonDisk(ctx context.Context, id int64, season int, at int64) (map[int]int64, error) {
+	var raw string
+	err := r.db.QueryRowContext(ctx, `SELECT season_disk_at FROM requests WHERE id = ?`, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[int]int64{season: at}, nil // withdrawn meanwhile
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeSeasonDisk(raw), nil
+}
+
+// decodeSeasonDisk reads season_disk_at ({"s2": unix, "s3": -1, …}); an empty or
+// unreadable value is no stamps, which only means a season's wait starts now.
+func decodeSeasonDisk(raw string) map[int]int64 {
+	out := map[int]int64{}
+	if raw == "" {
+		return out
+	}
+	var m map[string]int64
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return out
+	}
+	for k, v := range m {
+		var n int
+		if _, err := fmt.Sscanf(k, "s%d", &n); err == nil && n > 0 && (v > 0 || v == seasonTold) {
+			out[n] = v
+		}
+	}
+	return out
+}
+
+// ListPlexWaiting returns the approved requests not told yet that are waiting for Plex
+// (the request, or one of its seasons not yet announced, seen complete): the Plex
+// check's work list.
+func (r *Repo) ListPlexWaiting(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests
+		WHERE status = ? AND ready_at = 0
+		  AND (on_disk_at > 0 OR (season_disk_at != '' AND EXISTS (SELECT 1 FROM json_each(`+seasonDiskJSON+`) WHERE value > 0)))
+		ORDER BY id`, StatusApproved)
 }
 
 // Decision is who decided a request, when, and (declines) what the requester is told.

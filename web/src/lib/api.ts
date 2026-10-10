@@ -560,7 +560,11 @@ export interface AlertCatalog { groups: { key: string; label: string }[]; events
 
 export interface MyApprise { set: boolean; hint: string; blocked_reason?: string }
 
-export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
+export interface UserNotification {
+  id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number;
+  /** A 'ready' notice for a title the owner's Plex has: its app.plex.tv page (absent while Plex is off). */
+  plex_url?: string;
+}
 
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
 
@@ -1246,7 +1250,7 @@ export interface RequestList {
 // RequestTracking is where a request has got to, from its own downloads.
 export type RequestStage =
   | "pending" | "declined" | "searching" | "queued" | "downloading" | "paused"
-  | "failed" | "importing" | "partial" | "available";
+  | "failed" | "importing" | "partial" | "adding" | "available"; // adding: on disk, waiting for Plex
 export interface RequestTracking {
   stage: RequestStage;
   progress?: number; // 0..1 across its active downloads

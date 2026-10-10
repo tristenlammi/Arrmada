@@ -17,6 +17,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -56,6 +57,10 @@ type Service struct {
 	// recording a limited requester's ask one step. Taken before seriesMu, never after.
 	quotaLimits func(ctx context.Context, userID int64) (Limits, error)
 	quotaMu     sync.Mutex
+	// plex makes 'ready' wait for the owner's Plex to show the title (plexready.go); nil =
+	// no Plex, ready on import. plexWaiter runs the check that announces them.
+	plex       PlexLocator
+	plexWaiter plexWaiter
 }
 
 func (s *Service) clock() time.Time {
@@ -135,7 +140,7 @@ func (s *Service) background(kind, target, trigger, title, noun string, movieID 
 // Satisfied by *push.Service; an interface here keeps requests free of the
 // dependency and lets tests stub it.
 type PushSender interface {
-	SendToUserAsync(userID int64, title, body, url string)
+	SendToUserAsync(userID int64, m push.Message)
 }
 
 // SetPushSender wires the Web Push service (optional; nil-safe when unset).

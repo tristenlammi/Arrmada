@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./mockApi";
+import { plexWatchURL } from "./fixtures/discover";
 
 // APP-05: the requester's phone shell. A bottom tab bar with only the places this session
 // can reach, room left for the iPhone's status bar and home indicator, one bell on every
@@ -227,6 +228,15 @@ test.describe("notifications on a phone", () => {
     await expect(page).toHaveURL(/\/discover\/movie\/1007$/);
     await expect(page.getByRole("dialog", { name: "The Cartographer" })).toBeVisible();
     expect(api.callsTo("POST", "/api/v1/me/notifications/1/read")).toHaveLength(1);
+  });
+
+  test("a 'ready' notice for a title in Plex offers Watch on Plex", async ({ page, api }) => {
+    await open(page, "/discover", api);
+    await page.getByRole("button", { name: "Notifications" }).tap();
+    const watch = page.getByRole("link", { name: "▶ Watch on Plex" });
+    await expect(watch).toHaveCount(1); // only the ready notice has one
+    await expect(watch).toHaveAttribute("href", plexWatchURL);
+    await expect(watch).toHaveAttribute("target", "_blank");
   });
 
   test("a book notice opens the book on the Books tab, Hardcover key and all", async ({ page, api }) => {

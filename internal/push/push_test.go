@@ -2,9 +2,11 @@ package push
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -80,5 +82,26 @@ func TestSendToUserResultNoDevices(t *testing.T) {
 	s := newTestService(t)
 	if n, err := s.SendToUserResult(context.Background(), 1, "t", "b", "/"); n != 0 || !errors.Is(err, ErrNoDevices) {
 		t.Fatalf("got %d, %v; want ErrNoDevices", n, err)
+	}
+}
+
+// A 'ready' push carries the title's Watch on Plex page next to the app address, and a
+// push without one says nothing about Plex.
+func TestPayloadIncludesPlexURL(t *testing.T) {
+	b, err := Message{Title: "Your request is ready", Body: "“Dune” is ready to watch on Plex.", URL: "/discover/movie/603",
+		PlexURL: "https://app.plex.tv/desktop/#!/server/m1/details?key=%2Flibrary%2Fmetadata%2F101"}.payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["url"] != "/discover/movie/603" || got["plex_url"] != "https://app.plex.tv/desktop/#!/server/m1/details?key=%2Flibrary%2Fmetadata%2F101" {
+		t.Fatalf("payload = %s", b)
+	}
+	plain, _ := Message{Title: "Request approved", Body: "b", URL: "/requests?id=4"}.payload()
+	if strings.Contains(string(plain), "plex_url") {
+		t.Errorf("a push without a Plex link carries one: %s", plain)
 	}
 }

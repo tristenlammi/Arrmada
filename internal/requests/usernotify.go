@@ -10,6 +10,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -22,6 +23,9 @@ type UserNotification struct {
 	Ref       string `json:"ref"`
 	Read      bool   `json:"read"`
 	CreatedAt int64  `json:"created_at"`
+	// PlexURL, on a 'ready' notice for a title the owner's Plex had when it was sent, is
+	// the title's app.plex.tv page (the bell's Watch on Plex).
+	PlexURL string `json:"plex_url,omitempty"`
 }
 
 // --- inbox + per-user Apprise (repo) ---
@@ -30,9 +34,14 @@ type UserNotification struct {
 // makes it idempotent — inserted reports whether this call actually added a row
 // (false = already notified), so callers can skip the Apprise push on repeats.
 func (r *Repo) addUserNotification(ctx context.Context, userID int64, title, body, mediaType, ref string, at int64) (inserted bool, err error) {
+	return r.addUserNotificationLink(ctx, userID, title, body, mediaType, ref, "", at)
+}
+
+// addUserNotificationLink is addUserNotification with the title's Watch on Plex page.
+func (r *Repo) addUserNotificationLink(ctx context.Context, userID int64, title, body, mediaType, ref, plexURL string, at int64) (inserted bool, err error) {
 	res, err := r.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO user_notifications (user_id, title, body, media_type, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		userID, title, body, mediaType, ref, at)
+		`INSERT OR IGNORE INTO user_notifications (user_id, title, body, media_type, ref, plex_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		userID, title, body, mediaType, ref, plexURL, at)
 	if err != nil {
 		return false, err
 	}
@@ -42,7 +51,7 @@ func (r *Repo) addUserNotification(ctx context.Context, userID int64, title, bod
 
 func (r *Repo) listUserNotifications(ctx context.Context, userID int64) ([]UserNotification, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, title, body, media_type, ref, read, created_at FROM user_notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`, userID)
+		`SELECT id, title, body, media_type, ref, read, created_at, plex_url FROM user_notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +60,7 @@ func (r *Repo) listUserNotifications(ctx context.Context, userID int64) ([]UserN
 	for rows.Next() {
 		var n UserNotification
 		var read int
-		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.MediaType, &n.Ref, &read, &n.CreatedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Title, &n.Body, &n.MediaType, &n.Ref, &read, &n.CreatedAt, &n.PlexURL); err != nil {
 			return nil, err
 		}
 		n.Read = read != 0
@@ -223,6 +232,9 @@ func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 // or more seasons — "Season N is ready" as each one completes before that. When the whole
 // request completes in one go, only the final notice goes out. Each is idempotent (its own
 // inbox reference).
+//
+// With Plex set up, each season's notice waits for Plex like the request's own 'ready'
+// does (seasonGate), its wait kept per season in season_disk_at.
 func (s *Service) notifySeasonsReady(ctx context.Context, req Request, prog map[int]series.SeasonProgress) error {
 	if req.ReadyAt > 0 {
 		return nil
@@ -233,13 +245,25 @@ func (s *Service) notifySeasonsReady(ctx context.Context, req Request, prog map[
 	if len(req.Seasons) < 2 {
 		return nil
 	}
+	sg := s.newSeasonGate(ctx, req)
 	var errs []error
 	for _, n := range req.Seasons {
 		if p, ok := prog[n]; !ok || !seasonReady(p) {
 			continue
 		}
-		body := fmt.Sprintf("Season %d of “%s” is ready to watch.", n, req.Title)
-		told, err := s.notifyPartiesCount(ctx, req, "Season ready", body, fmt.Sprintf("%s:s%d", requestRef(req), n), "request-season-ready", nil)
+		v, plexURL, err := sg.judge(ctx, n)
+		if err != nil || v == plexWait {
+			errs = append(errs, err)
+			continue
+		}
+		if v != plexHas {
+			plexURL = ""
+		}
+		body := readyWords(fmt.Sprintf("Season %d of “%s”", n, req.Title), v)
+		told, err := s.notifyParties(ctx, req, notice{Title: "Season ready", Body: body, Ref: fmt.Sprintf("%s:s%d", requestRef(req), n), Kind: "request-season-ready", PlexURL: plexURL}, nil)
+		if err == nil {
+			sg.told(ctx, n)
+		}
 		if told > 0 {
 			s.publishUpdated(req, req.Status, s.parties(ctx, req))
 		}
@@ -390,15 +414,21 @@ func (s *Service) notifyBookReady(ctx context.Context, req Request, b books.Book
 // upgrade of a title someone asked for long ago doesn't tell them again; within one
 // telling it is idempotent per user (unique inbox ref), so a retry after a partial failure
 // skips whoever already heard.
+//
+// With Plex set up, a movie or series waits for Plex first (plexGate): nothing is sent
+// until Plex shows the title or the grace period runs out, and the wording says which.
 func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	if req.ReadyAt > 0 {
 		return nil
 	}
-	body := fmt.Sprintf("%s is ready to watch.", requestedWhat(req))
-	if req.MediaType == "book" {
-		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
+	v, plexURL, err := s.plexGate(ctx, req)
+	if err != nil || v == plexWait {
+		return err
 	}
-	told, err := s.notifyPartiesCount(ctx, req, "Your request is ready", body, requestRef(req), "request-ready", nil)
+	if v != plexHas {
+		plexURL = ""
+	}
+	told, err := s.notifyParties(ctx, req, notice{Title: "Your request is ready", Body: readyBody(req, v), Ref: requestRef(req), Kind: "request-ready", PlexURL: plexURL}, nil)
 	if err == nil {
 		// Only once everyone has been told: a failure leaves it unstamped, and the retry
 		// (an outbox row, the ready sweep) finishes the job.
@@ -452,6 +482,30 @@ func decisionRef(req Request, what string) string {
 // told is skipped by the inbox index. A failed Apprise push isn't one: the inbox row is
 // the notification, and a retry would never re-push it anyway.
 func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, body, ref, kind string, skip map[int64]bool) (int, error) {
+	return s.notifyParties(ctx, req, notice{Title: title, Body: body, Ref: ref, Kind: kind}, skip)
+}
+
+// notice is one message to a request's people. PlexURL, on a 'ready' notice for a title
+// the owner's Plex has, is its app.plex.tv page: stored on the inbox row (the bell's Watch
+// on Plex), carried by the Web Push (its Watch on Plex action) and added to the personal
+// Apprise message.
+type notice struct {
+	Title, Body, Ref, Kind string
+	PlexURL                string
+}
+
+// appriseBody is the personal Apprise message: the notice, and on a 'ready' notice Plex
+// has, the link that opens it there.
+func appriseBody(n notice) string {
+	if n.PlexURL == "" {
+		return n.Body
+	}
+	return n.Body + "\nWatch: " + n.PlexURL
+}
+
+// notifyParties is notifyPartiesCount for a whole notice.
+func (s *Service) notifyParties(ctx context.Context, req Request, n notice, skip map[int64]bool) (int, error) {
+	title, body, ref, kind := n.Title, n.Body, n.Ref, n.Kind
 	told := 0
 	seen := map[int64]bool{}
 	for uid, ok := range skip {
@@ -476,7 +530,7 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 	}
 	now := time.Now().Unix()
 	for _, uid := range userIDs {
-		inserted, err := s.repo.addUserNotification(ctx, uid, title, body, req.MediaType, ref, now)
+		inserted, err := s.repo.addUserNotificationLink(ctx, uid, title, body, req.MediaType, ref, n.PlexURL, now)
 		if err != nil {
 			s.log.Warn(kind+": could not add inbox notification", "user", uid, "err", err)
 			errs = append(errs, fmt.Errorf("inbox notification for request %d: %w", req.ID, err))
@@ -498,7 +552,7 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			// above (and Web Push below) still tell them.
 			if verr := s.checkUserApprise(ctx, uid, url); verr != nil {
 				s.log.Warn(kind+": personal Apprise push skipped — the saved link isn't allowed", "user", uid, "reason", verr.Error())
-			} else if err := s.sendUserApprise(ctx, url, body); err != nil {
+			} else if err := s.sendUserApprise(ctx, url, appriseBody(n)); err != nil {
 				s.log.Warn(kind+": apprise push failed", "user", uid, "err", err)
 			}
 		}
@@ -506,7 +560,7 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			// Web Push to every device this user enabled it on. Async with its own
 			// deadline — the import fan-out must never block on a push service. The
 			// inbox insert above already deduped repeats, so this can't double-ping.
-			s.push.SendToUserAsync(uid, title, body, pushPath(ref))
+			s.push.SendToUserAsync(uid, push.Message{Title: title, Body: body, URL: pushPath(ref), PlexURL: n.PlexURL})
 		}
 		// The request id, not the title: an audiobook's "ready" pairs a user with what they
 		// will listen to, and the log is staff-readable.
@@ -527,6 +581,12 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.readyPass(ctx, reqs, false)
+}
+
+// readyPass judges each of reqs ready by the path an import takes (through the Plex gate).
+// plexCheck also resets the wait of any whose files went again before anyone was told.
+func (s *Service) readyPass(ctx context.Context, reqs []Request, plexCheck bool) error {
 	// In batches, so the lookups' IN lists stay well inside SQLite's limits.
 	const batch = 500
 	for lo := 0; lo < len(reqs); lo += batch {
@@ -548,6 +608,9 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 				}
 			case lk.ready(ctx, s, rq):
 				_ = s.notifyReady(ctx, rq)
+			}
+			if plexCheck {
+				s.clearGone(ctx, lk, rq)
 			}
 		}
 	}
