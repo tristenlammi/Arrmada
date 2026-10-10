@@ -364,6 +364,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/movies/search", a.requireRole(auth.RoleManager, a.handleBulkMovieSearch))
 	mux.HandleFunc("POST /api/v1/movies/import", a.requireRole(auth.RoleManager, a.handleMovieImportFolder))
 	mux.HandleFunc("GET /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie))
+	// Who has played it on Plex: staff only, never a requester.
+	mux.HandleFunc("GET /api/v1/movies/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleMovieWatchStats))
 	mux.HandleFunc("POST /api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))
 	mux.HandleFunc("POST /api/v1/movies/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchMovie))
 	mux.HandleFunc("GET /api/v1/movies/{id}/releases", a.requireRole(auth.RoleManager, a.handleMovieReleases))
@@ -394,6 +396,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
 	mux.HandleFunc("GET /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries))
+	mux.HandleFunc("GET /api/v1/series/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleSeriesWatchStats))
 	mux.HandleFunc("GET /api/v1/series/{id}/downloads", a.requireRole(auth.RoleManager, a.handleSeriesDownloads))
 	mux.HandleFunc("PUT /api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT /api/v1/series/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetSeriesProfile))

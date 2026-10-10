@@ -184,6 +184,11 @@ func (s *Service) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Series, error
 	return s.repo.ByTMDBIDs(ctx, tmdbIDs)
 }
 
+// GetSummary returns one series' own record, without its seasons and episodes.
+func (s *Service) GetSummary(ctx context.Context, id int64) (Series, error) {
+	return s.repo.Get(ctx, id)
+}
+
 // Get returns one series with its seasons and episodes.
 func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
 	sr, err := s.repo.Get(ctx, id)

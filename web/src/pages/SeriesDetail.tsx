@@ -8,7 +8,7 @@ import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
-import { PlexPill } from "../components/PlexBits";
+import { PlexPill, WatchedBy } from "../components/PlexBits";
 import { RenameModal } from "./series/RenameModal";
 import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MONITOR_PRESETS } from "./series/presets";
@@ -183,6 +183,7 @@ export function SeriesDetail() {
                   <PlexPill media="series" tmdbId={s.tmdb_id} />
                 </span>
               </div>
+              <WatchedBy kind="series" id={s.id} />
 
               <p className="mt-3 text-[13px] leading-relaxed text-ink-dim">{s.overview || "No overview available."}</p>
 

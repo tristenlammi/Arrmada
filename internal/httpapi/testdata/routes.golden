@@ -147,6 +147,7 @@ GET /api/v1/movies/{id}/manualimport staff -
 GET /api/v1/movies/{id}/releases staff -
 GET /api/v1/movies/{id}/rename staff -
 GET /api/v1/movies/{id}/versions staff -
+GET /api/v1/movies/{id}/watch-stats staff -
 GET /api/v1/music/albums/{id} staff -
 GET /api/v1/music/artists staff -
 GET /api/v1/music/artists/{id} staff -
@@ -185,6 +186,7 @@ GET /api/v1/series/{id}/numbering staff -
 GET /api/v1/series/{id}/releases staff -
 GET /api/v1/series/{id}/rename staff -
 GET /api/v1/series/{id}/scene-map staff -
+GET /api/v1/series/{id}/watch-stats staff -
 GET /api/v1/settings staff -
 GET /api/v1/setup admin -
 GET /api/v1/status public ext

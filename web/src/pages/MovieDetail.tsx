@@ -7,7 +7,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { LastSearchLine } from "../components/LastSearch";
-import { PlexPill } from "../components/PlexBits";
+import { PlexPill, WatchedBy } from "../components/PlexBits";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
@@ -183,6 +183,7 @@ export function MovieDetail() {
                 )}
                 <ExternalLinks movie={movie} />
               </div>
+              <WatchedBy kind="movies" id={movie.id} />
 
               <p className="mt-3 text-[13px] leading-relaxed text-ink-dim">{movie.overview || "No overview available."}</p>
 
