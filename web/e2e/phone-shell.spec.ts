@@ -234,7 +234,9 @@ test.describe("notifications on a phone", () => {
     await page.getByRole("button", { name: "Notifications" }).tap();
     await page.getByRole("button", { name: /“Moby-Dick” was approved/ }).tap();
     await expect(page).toHaveURL(/\/discover\?tab=books&work=hc%3A4242$/);
-    await expect(page.getByRole("heading", { level: 2, name: "The Salt Road" })).toBeVisible();
+    // The Books hero can feature the same fixture book behind the sheet, depending on which
+    // loads first; the sheet's heading is the later one.
+    await expect(page.getByRole("heading", { level: 2, name: "The Salt Road" }).last()).toBeVisible();
     await api.quiet();
     expect(api.calls.some((c) => c.path === "/api/v1/books/discover/detail?key=hc%3A4242")).toBe(true);
   });
