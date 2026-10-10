@@ -1,0 +1,447 @@
+{
+  "book": [
+    {
+      "libraryItem": {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "ino": "2000001",
+        "oldLibraryItemId": null,
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "folderId": "44444444-4444-4444-8444-444444444444",
+        "path": "/audiobooks/H. G. Wells/The Time Machine",
+        "relPath": "H. G. Wells/The Time Machine",
+        "isFile": false,
+        "mtimeMs": 1767225630000,
+        "ctimeMs": 1767225631000,
+        "birthtimeMs": 1767225500000,
+        "addedAt": 1790849100000,
+        "updatedAt": 1790849102500,
+        "isMissing": false,
+        "isInvalid": false,
+        "mediaType": "book",
+        "media": {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "metadata": {
+            "title": "The Time Machine",
+            "subtitle": null,
+            "authors": [
+              {
+                "id": "77777777-7777-4777-8777-777777777777",
+                "name": "H. G. Wells"
+              }
+            ],
+            "narrators": [
+              "Example Narrator"
+            ],
+            "series": [
+              {
+                "id": "88888888-8888-4888-8888-888888888888",
+                "name": "Example Series",
+                "sequence": "1"
+              }
+            ],
+            "genres": [
+              "Science Fiction"
+            ],
+            "publishedYear": "1895",
+            "publishedDate": null,
+            "publisher": null,
+            "description": "A Victorian scientist builds a machine that carries him into the far future.",
+            "isbn": null,
+            "asin": null,
+            "language": "en",
+            "explicit": false,
+            "abridged": false,
+            "titleIgnorePrefix": "Time Machine, The",
+            "authorName": "H. G. Wells",
+            "authorNameLF": "Wells, H. G.",
+            "narratorName": "Example Narrator",
+            "seriesName": "Example Series #1",
+            "descriptionPlain": "A Victorian scientist builds a machine that carries him into the far future."
+          },
+          "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+          "tags": [],
+          "numTracks": 2,
+          "numAudioFiles": 2,
+          "numChapters": 4,
+          "duration": 3500.75,
+          "size": 56199067,
+          "ebookFormat": "epub",
+          "libraryItemId": "55555555-5555-4555-8555-555555555555",
+          "audioFiles": [
+            {
+              "index": 1,
+              "ino": "2000002",
+              "metadata": {
+                "filename": "01 - The Time Machine.mp3",
+                "ext": ".mp3",
+                "path": "/audiobooks/H. G. Wells/The Time Machine/01 - The Time Machine.mp3",
+                "relPath": "01 - The Time Machine.mp3",
+                "size": 28808448,
+                "mtimeMs": 1767225600000,
+                "ctimeMs": 1767225601000,
+                "birthtimeMs": 1767225595000
+              },
+              "addedAt": 1790849100500,
+              "updatedAt": 1790849100500,
+              "trackNumFromMeta": 1,
+              "discNumFromMeta": null,
+              "trackNumFromFilename": 1,
+              "discNumFromFilename": null,
+              "manuallyVerified": false,
+              "exclude": false,
+              "error": null,
+              "format": "MP2/3 (MPEG audio layer 2/3)",
+              "duration": 1800.5,
+              "bitRate": 128000,
+              "language": null,
+              "codec": "mp3",
+              "timeBase": "1/14112000",
+              "channels": 2,
+              "channelLayout": "stereo",
+              "chapters": [
+                {
+                  "start": 0,
+                  "end": 900,
+                  "title": "Chapter 1",
+                  "id": 0
+                },
+                {
+                  "start": 900,
+                  "end": 1800.5,
+                  "title": "Chapter 2",
+                  "id": 1
+                }
+              ],
+              "embeddedCoverArt": null,
+              "metaTags": {
+                "tagAlbum": "The Time Machine",
+                "tagArtist": "H. G. Wells",
+                "tagGenre": "Science Fiction",
+                "tagTitle": "The Time Machine - Part 1",
+                "tagSeries": "Example Series",
+                "tagSeriesPart": "1",
+                "tagTrack": "1/2",
+                "tagAlbumArtist": "H. G. Wells",
+                "tagDate": "1895",
+                "tagComposer": "Example Narrator",
+                "tagEncoder": "Lavf60.16.100"
+              },
+              "mimeType": "audio/mpeg"
+            },
+            {
+              "index": 2,
+              "ino": "2000003",
+              "metadata": {
+                "filename": "02 - The Time Machine.mp3",
+                "ext": ".mp3",
+                "path": "/audiobooks/H. G. Wells/The Time Machine/02 - The Time Machine.mp3",
+                "relPath": "02 - The Time Machine.mp3",
+                "size": 27204096,
+                "mtimeMs": 1767225610000,
+                "ctimeMs": 1767225611000,
+                "birthtimeMs": 1767225605000
+              },
+              "addedAt": 1790849100500,
+              "updatedAt": 1790849100500,
+              "trackNumFromMeta": 2,
+              "discNumFromMeta": null,
+              "trackNumFromFilename": 2,
+              "discNumFromFilename": null,
+              "manuallyVerified": false,
+              "exclude": false,
+              "error": null,
+              "format": "MP2/3 (MPEG audio layer 2/3)",
+              "duration": 1700.25,
+              "bitRate": 128000,
+              "language": null,
+              "codec": "mp3",
+              "timeBase": "1/14112000",
+              "channels": 2,
+              "channelLayout": "stereo",
+              "chapters": [
+                {
+                  "start": 0,
+                  "end": 850,
+                  "title": "Chapter 3",
+                  "id": 0
+                },
+                {
+                  "start": 850,
+                  "end": 1700.25,
+                  "title": "Chapter 4",
+                  "id": 1
+                }
+              ],
+              "embeddedCoverArt": null,
+              "metaTags": {
+                "tagAlbum": "The Time Machine",
+                "tagArtist": "H. G. Wells",
+                "tagGenre": "Science Fiction",
+                "tagTitle": "The Time Machine - Part 2",
+                "tagSeries": "Example Series",
+                "tagSeriesPart": "1",
+                "tagTrack": "2/2",
+                "tagAlbumArtist": "H. G. Wells",
+                "tagDate": "1895",
+                "tagComposer": "Example Narrator",
+                "tagEncoder": "Lavf60.16.100"
+              },
+              "mimeType": "audio/mpeg"
+            }
+          ],
+          "chapters": [
+            {
+              "start": 0,
+              "end": 900,
+              "title": "Chapter 1",
+              "id": 0
+            },
+            {
+              "start": 900,
+              "end": 1800.5,
+              "title": "Chapter 2",
+              "id": 1
+            },
+            {
+              "start": 1800.5,
+              "end": 2650.5,
+              "title": "Chapter 3",
+              "id": 2
+            },
+            {
+              "start": 2650.5,
+              "end": 3500.75,
+              "title": "Chapter 4",
+              "id": 3
+            }
+          ],
+          "ebookFile": {
+            "ino": "2000004",
+            "metadata": {
+              "filename": "The Time Machine.epub",
+              "ext": ".epub",
+              "path": "/audiobooks/H. G. Wells/The Time Machine/The Time Machine.epub",
+              "relPath": "The Time Machine.epub",
+              "size": 186523,
+              "mtimeMs": 1767225620000,
+              "ctimeMs": 1767225621000,
+              "birthtimeMs": 1767225615000
+            },
+            "isSupplementary": null,
+            "addedAt": 1790849100500,
+            "updatedAt": 1790849100500,
+            "fileType": "ebook",
+            "ebookFormat": "epub"
+          },
+          "tracks": [
+            {
+              "index": 1,
+              "ino": "2000002",
+              "metadata": {
+                "filename": "01 - The Time Machine.mp3",
+                "ext": ".mp3",
+                "path": "/audiobooks/H. G. Wells/The Time Machine/01 - The Time Machine.mp3",
+                "relPath": "01 - The Time Machine.mp3",
+                "size": 28808448,
+                "mtimeMs": 1767225600000,
+                "ctimeMs": 1767225601000,
+                "birthtimeMs": 1767225595000
+              },
+              "addedAt": 1790849100500,
+              "updatedAt": 1790849100500,
+              "trackNumFromMeta": 1,
+              "discNumFromMeta": null,
+              "trackNumFromFilename": 1,
+              "discNumFromFilename": null,
+              "manuallyVerified": false,
+              "exclude": false,
+              "error": null,
+              "format": "MP2/3 (MPEG audio layer 2/3)",
+              "duration": 1800.5,
+              "bitRate": 128000,
+              "language": null,
+              "codec": "mp3",
+              "timeBase": "1/14112000",
+              "channels": 2,
+              "channelLayout": "stereo",
+              "chapters": [
+                {
+                  "start": 0,
+                  "end": 900,
+                  "title": "Chapter 1",
+                  "id": 0
+                },
+                {
+                  "start": 900,
+                  "end": 1800.5,
+                  "title": "Chapter 2",
+                  "id": 1
+                }
+              ],
+              "embeddedCoverArt": null,
+              "metaTags": {
+                "tagAlbum": "The Time Machine",
+                "tagArtist": "H. G. Wells",
+                "tagGenre": "Science Fiction",
+                "tagTitle": "The Time Machine - Part 1",
+                "tagSeries": "Example Series",
+                "tagSeriesPart": "1",
+                "tagTrack": "1/2",
+                "tagAlbumArtist": "H. G. Wells",
+                "tagDate": "1895",
+                "tagComposer": "Example Narrator",
+                "tagEncoder": "Lavf60.16.100"
+              },
+              "mimeType": "audio/mpeg",
+              "title": "01 - The Time Machine.mp3",
+              "startOffset": 0,
+              "contentUrl": "/api/items/55555555-5555-4555-8555-555555555555/file/2000002"
+            },
+            {
+              "index": 2,
+              "ino": "2000003",
+              "metadata": {
+                "filename": "02 - The Time Machine.mp3",
+                "ext": ".mp3",
+                "path": "/audiobooks/H. G. Wells/The Time Machine/02 - The Time Machine.mp3",
+                "relPath": "02 - The Time Machine.mp3",
+                "size": 27204096,
+                "mtimeMs": 1767225610000,
+                "ctimeMs": 1767225611000,
+                "birthtimeMs": 1767225605000
+              },
+              "addedAt": 1790849100500,
+              "updatedAt": 1790849100500,
+              "trackNumFromMeta": 2,
+              "discNumFromMeta": null,
+              "trackNumFromFilename": 2,
+              "discNumFromFilename": null,
+              "manuallyVerified": false,
+              "exclude": false,
+              "error": null,
+              "format": "MP2/3 (MPEG audio layer 2/3)",
+              "duration": 1700.25,
+              "bitRate": 128000,
+              "language": null,
+              "codec": "mp3",
+              "timeBase": "1/14112000",
+              "channels": 2,
+              "channelLayout": "stereo",
+              "chapters": [
+                {
+                  "start": 0,
+                  "end": 850,
+                  "title": "Chapter 3",
+                  "id": 0
+                },
+                {
+                  "start": 850,
+                  "end": 1700.25,
+                  "title": "Chapter 4",
+                  "id": 1
+                }
+              ],
+              "embeddedCoverArt": null,
+              "metaTags": {
+                "tagAlbum": "The Time Machine",
+                "tagArtist": "H. G. Wells",
+                "tagGenre": "Science Fiction",
+                "tagTitle": "The Time Machine - Part 2",
+                "tagSeries": "Example Series",
+                "tagSeriesPart": "1",
+                "tagTrack": "2/2",
+                "tagAlbumArtist": "H. G. Wells",
+                "tagDate": "1895",
+                "tagComposer": "Example Narrator",
+                "tagEncoder": "Lavf60.16.100"
+              },
+              "mimeType": "audio/mpeg",
+              "title": "02 - The Time Machine.mp3",
+              "startOffset": 1800.5,
+              "contentUrl": "/api/items/55555555-5555-4555-8555-555555555555/file/2000003"
+            }
+          ]
+        },
+        "numFiles": 4,
+        "size": 56293438,
+        "lastScan": 1790849100000,
+        "scanVersion": "2.37.1",
+        "libraryFiles": [
+          {
+            "ino": "2000002",
+            "metadata": {
+              "filename": "01 - The Time Machine.mp3",
+              "ext": ".mp3",
+              "path": "/audiobooks/H. G. Wells/The Time Machine/01 - The Time Machine.mp3",
+              "relPath": "01 - The Time Machine.mp3",
+              "size": 28808448,
+              "mtimeMs": 1767225600000,
+              "ctimeMs": 1767225601000,
+              "birthtimeMs": 1767225595000
+            },
+            "isSupplementary": null,
+            "addedAt": 1790849100500,
+            "updatedAt": 1790849100500,
+            "fileType": "audio"
+          },
+          {
+            "ino": "2000003",
+            "metadata": {
+              "filename": "02 - The Time Machine.mp3",
+              "ext": ".mp3",
+              "path": "/audiobooks/H. G. Wells/The Time Machine/02 - The Time Machine.mp3",
+              "relPath": "02 - The Time Machine.mp3",
+              "size": 27204096,
+              "mtimeMs": 1767225610000,
+              "ctimeMs": 1767225611000,
+              "birthtimeMs": 1767225605000
+            },
+            "isSupplementary": null,
+            "addedAt": 1790849100500,
+            "updatedAt": 1790849100500,
+            "fileType": "audio"
+          },
+          {
+            "ino": "2000004",
+            "metadata": {
+              "filename": "The Time Machine.epub",
+              "ext": ".epub",
+              "path": "/audiobooks/H. G. Wells/The Time Machine/The Time Machine.epub",
+              "relPath": "The Time Machine.epub",
+              "size": 186523,
+              "mtimeMs": 1767225620000,
+              "ctimeMs": 1767225621000,
+              "birthtimeMs": 1767225615000
+            },
+            "isSupplementary": false,
+            "addedAt": 1790849100500,
+            "updatedAt": 1790849100500,
+            "fileType": "ebook"
+          },
+          {
+            "ino": "2000005",
+            "metadata": {
+              "filename": "cover.jpg",
+              "ext": ".jpg",
+              "path": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+              "relPath": "cover.jpg",
+              "size": 94371,
+              "mtimeMs": 1767225630000,
+              "ctimeMs": 1767225631000,
+              "birthtimeMs": 1767225625000
+            },
+            "isSupplementary": null,
+            "addedAt": 1790849100500,
+            "updatedAt": 1790849100500,
+            "fileType": "image"
+          }
+        ]
+      }
+    }
+  ],
+  "narrators": [],
+  "tags": [],
+  "genres": [],
+  "series": [],
+  "authors": []
+}

@@ -1,0 +1,494 @@
+{
+  "absVersion": "2.37.1",
+  "origin": "synthesised from advplyr/audiobookshelf@743d9152 server source, not a live capture",
+  "steps": [
+    {
+      "name": "status",
+      "method": "GET",
+      "path": "/status",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Server.js /status. authFormData.authLoginCustomMessage is sanitize(null), which returns \"\" (empty string), not null. ConfigPath/MetadataPath only appear when isInit is false."
+    },
+    {
+      "name": "ping",
+      "method": "GET",
+      "path": "/ping",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "login",
+      "method": "POST",
+      "path": "/login",
+      "headers": {
+        "x-return-tokens": "true"
+      },
+      "body": {
+        "username": "listener",
+        "password": "password"
+      },
+      "status": 200,
+      "reply": "json",
+      "note": "Auth.js handleLoginSuccess appends user.refreshToken then user.accessToken after the toOldJSONForBrowser keys. user.isOldToken is undefined (omitted). lastSeen is null because it is only set on socket.io auth (SocketAuthority.js); a pure-HTTP client never sets it - after any socket connect it becomes a ms number."
+    },
+    {
+      "name": "login_cookie",
+      "method": "POST",
+      "path": "/login",
+      "headers": {},
+      "body": {
+        "username": "listener",
+        "password": "password"
+      },
+      "status": 200,
+      "reply": "json",
+      "note": "Without x-return-tokens: user.refreshToken is null and the refresh token is set as the refresh_token cookie instead."
+    },
+    {
+      "name": "authorize",
+      "method": "POST",
+      "path": "/api/authorize",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "MiscController.authorize -> Auth.getUserLoginResponsePayload: same as login but user has NO accessToken/refreshToken keys. isOldToken key appears (true) only if the request authenticated with the legacy non-expiring user.token; with the access token from login it is omitted."
+    },
+    {
+      "name": "me",
+      "method": "GET",
+      "path": "/api/me",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "libraries",
+      "method": "GET",
+      "path": "/api/libraries",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "libraries_stats",
+      "method": "GET",
+      "path": "/api/libraries?include=stats",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "include=stats IS honoured (LibraryController.findAll) - adds library.stats {totalSize,totalDuration,numAudioFiles,totalItems}. totalSize sums libraryItems.size (all files incl. cover), not media.size."
+    },
+    {
+      "name": "library",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}?include=filterdata",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Reply {filterdata, issues, numUserPlaylists, library}. filterdata also carries bookCount/authorCount/seriesCount/podcastCount/numIssues/loadedAt bookkeeping keys. Without include=filterdata the reply is just Library.toOldJSON."
+    },
+    {
+      "name": "library_items",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/items?minified=1&limit=10&page=0",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "sortBy and filterBy are undefined when sort/filter query params are absent, so those keys are omitted. include is \"\" (empty string). limit/page are numbers (middleware coerces). minified=1 has no effect on the item shape (always toOldJSONMinified)."
+    },
+    {
+      "name": "personalized",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/personalized",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Before any progress: recently-added, recent-series, discover, newest-authors (continue-listening/continue-reading/continue-series/listen-again/read-again need progress). Assumes book, series and author were created within the last 60 days (recently-added/recent-series/newest-authors filters). recent-series books are minified with authors=[] and series=[] so authorName/authorNameLF/seriesName are \"\". discover is randomly ordered. After progress exists a continue-listening shelf (type book, minified items) is prepended."
+    },
+    {
+      "name": "search",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/search?q=time",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Only the title matches \"time\". book[] elements are {libraryItem: toOldJSONExpanded}. Non-matching groups are []. Element shapes when they do match: narrators {name,numBooks}; tags/genres {name,numItems}; series {series: Series.toOldJSON, books: [LibraryItem.toOldJSON() (full non-minified, media.authors=[] media.series=[])]}; authors Author.toOldJSONExpanded (+numBooks)."
+    },
+    {
+      "name": "authors",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/authors",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Not paginated (no limit/page) -> {authors:[...]}; with ?limit=&page= the reply is {results,total,limit,page,sortDesc,minified,(sortBy/filterBy/include when given)}. Each author = toOldJSONExpanded(numBooks) + lastFirst."
+    },
+    {
+      "name": "authors_paged",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/authors?limit=10&page=0",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "LibraryController.getAuthors paginated branch: payload {results,total,limit,page,sortDesc,minified}; sortBy/filterBy/include are undefined (no query params) and therefore omitted. limit/page are numbers (LibraryController.middleware coerces). total = findAndCountAll count (distinct, books include required for non-admin). Each result = Author.toOldJSONExpanded(numBooks) + lastFirst."
+    },
+    {
+      "name": "series",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/series",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "QUIRK: with no ?limit the controller passes limit 0 / offset 0 straight to Sequelize findAndCountAll, which emits LIMIT 0, 0 -> results [] while total (separate COUNT) is 1. With ?limit=N each results[] element is Series.toOldJSON + books:[minified library items] (+totalDuration only when sort=totalDuration). sortBy/filterBy keys omitted when absent."
+    },
+    {
+      "name": "series_paged",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/series?limit=10&page=0",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "seriesFilters.getFilteredSeries: each result = Series.toOldJSON + books[] (LibraryItem.toOldJSONMinified; book loaded with authors and series, so authorName/seriesName are populated - unlike the recent-series shelf). totalDuration only added when sort=totalDuration, rssFeed only with include=rssfeed. sortBy/filterBy omitted (undefined); include is \"\"."
+    },
+    {
+      "name": "filterdata",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/filterdata",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Same object as library.filterdata (served from the Database.libraryFilterData cache for 30 min)."
+    },
+    {
+      "name": "library_stats",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/stats",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "narrators",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/narrators",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Narrator id is encodeURIComponent(base64(name))."
+    },
+    {
+      "name": "author",
+      "method": "GET",
+      "path": "/api/authors/{authorId}?include=items",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Author.toOldJSON (no numBooks) + libraryItems (minified). authorJson.series is only added when include also contains \"series\"."
+    },
+    {
+      "name": "series_one",
+      "method": "GET",
+      "path": "/api/series/{seriesId}",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Route exists (deprecated, SeriesController.findOne). Plain Series.toOldJSON; progress/rssFeed only with ?include=progress / rssfeed. 404 if the user can access no book in the series."
+    },
+    {
+      "name": "item",
+      "method": "GET",
+      "path": "/api/items/{itemId}?expanded=1&include=progress",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "userMediaProgress is null (no progress yet) and is appended after libraryFiles. media.ebookFile is the stored LibraryFile JSON + ebookFormat, so it also carries isSupplementary (null) and fileType (\"ebook\")."
+    },
+    {
+      "name": "batch_get",
+      "method": "POST",
+      "path": "/api/items/batch/get",
+      "headers": {},
+      "body": {
+        "libraryItemIds": [
+          "{itemId}"
+        ]
+      },
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "play",
+      "method": "POST",
+      "path": "/api/items/{itemId}/play",
+      "headers": {},
+      "body": {
+        "deviceInfo": {
+          "clientName": "Example",
+          "deviceId": "device-1",
+          "deviceName": "Phone"
+        },
+        "supportedMimeTypes": [
+          "audio/mpeg"
+        ],
+        "mediaPlayer": "AVPlayer",
+        "forceDirectPlay": true,
+        "forceTranscode": false
+      },
+      "status": 200,
+      "reply": "json",
+      "note": "PlaybackSession.toJSONForClient: audioTracks are full audio-file objects + title/startOffset/contentUrl (Book.getTracklist, not objects/files/AudioTrack), libraryItem is toOldJSONExpanded, coverAspectRatio omitted (undefined). deviceInfo null keys are dropped; the client deviceName is ignored by DeviceInfo.setData (deviceName only derived from UA/model) and clientVersion falls back to the server version. Assumes no recognisable User-Agent (otherwise browserName/browserVersion/osName/osVersion/deviceType/deviceName appear). sessionId = id from this reply."
+    },
+    {
+      "name": "sync",
+      "method": "POST",
+      "path": "/api/session/{sessionId}/sync",
+      "headers": {},
+      "body": {
+        "currentTime": 120,
+        "timeListened": 10,
+        "duration": 3500.75
+      },
+      "status": 200,
+      "reply": "text",
+      "note": "res.sendStatus(200) -> text/plain \"OK\". Creates media progress (extraData.progress = session.progress = 120/duration) and persists the session (timeListening > 0)."
+    },
+    {
+      "name": "close",
+      "method": "POST",
+      "path": "/api/session/{sessionId}/close",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "text",
+      "note": "Empty body -> syncData null -> saveSession only. res.sendStatus(200) -> \"OK\"."
+    },
+    {
+      "name": "progress_patch",
+      "method": "PATCH",
+      "path": "/api/me/progress/{itemId}",
+      "headers": {},
+      "body": {
+        "currentTime": 150,
+        "duration": 3500.75,
+        "progress": 0.04284796115118189,
+        "isFinished": false
+      },
+      "status": 200,
+      "reply": "text",
+      "note": "res.sendStatus(200) -> \"OK\". Because isFinished is present, MediaProgress.applyProgressUpdate skips the extraData.progress update, so the reported progress stays at the sync value (120/duration) while currentTime becomes 150."
+    },
+    {
+      "name": "progress_get",
+      "method": "GET",
+      "path": "/api/me/progress/{itemId}",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "progress_all",
+      "method": "GET",
+      "path": "/api/me/progress",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "items_in_progress",
+      "method": "GET",
+      "path": "/api/me/items-in-progress",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Minified library items + progressLastUpdate."
+    },
+    {
+      "name": "listening_stats",
+      "method": "GET",
+      "path": "/api/me/listening-stats",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "items[id] has no lastUpdate key (old PlaybackSession has no lastUpdate -> undefined, dropped). recentSessions are PlaybackSession.toJSON (no audioTracks/libraryItem); sessions read from the DB have chapters [] and deviceInfo rebuilt from the Device row. today/days depend on server date."
+    },
+    {
+      "name": "listening_sessions",
+      "method": "GET",
+      "path": "/api/me/listening-sessions",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "bookmark_add",
+      "method": "POST",
+      "path": "/api/me/item/{itemId}/bookmark",
+      "headers": {},
+      "body": {
+        "time": 60,
+        "title": "Example bookmark"
+      },
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "local_all",
+      "method": "POST",
+      "path": "/api/session/local-all",
+      "headers": {},
+      "body": {
+        "deviceInfo": {
+          "clientName": "Example",
+          "deviceId": "device-1",
+          "deviceName": "Phone"
+        },
+        "sessions": [
+          {
+            "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "userId": "22222222-2222-4222-8222-222222222222",
+            "libraryId": "{libraryId}",
+            "libraryItemId": "{itemId}",
+            "episodeId": null,
+            "mediaType": "book",
+            "mediaMetadata": {
+              "title": "The Time Machine",
+              "subtitle": null,
+              "authors": [
+                {
+                  "id": "{authorId}",
+                  "name": "H. G. Wells"
+                }
+              ],
+              "narrators": [
+                "Example Narrator"
+              ],
+              "series": [
+                {
+                  "id": "{seriesId}",
+                  "name": "Example Series",
+                  "sequence": "1"
+                }
+              ],
+              "genres": [
+                "Science Fiction"
+              ],
+              "publishedYear": "1895",
+              "publishedDate": null,
+              "publisher": null,
+              "description": "A Victorian scientist builds a machine that carries him into the far future.",
+              "isbn": null,
+              "asin": null,
+              "language": "en",
+              "explicit": false,
+              "abridged": false
+            },
+            "chapters": [
+              {
+                "start": 0,
+                "end": 900,
+                "title": "Chapter 1",
+                "id": 0
+              },
+              {
+                "start": 900,
+                "end": 1800.5,
+                "title": "Chapter 2",
+                "id": 1
+              },
+              {
+                "start": 1800.5,
+                "end": 2650.5,
+                "title": "Chapter 3",
+                "id": 2
+              },
+              {
+                "start": 2650.5,
+                "end": 3500.75,
+                "title": "Chapter 4",
+                "id": 3
+              }
+            ],
+            "displayTitle": "The Time Machine",
+            "displayAuthor": "H. G. Wells",
+            "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+            "duration": 3500.75,
+            "playMethod": 3,
+            "mediaPlayer": "AVPlayer",
+            "deviceInfo": {
+              "clientName": "Example",
+              "deviceId": "device-1",
+              "deviceName": "Phone"
+            },
+            "serverVersion": "2.37.1",
+            "date": "2026-10-11",
+            "dayOfWeek": "Sunday",
+            "timeListening": 50,
+            "startTime": 150,
+            "currentTime": 200,
+            "startedAt": 1791716400000,
+            "updatedAt": 1791720100000
+          }
+        ]
+      },
+      "status": 200,
+      "reply": "json",
+      "note": "Reply {results:[{id,success,progressSynced}]}; failure entries are {id,success:false,error}. progressSynced is true only because the session updatedAt is newer than the progress updatedAt; progress then takes currentTime 200, progress 200/duration and updatedAt = session updatedAt."
+    },
+    {
+      "name": "personalized_after",
+      "method": "GET",
+      "path": "/api/libraries/{libraryId}/personalized",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json",
+      "note": "Progress currentTime 200/3500.75, not finished, not hidden. Shelves in code order: continue-listening (type \"book\"; numTracks>0 so not continue-reading; total from findAndCountAll), recently-added, recent-series, newest-authors. continue-series absent (needs a finished book in the series), discover absent (the only book has currentTime>0 and its series counts as started), listen-again/read-again absent (nothing finished). Entities on continue-listening are plain minified items (no progress embedded)."
+    },
+    {
+      "name": "me_after",
+      "method": "GET",
+      "path": "/api/me",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    },
+    {
+      "name": "authorize_after",
+      "method": "POST",
+      "path": "/api/authorize",
+      "headers": {},
+      "body": null,
+      "status": 200,
+      "reply": "json"
+    }
+  ]
+}

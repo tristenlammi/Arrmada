@@ -1,0 +1,34 @@
+{
+  "authors": [
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "name": "H. G. Wells"
+    }
+  ],
+  "genres": [
+    "Science Fiction"
+  ],
+  "tags": [],
+  "series": [
+    {
+      "id": "88888888-8888-4888-8888-888888888888",
+      "name": "Example Series"
+    }
+  ],
+  "narrators": [
+    "Example Narrator"
+  ],
+  "languages": [
+    "en"
+  ],
+  "publishers": [],
+  "publishedDecades": [
+    "1890"
+  ],
+  "bookCount": 1,
+  "authorCount": 1,
+  "seriesCount": 1,
+  "podcastCount": 0,
+  "numIssues": 0,
+  "loadedAt": 1791720008000
+}

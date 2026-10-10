@@ -1,0 +1,54 @@
+{
+  "id": "22222222-2222-4222-8222-222222222222",
+  "username": "listener",
+  "email": null,
+  "type": "user",
+  "token": "<redacted>",
+  "mediaProgress": [
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "userId": "22222222-2222-4222-8222-222222222222",
+      "libraryItemId": "55555555-5555-4555-8555-555555555555",
+      "episodeId": null,
+      "mediaItemId": "66666666-6666-4666-8666-666666666666",
+      "mediaItemType": "book",
+      "duration": 3500.75,
+      "progress": 0.05713061486824252,
+      "currentTime": 200,
+      "isFinished": false,
+      "hideFromContinueListening": false,
+      "ebookLocation": null,
+      "ebookProgress": 0,
+      "lastUpdate": 1791720100000,
+      "startedAt": 1791720075100,
+      "finishedAt": null
+    }
+  ],
+  "seriesHideFromContinueListening": [],
+  "bookmarks": [
+    {
+      "libraryItemId": "55555555-5555-4555-8555-555555555555",
+      "time": 60,
+      "title": "Example bookmark",
+      "createdAt": 1791720120000
+    }
+  ],
+  "isActive": true,
+  "isLocked": false,
+  "lastSeen": null,
+  "createdAt": 1790849400000,
+  "permissions": {
+    "download": true,
+    "update": false,
+    "delete": false,
+    "upload": false,
+    "createEreader": false,
+    "accessAllLibraries": true,
+    "accessAllTags": true,
+    "accessExplicitContent": false,
+    "selectedTagsNotAccessible": false
+  },
+  "librariesAccessible": [],
+  "itemTagsSelected": [],
+  "hasOpenIDLink": false
+}

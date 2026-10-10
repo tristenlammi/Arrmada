@@ -1,0 +1,179 @@
+# Known, deliberate differences between Arrmada's replies and Audiobookshelf's
+# (TestRepliesMatchAudiobookshelf). One per line: <step|*> <json.path> <kind> <reason>
+# kind is missing, null, kind, idshape, body or status (as the test reports it).
+# "*" matches the path in every step; "[]" is any array element; a path ending in
+# "*" covers everything under it. A line that no longer matches a difference fails
+# TestAllowedDiffsAreNotStale, so remove it when the gap is closed.
+* $.authors[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.include missing first run: not sent by Arrmada
+* $.libraries[].folders[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraries[].folders[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraries[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraries[].lastScan null first run: Arrmada sends null where Audiobookshelf has a value
+* $.libraries[].lastScanVersion null first run: Arrmada sends null where Audiobookshelf has a value
+* $.libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItems[].folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItems[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItems[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItems[].media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+* $.libraryItems[].media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.libraryItems[].media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+* $.libraryItems[].media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+* $.mediaProgress[].ebookProgress null first run: Arrmada sends null where Audiobookshelf has a value
+* $.mediaProgress[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.mediaProgress[].libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.mediaProgress[].mediaItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.mediaProgress[].userId missing first run: not sent by Arrmada
+* $.minified missing first run: not sent by Arrmada
+* $.permissions.createEreader missing first run: not sent by Arrmada
+* $.permissions.selectedTagsNotAccessible missing first run: not sent by Arrmada
+* $.results[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.results[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.serverSettings.allowIframe missing first run: not sent by Arrmada
+* $.serverSettings.allowedOrigins missing first run: not sent by Arrmada
+* $.serverSettings.authLoginCustomMessage missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDAuthorizationURL missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDAutoRegister missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDIssuerURL missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDJwksURL missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDLogoutURL missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDMatchExistingBy missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDTokenSigningAlgorithm missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDTokenURL missing first run: not sent by Arrmada
+* $.serverSettings.authOpenIDUserInfoURL missing first run: not sent by Arrmada
+* $.serverSettings.backupPath missing first run: not sent by Arrmada
+* $.serverSettings.backupSchedule missing first run: not sent by Arrmada
+* $.serverSettings.backupsToKeep missing first run: not sent by Arrmada
+* $.serverSettings.loggerDailyLogsToKeep missing first run: not sent by Arrmada
+* $.serverSettings.loggerScannerLogsToKeep missing first run: not sent by Arrmada
+* $.serverSettings.maxBackupSize missing first run: not sent by Arrmada
+* $.serverSettings.metadataFileFormat missing first run: not sent by Arrmada
+* $.serverSettings.rateLimitLoginRequests missing first run: not sent by Arrmada
+* $.serverSettings.rateLimitLoginWindow missing first run: not sent by Arrmada
+* $.serverSettings.scannerCoverProvider missing first run: not sent by Arrmada
+* $.serverSettings.scannerDisableWatcher missing first run: not sent by Arrmada
+* $.serverSettings.scannerFindCovers missing first run: not sent by Arrmada
+* $.serverSettings.scannerParseSubtitle missing first run: not sent by Arrmada
+* $.serverSettings.scannerPreferMatchedMetadata missing first run: not sent by Arrmada
+* $.serverSettings.storeCoverWithItem missing first run: not sent by Arrmada
+* $.serverSettings.storeMetadataWithItem missing first run: not sent by Arrmada
+* $.serverSettings.timeZone missing first run: not sent by Arrmada
+* $.sortDesc missing first run: not sent by Arrmada
+* $.token missing first run: not sent by Arrmada
+* $.user.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $.user.permissions.createEreader missing first run: not sent by Arrmada
+* $.user.permissions.selectedTagsNotAccessible missing first run: not sent by Arrmada
+* $.user.token missing first run: not sent by Arrmada
+* $.userDefaultLibraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $[].entities[].folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $[].entities[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $[].entities[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $[].entities[].media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+* $[].entities[].media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+* $[].entities[].media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+* $[].entities[].media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+* $body body first run: Audiobookshelf answers "OK" text
+authorize_after $.user.bookmarks[].libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+authorize_after $.user.mediaProgress[].ebookProgress null first run: Arrmada sends null where Audiobookshelf has a value
+authorize_after $.user.mediaProgress[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+authorize_after $.user.mediaProgress[].libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+authorize_after $.user.mediaProgress[].mediaItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+authorize_after $.user.mediaProgress[].userId missing first run: not sent by Arrmada
+authors $.authors[].lastFirst missing first run: not sent by Arrmada
+authors $.authors[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+authors_paged $.results[].lastFirst missing first run: not sent by Arrmada
+batch_get $.libraryItems[].lastScan missing first run: not sent by Arrmada
+batch_get $.libraryItems[].libraryFiles missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.audioFiles missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.chapters missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.ebookFile missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.libraryItemId missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.metadata.authors missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.metadata.descriptionPlain missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.metadata.narrators missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.metadata.series missing first run: not sent by Arrmada
+batch_get $.libraryItems[].media.tracks missing first run: not sent by Arrmada
+batch_get $.libraryItems[].scanVersion missing first run: not sent by Arrmada
+filterdata $.series[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.lastScan null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.audioFiles[].metaTags.* missing first run: only the tags a file carries are sent
+item $.media.audioFiles[].metaTags.* null first run: only the tags a file carries are sent
+item $.media.audioFiles[].trackNumFromMeta null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.ebookFile null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.media.libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.media.metadata.authors[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+item $.media.metadata.series[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+item $.media.tracks[].metaTags.* missing first run: only the tags a file carries are sent
+item $.media.tracks[].metaTags.* null first run: only the tags a file carries are sent
+item $.media.tracks[].trackNumFromMeta null first run: Arrmada sends null where Audiobookshelf has a value
+item $.scanVersion null first run: Arrmada sends null where Audiobookshelf has a value
+item $.userMediaProgress missing first run: not sent by Arrmada
+library $.filterdata.authors[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library $.filterdata.series[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library $.library.folders[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library $.library.folders[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library $.library.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library $.library.lastScan null first run: Arrmada sends null where Audiobookshelf has a value
+library $.library.lastScanVersion null first run: Arrmada sends null where Audiobookshelf has a value
+library_items $.results[].folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library_items $.results[].media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+library_items $.results[].media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+library_items $.results[].media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+library_items $.results[].media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+listening_stats $.dayOfWeek.Sunday missing first run: not sent by Arrmada
+listening_stats $.days.2026-10-11 missing first run: not sent by Arrmada
+listening_stats $.items.55555555-5555-4555-8555-555555555555 missing first run: not sent by Arrmada
+local_all $.results[].progressSynced missing first run: not sent by Arrmada
+me_after $.bookmarks[].libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.audioTracks[].metaTags.* missing first run: only the tags a file carries are sent
+play $.audioTracks[].metaTags.* null first run: only the tags a file carries are sent
+play $.audioTracks[].trackNumFromMeta null first run: Arrmada sends null where Audiobookshelf has a value
+play $.bookId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.deviceInfo.clientVersion missing first run: not sent by Arrmada
+play $.deviceInfo.id missing first run: not sent by Arrmada
+play $.deviceInfo.ipAddress missing first run: not sent by Arrmada
+play $.deviceInfo.userId missing first run: not sent by Arrmada
+play $.libraryItem.folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.lastScan null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.media.audioFiles[].metaTags.* missing first run: only the tags a file carries are sent
+play $.libraryItem.media.audioFiles[].metaTags.* null first run: only the tags a file carries are sent
+play $.libraryItem.media.audioFiles[].trackNumFromMeta null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.media.ebookFile null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.media.libraryItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.media.metadata.authors[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.media.metadata.series[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.libraryItem.media.tracks[].metaTags.* missing first run: only the tags a file carries are sent
+play $.libraryItem.media.tracks[].metaTags.* null first run: only the tags a file carries are sent
+play $.libraryItem.media.tracks[].trackNumFromMeta null first run: Arrmada sends null where Audiobookshelf has a value
+play $.libraryItem.scanVersion null first run: Arrmada sends null where Audiobookshelf has a value
+play $.mediaMetadata.authors[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.mediaMetadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+play $.mediaMetadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+play $.mediaMetadata.series[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+play $.userId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+progress_get $.ebookProgress null first run: Arrmada sends null where Audiobookshelf has a value
+progress_get $.mediaItemId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+progress_get $.userId missing first run: not sent by Arrmada
+series_paged $.results[].books[].folderId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+series_paged $.results[].books[].id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+series_paged $.results[].books[].libraryId idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+series_paged $.results[].books[].media.ebookFormat null first run: Arrmada sends null where Audiobookshelf has a value
+series_paged $.results[].books[].media.id idshape Arrmada's own ids, not UUIDs (AUD-14 decides per device)
+series_paged $.results[].books[].media.metadata.language null first run: Arrmada sends null where Audiobookshelf has a value
+series_paged $.results[].books[].media.metadata.publishedYear null first run: Arrmada sends null where Audiobookshelf has a value
+series_paged $.results[].description missing first run: not sent by Arrmada
+series_paged $.results[].updatedAt missing first run: not sent by Arrmada
+status $.authFormData.authLoginCustomMessage missing first run: not sent by Arrmada
