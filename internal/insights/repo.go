@@ -45,7 +45,12 @@ type sessionRecord struct {
 }
 
 func (r *repo) insertSession(ctx context.Context, s sessionRecord) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `
+	return r.insertSessionEx(ctx, r.db, s)
+}
+
+// insertSessionEx is insertSession on the database or inside a transaction.
+func (r *repo) insertSessionEx(ctx context.Context, ex execer, s sessionRecord) (int64, error) {
+	res, err := ex.ExecContext(ctx, `
 		INSERT INTO stream_sessions
 		 (session_key,user_id,user_name,rating_key,media_type,title,grandparent_title,parent_title,
 		  media_index,parent_index,year,thumb,player,platform,product,ip_address,location,decision,
@@ -73,7 +78,11 @@ func (r *repo) sessionExists(ctx context.Context, userID, ratingKey string, star
 }
 
 func (r *repo) insertBufferEvent(ctx context.Context, sessionID, at, offsetMS, durationMS int64, cause, detail string) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,duration_ms,cause,detail) VALUES (?,?,?,?,?,?)`, sessionID, at, offsetMS, durationMS, cause, detail)
+	return r.insertBufferEventEx(ctx, r.db, sessionID, at, offsetMS, durationMS, cause, detail)
+}
+
+func (r *repo) insertBufferEventEx(ctx context.Context, ex execer, sessionID, at, offsetMS, durationMS int64, cause, detail string) error {
+	_, err := ex.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,duration_ms,cause,detail) VALUES (?,?,?,?,?,?)`, sessionID, at, offsetMS, durationMS, cause, detail)
 	return err
 }
 

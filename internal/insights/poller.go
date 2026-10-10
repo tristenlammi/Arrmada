@@ -2,10 +2,12 @@ package insights
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/plex"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // liveSession tracks one in-flight stream across polls so we can record it accurately when it ends.
@@ -31,6 +33,10 @@ type liveSession struct {
 	lastOffsetMS int64 // previous poll's playback offset, for seek detection
 	bufCount     int
 	bufEvents    []bufEvent
+	// resumed marks a session restored from insights_live_sessions at boot, not yet seen
+	// by this run: the first poll that finds it continues it (see resume) rather than
+	// announcing it as a new stream.
+	resumed bool
 }
 
 type bufEvent struct {
@@ -45,12 +51,15 @@ type bufEvent struct {
 // the interval + enabled flag each cycle so settings changes take effect without a restart. When
 // Insights is disabled or unconfigured we flush any in-flight sessions immediately (capped at their
 // lastSeen) rather than stranding them until a later re-enable would backfill days of phantom time.
+//
+// Streams in progress are saved every poll and picked up again at the next start, so stopping
+// doesn't finalize them: a restart continues each play instead of splitting it in two.
 func (s *Service) Run(ctx context.Context) {
+	s.restoreLive(ctx)
 	wait := time.Duration(s.pollSeconds(ctx)) * time.Second
 	for {
 		select {
 		case <-ctx.Done():
-			s.flushAll(context.Background())
 			return
 		case <-time.After(wait):
 		}
@@ -114,6 +123,13 @@ func (s *Service) reconcile(ctx context.Context, sessions []plex.Session, now ti
 			delete(s.live, sess.SessionKey)
 			ls = nil
 		}
+		// A stream the last run was following, seen again: the same play continues, with
+		// no second "Now playing" — unless it was gone so long that it can't be the same.
+		if ls != nil && ls.resumed && !ls.resume(sess, now) {
+			s.finalize(ctx, ls)
+			delete(s.live, sess.SessionKey)
+			ls = nil
+		}
 		if ls == nil {
 			ls = &liveSession{started: now, lastSeen: now, state: sess.State, sess: sess}
 			s.live[sess.SessionKey] = ls
@@ -140,13 +156,15 @@ func (s *Service) reconcile(ctx context.Context, sessions []plex.Session, now ti
 	s.playing.Store(playing)
 	s.playingAt.Store(now.Unix())
 
-	// Finalize sessions that vanished since the last poll.
+	// Finalize sessions that vanished since the last poll — including ones restored from
+	// before a restart that ended while Arrmada was down (credited up to their last sighting).
 	for key, ls := range s.live {
 		if !seen[key] {
 			s.finalize(ctx, ls)
 			delete(s.live, key)
 		}
 	}
+	s.saveAllLive(ctx)
 
 	_ = s.repo.insertBandwidth(ctx, now.Unix(), total, lan, wan)
 }
@@ -259,29 +277,52 @@ func (ls *liveSession) record(now time.Time) sessionRecord {
 // lastSeen — the last poll that actually observed it playing — so wall-clock time during an outage,
 // a disable, or between the last sighting and "now" is never counted. Blips shorter than a poll are
 // dropped.
+//
+// The row, its buffer events and the removal of the saved in-progress copy are one
+// transaction: a crash part-way leaves the saved copy, which the next start finishes, so a
+// play is never recorded twice or lost.
 func (s *Service) finalize(ctx context.Context, ls *liveSession) {
+	key := ls.sess.SessionKey
 	if ls.lastSeen.Sub(ls.started) < 2*time.Second {
+		if err := s.repo.deleteLive(ctx, s.repo.db, key); err != nil && ctx.Err() == nil {
+			s.log.Warn("insights: couldn't clear a saved stream", "err", err)
+		}
 		return
 	}
 	rec := ls.record(ls.lastSeen)
-	id, err := s.repo.insertSession(ctx, rec)
+	err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+		id, err := s.repo.insertSessionEx(ctx, tx, rec)
+		if err != nil {
+			return err
+		}
+		for _, be := range ls.bufEvents {
+			if err := s.repo.insertBufferEventEx(ctx, tx, id, be.at.Unix(), be.offset, be.durationMS, be.cause, be.detail); err != nil {
+				return err
+			}
+		}
+		return s.repo.deleteLive(ctx, tx, key)
+	})
 	if err != nil {
 		s.log.Warn("insights: could not record session", "title", rec.Title, "err", err)
 		return
 	}
-	for _, be := range ls.bufEvents {
-		_ = s.repo.insertBufferEvent(ctx, id, be.at.Unix(), be.offset, be.durationMS, be.cause, be.detail)
-	}
 	s.log.Debug("insights: recorded session", "title", rec.Title, "user", rec.UserName, "buffers", ls.bufCount)
 }
 
-// flushAll finalizes every in-flight session (called on shutdown, and when Insights is disabled or
-// unconfigured). Each is capped at its lastSeen, so flushing a week after a stream was last observed
-// records only the watched portion, not the gap.
+// flushAll finalizes every in-flight session (when Insights is disabled or unconfigured).
+// Each is capped at its lastSeen, so flushing a week after a stream was last observed
+// records only the watched portion, not the gap. Nothing in progress is left saved: a later
+// re-enable starts fresh.
 func (s *Service) flushAll(ctx context.Context) {
+	if len(s.live) == 0 {
+		return
+	}
 	for key, ls := range s.live {
 		s.finalize(ctx, ls)
 		delete(s.live, key)
+	}
+	if err := s.repo.clearLive(ctx); err != nil {
+		s.log.Warn("insights: couldn't clear the saved streams", "err", err)
 	}
 }
 
