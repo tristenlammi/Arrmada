@@ -27,13 +27,19 @@ func decodeLenient(r *http.Request, dst any) error {
 }
 
 // handleFile streams one audio file; Range requests make seeking work.
-func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) { s.serveFile(w, r, false) }
+func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r, r.PathValue("id"), r.PathValue("ino"), false)
+}
 
-func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) { s.serveFile(w, r, true) }
+func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	s.serveFile(w, r, r.PathValue("id"), r.PathValue("ino"), true)
+}
 
-func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, attach bool) {
+// serveFile streams one of an item's audio files, picked by its ino from the item's own
+// file list (so nothing outside the audiobook can be named).
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, key, ino string, attach bool) {
 	ctx := r.Context()
-	it, err := s.item(ctx, r.PathValue("id"))
+	it, err := s.item(ctx, key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Item not found")
 		return
@@ -43,7 +49,6 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, attach bool) 
 		writeError(w, http.StatusNotFound, "File not found")
 		return
 	}
-	ino := r.PathValue("ino")
 	for _, f := range files {
 		if f.Ino != ino {
 			continue
@@ -118,14 +123,20 @@ func (s *Server) WriteAudiobook(ctx context.Context, w http.ResponseWriter, r *h
 }
 
 func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
-	it, err := s.item(r.Context(), r.PathValue("id"))
+	s.serveCover(w, r, r.PathValue("id"), "")
+}
+
+// serveCover sends an item's cover. cache overrides the Cache-Control the apps get
+// ("" keeps it).
+func (s *Server) serveCover(w http.ResponseWriter, r *http.Request, key, cache string) {
+	it, err := s.item(r.Context(), key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Item not found")
 		return
 	}
 	// A cover uploaded in Arrmada wins.
 	if m, _ := filepath.Glob(filepath.Join(s.coverDir, fmt.Sprintf("book-%d.*", it.Book.ID))); len(m) > 0 {
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Cache-Control", firstNonEmpty(cache, "public, max-age=86400"))
 		http.ServeFile(w, r, m[0])
 		return
 	}
@@ -134,7 +145,7 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "No cover")
 		return
 	}
-	s.images.serve(w, r, u)
+	s.images.serve(w, r, u, cache)
 }
 
 func (s *Server) handleAuthorImage(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +153,7 @@ func (s *Server) handleAuthorImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("aid")
 	for name, u := range s.books.KnownAuthorImages(ctx) {
 		if isAuthorID(id, name) && (strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
-			s.images.serve(w, r, u)
+			s.images.serve(w, r, u, "")
 			return
 		}
 	}
@@ -161,7 +172,7 @@ func newImageCache(dir string) *imageCache {
 	return &imageCache{dir: dir, client: &http.Client{Timeout: 20 * time.Second}}
 }
 
-func (c *imageCache) serve(w http.ResponseWriter, r *http.Request, url string) {
+func (c *imageCache) serve(w http.ResponseWriter, r *http.Request, url, cache string) {
 	h := sha1.Sum([]byte(url))
 	path := filepath.Join(c.dir, hex.EncodeToString(h[:]))
 	if _, err := os.Stat(path); err != nil {
@@ -170,7 +181,7 @@ func (c *imageCache) serve(w http.ResponseWriter, r *http.Request, url string) {
 			return
 		}
 	}
-	w.Header().Set("Cache-Control", "public, max-age=604800")
+	w.Header().Set("Cache-Control", firstNonEmpty(cache, "public, max-age=604800"))
 	if ct, err := os.ReadFile(path + ".type"); err == nil {
 		w.Header().Set("Content-Type", string(ct))
 	}

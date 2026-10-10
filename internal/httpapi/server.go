@@ -224,6 +224,20 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE /api/v1/me/audio/devices/{family}", a.signedIn(a.handleRevokeMyDevice).ext())
 	mux.HandleFunc("GET /api/v1/me/audio/history", a.signedIn(a.handleMyAudioHistory).ext())
 	mux.HandleFunc("POST /api/v1/me/audio/restore", a.signedIn(a.handleMyAudioRestore).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/undiscard", a.signedIn(a.handleMyAudioUndiscard).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/dismiss", a.signedIn(a.handleMyAudioDismiss).ext())
+	// Arrmada's own listening API (the web player; audioplayer.go).
+	mux.HandleFunc("GET /api/v1/me/audio/shelves", a.signedIn(a.handleAudioShelves).ext())
+	mux.HandleFunc("GET /api/v1/me/audio/library", a.signedIn(a.handleAudioLibrary).ext())
+	mux.HandleFunc("GET /api/v1/me/audio/items/{key}", a.signedIn(a.handleAudioItem).ext())
+	mux.HandleFunc("GET /api/v1/me/audio/items/{key}/cover", a.signedIn(a.handleAudioCover).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/items/{key}/play", a.signedIn(a.handleAudioPlay).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/sessions/{sid}/sync", a.signedIn(a.handleAudioSync).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/sessions/{sid}/close", a.signedIn(a.handleAudioClose).ext())
+	mux.HandleFunc("GET /api/v1/me/audio/items/{key}/file/{ino}", a.signedIn(a.handleAudioFile).ext())
+	mux.HandleFunc("GET /api/v1/me/audio/items/{key}/bookmarks", a.signedIn(a.handleAudioBookmarks).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/items/{key}/bookmarks", a.signedIn(a.handleAddAudioBookmark).ext())
+	mux.HandleFunc("DELETE /api/v1/me/audio/items/{key}/bookmarks/{time}", a.signedIn(a.handleDeleteAudioBookmark).ext())
 	mux.HandleFunc("GET /api/v1/books/{id}/audiobook", a.signedIn(a.handleBookAudiobook).ext())
 
 	// Auth

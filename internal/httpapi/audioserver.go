@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/jobs"
+	"github.com/tristenlammi/arrmada/internal/listening"
 )
 
 // The audiobook server's pages in Arrmada: the admin panel (switch it on, who may
@@ -295,19 +297,39 @@ func (a *api) handleMyAudio(w http.ResponseWriter, r *http.Request) {
 	out["min_password_length"] = audioserver.MinPasswordLength
 	devs, _ := a.deps.AudioServer.Accounts.Devices(ctx, u.ID)
 	out["devices"] = devs
-	progress, _ := a.deps.AudioServer.Listen().AllProgress(ctx, u.ID)
+	store := a.deps.AudioServer.Listen()
+	progress, _ := store.AllProgress(ctx, u.ID)
+	offers, _ := store.Offers(ctx, u.ID)
 	places := []map[string]any{}
 	for _, p := range progress {
 		info, ok := a.deps.AudioServer.Info(ctx, p.ItemKey)
 		if !ok {
 			continue
 		}
+		// offer: a later spot an app sent that wasn't used ("use it?"), or null.
+		var offer any
+		if o, ok := offers[p.ItemKey]; ok {
+			offer = map[string]any{"history_id": o.ID, "position": o.Position, "at": o.At, "device": o.Device, "reason": o.Reason}
+		}
 		places = append(places, map[string]any{"item_key": p.ItemKey, "book_id": info.BookID, "title": info.Title,
 			"author": info.Author, "cover_url": info.CoverURL, "position": p.Position, "duration": p.Duration,
 			"finished": p.Finished, "updated_at": p.UpdatedAt, "device": p.Device,
-			"pending_position": p.PendingPosition, "pending_at": p.PendingAt})
+			"pending_position": p.PendingPosition, "pending_at": p.PendingAt, "offer": offer})
 	}
 	out["places"] = places
+	// Places an app removed, still restorable ("Recently removed").
+	discarded, _ := store.Discarded(ctx, u.ID)
+	removed := []map[string]any{}
+	for _, p := range discarded {
+		info, ok := a.deps.AudioServer.Info(ctx, p.ItemKey)
+		if !ok {
+			continue
+		}
+		removed = append(removed, map[string]any{"item_key": p.ItemKey, "book_id": info.BookID, "title": info.Title,
+			"author": info.Author, "cover_url": info.CoverURL, "position": p.Position, "duration": p.Duration,
+			"finished": p.Finished, "discarded_at": p.DiscardedAt, "device": p.By})
+	}
+	out["removed"] = removed
 	a.writeJSON(w, http.StatusOK, out)
 }
 
@@ -393,7 +415,8 @@ func (a *api) handleMyAudioAccept(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"position": d.Progress.Position})
 }
 
-// handleMyAudioRestore — POST /api/v1/me/audio/restore {item, history_id}
+// handleMyAudioRestore — POST /api/v1/me/audio/restore {item, history_id}: put the place
+// back to any row of its timeline. Using an offered later spot also settles the offer.
 func (a *api) handleMyAudioRestore(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.audioUser(w, r)
 	if !ok {
@@ -412,6 +435,57 @@ func (a *api) handleMyAudioRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"position": d.Progress.Position})
+}
+
+// handleMyAudioUndiscard — POST /api/v1/me/audio/undiscard {item}: put back a place an
+// app removed, exactly as it was.
+func (a *api) handleMyAudioUndiscard(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.audioUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Item string `json:"item"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	store := a.deps.AudioServer.Listen()
+	if err := store.Undiscard(r.Context(), u.ID, req.Item); err != nil {
+		if errors.Is(err, listening.ErrNothingToRestore) {
+			a.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not put the place back")
+		return
+	}
+	p, _, _ := store.Progress(r.Context(), u.ID, req.Item)
+	a.writeJSON(w, http.StatusOK, map[string]any{"position": p.Position})
+}
+
+// handleMyAudioDismiss — POST /api/v1/me/audio/dismiss {item, history_id}: say no to a
+// later spot an app sent, so it isn't offered again.
+func (a *api) handleMyAudioDismiss(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.audioUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Item      string `json:"item"`
+		HistoryID int64  `json:"history_id"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.AudioServer.Listen().Dismiss(r.Context(), u.ID, req.Item, req.HistoryID); err != nil {
+		if errors.Is(err, listening.ErrNoHistory) {
+			a.writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not dismiss it")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleBookAudiobook — GET /api/v1/books/{id}/audiobook[?version=N]: the audiobook as a

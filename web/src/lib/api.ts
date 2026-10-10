@@ -566,7 +566,13 @@ export interface UserNotification {
   plex_url?: string;
 }
 
-export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
+export interface CalendarItem {
+  date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean;
+  // The title's TMDB id and kind open its Discover page (APP-16); the episode's numbers and name.
+  tmdb_id?: number; media_type?: "movie" | "series"; year?: number; season?: number; episode?: number; episode_title?: string;
+  // The viewer asked for this title or follows a request for it (APP-17).
+  requested_by_me?: boolean;
+}
 
 export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }
 // Audiobook server (listening apps like Lissen).
@@ -582,9 +588,46 @@ export interface AudioServerAdmin extends AudioConnection {
 }
 export interface AudioPlace { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; updated_at: number; device?: string;
   /** A big jump back that's being held until it proves itself (or the person confirms it). */
-  pending_position?: number | null; pending_at?: number }
-export interface MyAudio extends AudioConnection { username: string; allowed: boolean; has_password: boolean; min_password_length: number; devices: AudioDevice[]; places: AudioPlace[] }
-export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string }
+  pending_position?: number | null; pending_at?: number;
+  /** A later spot an app sent that wasn't used (e.g. offline listening uploaded after another device moved the place). */
+  offer?: AudioOffer | null }
+/** A place an app sent that wasn't used, offered back: restore it with history_id, or dismiss it. */
+export interface AudioOffer { history_id: number; position: number; at: number; device?: string; reason: string }
+/** A place an app removed ("discard progress"), restorable for 90 days. device is who removed it. */
+export interface AudioRemoved { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; discarded_at: number; device?: string }
+export interface MyAudio extends AudioConnection { username: string; allowed: boolean; has_password: boolean; min_password_length: number; devices: AudioDevice[]; places: AudioPlace[]; removed: AudioRemoved[] }
+/** What a timeline row is: the place moved (applied), the place just before a change (before), a place an app sent that
+ *  wasn't used (rejected), a jump waiting for proof (held), an app removing the place (discarded), or a place put back (restored). */
+export type AudioHistoryKind = "applied" | "before" | "rejected" | "held" | "discarded" | "restored";
+export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string; kind: AudioHistoryKind; dismissed?: boolean }
+// Arrmada's own listening API (/api/v1/me/audio/*, the web player). Every call is about
+// the signed-in person; a 403 means audiobooks are switched off or the account isn't
+// allowed ("message" says which).
+/** A place in an audiobook as the listening API returns it. pending_position is a held jump. */
+export interface AudioProgress { item_key: string; position: number; duration: number; finished: boolean; finished_at?: number; updated_at: number; device?: string; hidden?: boolean; pending_position?: number | null }
+/** An audiobook as the web player lists it. cover is same-origin (cache-busted with ?v=); duration is 0 until its files are read. */
+export interface AudioCard { key: string; book_id: number; version_id?: number; title: string; author?: string; series?: string; series_seq?: string; cover?: string; duration: number; added_at: number; progress: AudioProgress | null }
+export interface AudioShelf { id: "continue-listening" | "continue-series" | "recently-added" | "listen-again" | string; label: string; items: AudioCard[] }
+export interface AudioChapter { id: number; start: number; end: number; title: string }
+/** One audio file in play order; start_offset is where it starts in the whole book; url streams it (Range works). */
+export interface AudioTrack { ino: string; index: number; start_offset: number; duration: number; mime: string; url: string }
+export interface AudioBookmark { item_key: string; time: number; title: string; created_at: number }
+export interface AudioItemDetail extends AudioCard {
+  description?: string; year?: number; genres: string[]; chapters: AudioChapter[]; tracks: AudioTrack[];
+  /** Other audiobooks of the same book (full cast, another narrator). */
+  versions: { key: string; title: string }[];
+  bookmarks: AudioBookmark[];
+}
+export type AudioLibrarySort = "title" | "author" | "added" | "duration";
+export type AudioLibraryFilter = "" | "in-progress" | "finished" | "not-started";
+export interface AudioLibraryPage { items: AudioCard[]; total: number; page: number; limit: number }
+/** A web-player session just opened: play from start_time. restart = a finished book starting again from 0:00. */
+export interface AudioPlayStart { session_id: string; start_time: number; duration: number; tracks: AudioTrack[]; chapters: AudioChapter[]; restart: boolean }
+/** A web-player report. Leave current_time out when the player doesn't know where it is — that never moves the place.
+ *  time_listened is wall-clock seconds actually played since the last report. */
+export interface AudioSyncReport { current_time?: number; time_listened: number; duration?: number }
+/** The saved place after a sync or close. held_position is a big jump waiting for proof (null when none). */
+export interface AudioSyncResult { position: number; held_position: number | null; finished: boolean; duration: number }
 export interface AudioListening {
   days: number;
   since: string; // YYYY-MM-DD, first day covered
@@ -2250,7 +2293,7 @@ export const api = {
   pushStatus: (endpoint: string) =>
     req<{ subscribed: boolean }>("/api/v1/me/push/status", { method: "POST", body: JSON.stringify({ endpoint }) }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
-  calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
+  calendar: (start: string, end: string, signal?: AbortSignal) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`, { signal }),
   // The saved URL never comes back: a hint stands in, and blocked_reason says why pushes
   // to it are being skipped (e.g. it points at the local network).
   myApprise: () => req<MyApprise>("/api/v1/me/apprise"),
@@ -2404,6 +2447,33 @@ export const api = {
   revokeMyDevice: (id: string) => req<void>(`/api/v1/me/audio/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   audioHistory: (item: string) => req<{ history: AudioHistoryEntry[] }>(`/api/v1/me/audio/history?item=${encodeURIComponent(item)}`),
   restoreAudioPlace: (item: string, historyId: number) => req<{ position: number }>("/api/v1/me/audio/restore", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
+  audioShelves: () => req<{ shelves: AudioShelf[] }>("/api/v1/me/audio/shelves"),
+  audioLibrary: (o: { q?: string; sort?: AudioLibrarySort; filter?: AudioLibraryFilter; page?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    const s = qs.toString();
+    return req<AudioLibraryPage>(`/api/v1/me/audio/library${s ? `?${s}` : ""}`);
+  },
+  audioItem: (key: string) => req<AudioItemDetail>(`/api/v1/me/audio/items/${encodeURIComponent(key)}`),
+  audioPlay: (key: string, device: { device_id?: string; device_name?: string } = {}) =>
+    req<AudioPlayStart>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/play`, { method: "POST", body: JSON.stringify(device) }),
+  audioSync: (sid: string, r: AudioSyncReport) =>
+    req<AudioSyncResult>(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/sync`, { method: "POST", body: JSON.stringify(r) }),
+  audioClose: (sid: string, r: AudioSyncReport) =>
+    req<AudioSyncResult>(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/close`, { method: "POST", body: JSON.stringify(r) }),
+  /** Close from pagehide/visibilitychange, when a fetch may be cut off: true if the browser queued it. */
+  audioCloseBeacon: (sid: string, r: AudioSyncReport): boolean =>
+    typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function" &&
+    navigator.sendBeacon(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/close`, new Blob([JSON.stringify(r)], { type: "application/json" })),
+  /** The same-origin URL of one audio file (tracks[].url already is one); the sign-in cookie authorises it. */
+  audioFileUrl: (key: string, ino: string) => `/api/v1/me/audio/items/${encodeURIComponent(key)}/file/${encodeURIComponent(ino)}`,
+  audioBookmarks: (key: string) => req<{ bookmarks: AudioBookmark[] }>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks`),
+  addAudioBookmark: (key: string, time: number, title = "") =>
+    req<AudioBookmark>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks`, { method: "POST", body: JSON.stringify({ time, title }) }),
+  deleteAudioBookmark: (key: string, time: number) =>
+    req<void>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks/${Math.floor(time)}`, { method: "DELETE" }),
+  undiscardAudio: (item: string) => req<{ position: number }>("/api/v1/me/audio/undiscard", { method: "POST", body: JSON.stringify({ item }) }),
+  dismissAudioOffer: (item: string, historyId: number) => req<void>("/api/v1/me/audio/dismiss", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
   audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),

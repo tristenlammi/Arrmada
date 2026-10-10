@@ -121,6 +121,10 @@ func sortedKeys(m map[string]bool) []string {
 
 func (s *Server) progressMap(ctx context.Context, userID int64) map[string]listening.Progress {
 	all, _ := s.listen.AllProgress(ctx, userID)
+	return progressByKey(all)
+}
+
+func progressByKey(all []listening.Progress) map[string]listening.Progress {
 	out := make(map[string]listening.Progress, len(all))
 	for _, p := range all {
 		out[p.ItemKey] = p
@@ -252,22 +256,36 @@ func (s *Server) handlePersonalized(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Couldn't read the library")
 		return
 	}
-	prog := s.progressMap(ctx, userOf(r).ID)
+	all, _ := s.listen.AllProgress(ctx, userOf(r).ID)
+	prog := progressByKey(all)
+	shelves := []obj{}
+	for _, def := range shelvesFor(items, all, prog) {
+		ents := make([]obj, 0, len(def.items))
+		for _, it := range def.items {
+			ents = append(ents, s.itemMinified(ctx, it, prog))
+		}
+		shelves = append(shelves, obj{"id": def.id, "label": def.label, "labelStringKey": def.labelKey, "type": "book",
+			"entities": ents, "total": len(ents)})
+	}
+	writeJSON(w, http.StatusOK, shelves)
+}
+
+// shelfDef is one home-screen shelf, before it's shaped for an app (handlePersonalized)
+// or Arrmada's own player (Shelves).
+type shelfDef struct {
+	id, label, labelKey string
+	items               []Item
+}
+
+// shelvesFor picks the home screen's shelves: Continue Listening (in progress, not
+// finished, not hidden, most recent first), Continue Series, Recently Added and Listen
+// Again. all is the user's places, most recent first.
+func shelvesFor(items []Item, all []listening.Progress, prog map[string]listening.Progress) []shelfDef {
 	byKey := map[string]Item{}
 	for _, it := range items {
 		byKey[it.Key] = it
 	}
-	shelf := func(id, label, key string, list []Item) obj {
-		ents := make([]obj, 0, len(list))
-		for _, it := range list {
-			ents = append(ents, s.itemMinified(ctx, it, prog))
-		}
-		return obj{"id": id, "label": label, "labelStringKey": key, "type": "book", "entities": ents, "total": len(ents)}
-	}
-
-	// Continue listening: in progress, not finished, not hidden, most recent first.
 	var cont, again []Item
-	all, _ := s.listen.AllProgress(ctx, userOf(r).ID)
 	for _, p := range all {
 		it, ok := byKey[p.ItemKey]
 		if !ok {
@@ -284,18 +302,18 @@ func (s *Server) handlePersonalized(w http.ResponseWriter, r *http.Request) {
 	if len(recent) > 12 {
 		recent = recent[:12]
 	}
-	var shelves []obj
+	var out []shelfDef
 	if len(cont) > 0 {
-		shelves = append(shelves, shelf("continue-listening", "Continue Listening", "LabelContinueListening", limitItems(cont, 20)))
+		out = append(out, shelfDef{"continue-listening", "Continue Listening", "LabelContinueListening", limitItems(cont, 20)})
 	}
 	if next := continueSeries(items, prog); len(next) > 0 {
-		shelves = append(shelves, shelf("continue-series", "Continue Series", "LabelContinueSeries", limitItems(next, 12)))
+		out = append(out, shelfDef{"continue-series", "Continue Series", "LabelContinueSeries", limitItems(next, 12)})
 	}
-	shelves = append(shelves, shelf("recently-added", "Recently Added", "LabelRecentlyAdded", recent))
+	out = append(out, shelfDef{"recently-added", "Recently Added", "LabelRecentlyAdded", recent})
 	if len(again) > 0 {
-		shelves = append(shelves, shelf("listen-again", "Listen Again", "LabelListenAgain", limitItems(again, 12)))
+		out = append(out, shelfDef{"listen-again", "Listen Again", "LabelListenAgain", limitItems(again, 12)})
 	}
-	writeJSON(w, http.StatusOK, shelves)
+	return out
 }
 
 // continueSeries finds, for each series with a finished book, the next unstarted one.
