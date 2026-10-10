@@ -1323,6 +1323,8 @@ export interface DiscoverCard {
 }
 export interface WatchProvider { id: number; name: string; logo_url?: string }
 export interface DiscoverRow { title: string; seed: string; items: DiscoverCard[] }
+/** One page of a paged Discover grid (browse, search). */
+export interface DiscoverPage { items: DiscoverCard[]; page: number; total_pages: number }
 
 export interface Genre {
   id: number;
@@ -2561,6 +2563,12 @@ export const api = {
     req<{ seasons: SeriesSeason[] }>(`/api/v1/media/series/${tmdbId}/seasons`).then((r) => r.seasons),
   discoverSearch: (q: string) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
+  // One page of a search, for the results grid that keeps loading as it scrolls.
+  discoverSearchPage: (q: string, page: number) =>
+    req<DiscoverPage>(`/api/v1/discover/search?q=${encodeURIComponent(q)}&page=${page}`),
+  // One page of a browse grid; query is the grid's filters (list, media, genre, …) as a query string.
+  discoverBrowse: (query: string, page: number) =>
+    req<DiscoverPage>(`/api/v1/discover/browse?${query}${query ? "&" : ""}page=${page}`),
 
   seriesManualImportList: (id: number) =>
     req<ManualImportList<SeriesImportCandidate>>(`/api/v1/series/${id}/manualimport`),

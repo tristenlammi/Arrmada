@@ -87,6 +87,7 @@ GET /api/v1/convert/status staff -
 GET /api/v1/dashboard staff -
 GET /api/v1/discover user ext
 GET /api/v1/discover/because user ext
+GET /api/v1/discover/browse user ext
 GET /api/v1/discover/collections user ext
 GET /api/v1/discover/genres user ext
 GET /api/v1/discover/popular user ext

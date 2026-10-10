@@ -146,6 +146,16 @@ export function requestList(url: URL): RequestList {
   return url.searchParams.get("section") === "ready" ? readyRequests : requests;
 }
 
+// gridPage is one page of a paged grid (GET /api/v1/discover/browse and
+// /api/v1/discover/search): three pages of fresh titles (page 1 is the row cards, later
+// pages new ids), so a spec can watch the grid grow as it scrolls.
+export const gridPages = 3;
+export function gridPage(url: URL): { items: DiscoverCard[]; people: []; page: number; total_pages: number } {
+  const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+  const items = page === 1 ? cards : Array.from({ length: 20 }, (_, i) => card(100 * page + i, `Page ${page} title ${i + 1}`));
+  return { items, people: [], page, total_pages: gridPages };
+}
+
 // recentlyAdded is GET /api/v1/discover/recently-added: what's in the library.
 export const recentlyAdded = { items: [cards[6], { ...cards[5], has_file: true }] };
 

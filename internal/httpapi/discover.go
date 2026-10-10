@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -230,6 +232,19 @@ func (a *api) handleDiscoverSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	// Paged, with the people on the page: {items, people, page, total_pages}.
+	if pages, ok := a.deps.Discovery.(metadata.DiscoverPages); ok {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		sr, err := pages.SearchPage(r.Context(), q, page)
+		if err != nil {
+			a.writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{
+			"items": a.enrichCards(r.Context(), sr.Items), "people": sr.People, "page": sr.Page.Page, "total_pages": sr.TotalPages,
+		})
+		return
+	}
 	if q == "" {
 		a.enrichDiscover(w, r, nil)
 		return
@@ -380,4 +395,50 @@ func (a *api) handleDiscoverGenres(w http.ResponseWriter, r *http.Request) {
 		genres = []metadata.Genre{}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"genres": genres})
+}
+
+// handleDiscoverBrowse is one page of a browse grid ("See all" on a row, or the filters):
+//
+//	GET /api/v1/discover/browse?media=movie|series&list=&genre=878,12&year_from=&year_to=
+//	    &rating=&runtime_min=&runtime_max=&provider=&lang=&sort=&page=
+//
+// It answers {items, page, total_pages}. The provider whitelists and clamps every value;
+// a sort, list or media it doesn't know is a 400, never passed to TMDB.
+func (a *api) handleDiscoverBrowse(w http.ResponseWriter, r *http.Request) {
+	if !a.discoveryReady(w, r) {
+		return
+	}
+	pages, ok := a.deps.Discovery.(metadata.DiscoverPages)
+	if !ok {
+		a.writeError(w, http.StatusNotFound, "not available")
+		return
+	}
+	p, err := pages.Browse(r.Context(), browseQueryFrom(r.URL.Query()))
+	if errors.Is(err, metadata.ErrBadQuery) {
+		a.writeError(w, http.StatusBadRequest, "That sort, list or media isn't one Discover offers.")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": a.enrichCards(r.Context(), p.Items), "page": p.Page, "total_pages": p.TotalPages})
+}
+
+// browseQueryFrom reads a browse query from the address. Numbers that don't parse are
+// simply absent; the provider does the validating.
+func browseQueryFrom(v url.Values) metadata.BrowseQuery {
+	num := func(k string) int { n, _ := strconv.Atoi(v.Get(k)); return n }
+	rating, _ := strconv.ParseFloat(v.Get("rating"), 64)
+	q := metadata.BrowseQuery{
+		Media: v.Get("media"), List: v.Get("list"), Sort: v.Get("sort"), Language: v.Get("lang"),
+		YearFrom: num("year_from"), YearTo: num("year_to"), RatingMin: rating,
+		RuntimeMin: num("runtime_min"), RuntimeMax: num("runtime_max"), Provider: num("provider"), Page: num("page"),
+	}
+	for _, g := range strings.Split(v.Get("genre"), ",") {
+		if id, err := strconv.Atoi(strings.TrimSpace(g)); err == nil && id > 0 {
+			q.Genres = append(q.Genres, id)
+		}
+	}
+	return q
 }

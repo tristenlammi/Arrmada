@@ -462,8 +462,35 @@ const (
 
 type discoverCacheEntry struct {
 	items []DiscoverItem
+	page  *SearchResults // a paged entry (cachedDiscoverPage); nil for a whole list
 	added time.Time
 	exp   time.Time
+}
+
+// storeDiscover puts an entry in the memory cache, dropping expired entries first and,
+// when it's still full, the oldest one, so it never holds more than discoverCacheCap.
+func (t *TMDB) storeDiscover(key string, e discoverCacheEntry) {
+	t.discMu.Lock()
+	defer t.discMu.Unlock()
+	if t.discCache == nil {
+		t.discCache = map[string]discoverCacheEntry{}
+	}
+	for k, old := range t.discCache {
+		if !e.added.Before(old.exp) {
+			delete(t.discCache, k)
+		}
+	}
+	if len(t.discCache) >= discoverCacheCap {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, old := range t.discCache {
+			if oldestKey == "" || old.added.Before(oldestAt) {
+				oldestKey, oldestAt = k, old.added
+			}
+		}
+		delete(t.discCache, oldestKey)
+	}
+	t.discCache[key] = e
 }
 
 // cachedDiscoverList serves a discover list from the TTL cache, fetching (and caching)
@@ -500,28 +527,7 @@ func (t *TMDB) cachedDiscoverListN(ctx context.Context, path string, q url.Value
 	if err != nil {
 		return nil, err
 	}
-
-	t.discMu.Lock()
-	defer t.discMu.Unlock()
-	if t.discCache == nil {
-		t.discCache = map[string]discoverCacheEntry{}
-	}
-	for k, e := range t.discCache { // drop expired entries first
-		if !now.Before(e.exp) {
-			delete(t.discCache, k)
-		}
-	}
-	if len(t.discCache) >= discoverCacheCap { // still full: evict the oldest entry
-		var oldestKey string
-		var oldestAt time.Time
-		for k, e := range t.discCache {
-			if oldestKey == "" || e.added.Before(oldestAt) {
-				oldestKey, oldestAt = k, e.added
-			}
-		}
-		delete(t.discCache, oldestKey)
-	}
-	t.discCache[key] = discoverCacheEntry{items: items, added: now, exp: now.Add(ttl)}
+	t.storeDiscover(key, discoverCacheEntry{items: items, added: now, exp: now.Add(ttl)})
 	return items, nil
 }
 

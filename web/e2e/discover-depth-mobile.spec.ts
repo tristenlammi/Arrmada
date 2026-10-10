@@ -26,4 +26,19 @@ test.describe("requester on a phone", () => {
     expect(api.calls.some((c) => c.path.startsWith("/api/v1/requests?") && c.path.includes("section=ready") && c.path.includes("ready_within_days=30"))).toBe(true);
     await fits(page);
   });
+
+  // REQ-19: a See all grid at 375px: two columns, filters scroll inside their own strips,
+  // and the grid keeps loading.
+  test("a See all grid fits the screen and keeps loading", async ({ page, api }) => {
+    await page.goto("/discover?tab=movies");
+    await api.quiet();
+    await page.getByRole("link", { name: "See all: Top rated movies" }).tap();
+    await expect(page).toHaveURL(/\/discover\/browse\?list=top_rated&media=movie$/);
+    await expect(page.getByRole("heading", { name: "Top rated movies" })).toBeVisible();
+    await api.quiet();
+    await fits(page);
+    await page.getByRole("button", { name: /View details for/ }).last().scrollIntoViewIfNeeded();
+    await expect(page.getByRole("button", { name: "View details for Page 2 title 1", exact: true })).toBeVisible();
+    await fits(page);
+  });
 });

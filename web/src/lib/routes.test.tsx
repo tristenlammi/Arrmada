@@ -33,11 +33,13 @@ describe("buildRoutes", () => {
   });
 
   // APP-07: a title's own address exists in every shell, under /discover so the page
-  // stays mounted beneath the sheet.
+  // stays mounted beneath the sheet. REQ-19: the browse grid has the same overlays under it.
   it("gives every shell the Discover title addresses", () => {
     for (const [role, external] of [["admin", false], ["requester", false], ["requester", true]] as const) {
       const d = routes(buildRoutes({ role, external })).find((x) => x.path === "/discover");
-      expect(d?.children?.map((c) => c.path), `${role} ${external}`).toEqual(["movie/:tmdbId", "series/:tmdbId", "tv/:tmdbId"]);
+      expect(d?.children?.map((c) => c.path), `${role} ${external}`).toEqual(["movie/:tmdbId", "series/:tmdbId", "browse", "tv/:tmdbId"]);
+      const browse = d?.children?.find((c) => c.path === "browse");
+      expect(browse?.children?.map((c) => c.path), `${role} ${external} browse`).toEqual(["movie/:tmdbId", "series/:tmdbId"]);
     }
   });
 
