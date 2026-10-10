@@ -58,7 +58,7 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	adminID := admin.ID
-	autoApprove := a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true)
+	autoApprove := a.plexAutoApproval(ctx) // per type; movies only unless the owner chose
 
 	// Import in the background so a large history (and the tunnel's request timeout)
 	// can't cut it short; results land on the Requests page as they process.

@@ -113,7 +113,7 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusForbidden, msg)
 		return
 	}
-	autoApprove := a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true)
+	autoApprove := a.plexAutoApproval(ctx) // per type; movies only unless the owner chose
 	u, err := a.deps.Auth.FindOrCreatePlexUser(ctx, plexID, acct.Username, auth.RoleRequester, autoApprove)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not create your account")

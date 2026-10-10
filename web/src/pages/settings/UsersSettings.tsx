@@ -17,21 +17,66 @@ export function UsersSettings() {
       <UsersManager meId={user?.id} />
       <Section id="plex-sign-in" title="Plex sign-in" subtitle={<>Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account ({requesterPages(booksEnabled)}), and only people with access to your Plex server get in. Needs your Plex server connected in <Link to={LINKS.plexConnection} style={{ color: "var(--accent)" }}>Insights → Settings</Link>.</>}>
         <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
-        <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
+        <div className="flex flex-col gap-1.5">
+          <div className="text-[12.5px] font-semibold">Auto-approve new Plex sign-ins' requests</div>
+          <AutoApproveChecks
+            value={typesFromCSV(s.plex_login_auto_approve_types ?? "movie")}
+            onChange={(v) => patch({ plex_login_auto_approve_types: typesToCSV(v) })}
+            books={booksEnabled}
+            label="New Plex sign-ins auto-approve"
+          />
+          <p className="m-0 text-[11px] text-ink-faint">Ticked types download straight away for someone who signs in with Plex for the first time; the rest wait for you. A series request can pull every season of a long show, so it starts with movies only. Existing accounts keep their own settings — change them under Users above.</p>
+        </div>
       </Section>
       <SaveBar />
     </div>
   );
 }
 
-const ROLE_TONE: Record<string, string> = { admin: "var(--reject)", manager: "var(--accent)", requester: "var(--good)", readonly: "var(--ink-faint)" };
+// Auto-approve is per media type: { movie, series, book }.
+type AutoTypes = { movie: boolean; series: boolean; book: boolean };
+const NO_TYPES: AutoTypes = { movie: false, series: false, book: false };
+const TYPE_LABEL: [keyof AutoTypes, string][] = [["movie", "Movies"], ["series", "Series"], ["book", "Books"]];
+const typesFromCSV = (csv: string): AutoTypes => {
+  const on = csv.split(",").map((t) => t.trim());
+  return { movie: on.includes("movie"), series: on.includes("series"), book: on.includes("book") };
+};
+const typesToCSV = (t: AutoTypes) => TYPE_LABEL.filter(([k]) => t[k]).map(([k]) => k).join(",");
+const typesOf = (u: AuthUser): AutoTypes => ({ movie: !!u.auto_approve_movie, series: !!u.auto_approve_series, book: !!u.auto_approve_book });
+const typeFlags = (t: AutoTypes) => ({ auto_approve_movie: t.movie, auto_approve_series: t.series, auto_approve_book: t.book });
+
+// AutoApproveChecks is "Auto-approve: ☐ Movies ☐ Series ☐ Books" (Books only while the
+// module is on; a hidden type keeps its value).
+function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes; onChange: (v: AutoTypes) => void; books: boolean; label: string }) {
+  return (
+    <div role="group" aria-label={label} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-ink-dim">
+      {TYPE_LABEL.filter(([k]) => k !== "book" || books).map(([k, name]) => (
+        <label key={k} className="flex min-h-[28px] items-center gap-1.5">
+          <input type="checkbox" checked={value[k]} onChange={(e) => onChange({ ...value, [k]: e.target.checked })} />
+          {name}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// autoChip names the types a user auto-approves, for the list ("Auto-approve: Movies,
+// Series"); "" when none.
+function autoChip(t: AutoTypes): string {
+  const on = TYPE_LABEL.filter(([k]) => t[k]).map(([, name]) => name);
+  if (on.length === 0) return "";
+  return on.length === 3 ? "Auto-approve" : `Auto-approve: ${on.join(", ")}`;
+}
+
+const ROLE_TONE: Record<string, string> ={ admin: "var(--reject)", manager: "var(--accent)", requester: "var(--good)", readonly: "var(--ink-faint)" };
 
 function UsersManager({ meId }: { meId?: number }) {
   const [users, setUsers] = useState<AuthUser[] | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("requester");
-  const [autoApprove, setAutoApprove] = useState(false);
+  const [autoApprove, setAutoApprove] = useState<AutoTypes>(NO_TYPES);
+  const { booksEnabled } = useMe();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<AuthUser | null>(null);
@@ -54,8 +99,8 @@ function UsersManager({ meId }: { meId?: number }) {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      await api.createUser({ email: email.trim(), password, role, auto_approve: autoApprove });
-      setEmail(""); setPassword(""); setRole("requester"); setAutoApprove(false);
+      await api.createUser({ email: email.trim(), password, role, ...typeFlags(autoApprove) });
+      setEmail(""); setPassword(""); setRole("requester"); setAutoApprove(NO_TYPES);
       load();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
@@ -78,7 +123,11 @@ function UsersManager({ meId }: { meId?: number }) {
               <span className="grid h-7 w-7 flex-none place-items-center rounded-full text-[11px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{u.username[0]?.toUpperCase()}</span>
               <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" style={u.disabled ? { color: "var(--ink-faint)" } : undefined}>{u.username}</span>
               {u.disabled && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--reject-soft)", color: "var(--reject)" }} title="Can't sign in. Nothing of theirs was deleted.">Disabled</span>}
-              {u.auto_approve &&<span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>Auto-approve</span>}
+              {autoChip(typesOf(u)) && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>{autoChip(typesOf(u))}</span>}
+              {/* A Plex sign-in from before per-type auto-approve may still approve whole shows. */}
+              {u.plex_linked && u.auto_approve_series && u.role === "requester" && (
+                <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }} title="Their series requests are approved at once, every season asked for. Edit to tighten.">Approves whole shows</span>
+              )}
               <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel)", color: ROLE_TONE[u.role] ?? "var(--ink-faint)", border: "1px solid var(--line)" }}>{u.role}</span>
               <button onClick={() => setEditing(u)} title="Edit user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L18 10l-4-4L4 16v4z M14 6l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -120,10 +169,10 @@ function UsersManager({ meId }: { meId?: number }) {
           </select>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <label className="flex items-center gap-2 text-[12px] text-ink-dim">
-            <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />
-            Auto-approve this user's requests
-          </label>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-dim">
+            <span>Auto-approve:</span>
+            <AutoApproveChecks value={autoApprove} onChange={setAutoApprove} books={booksEnabled} label="Auto-approve this user's requests" />
+          </div>
           <button type="submit" disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Adding…" : "Add user"}</button>
         </div>
         {err && <div className="text-[12px]" style={{ color: "var(--reject)" }}>{err}</div>}
@@ -212,7 +261,8 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
 
 function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe: boolean; onClose: () => void; onSaved: () => void }) {
   const [role, setRole] = useState(user.role);
-  const [autoApprove, setAutoApprove] = useState(user.auto_approve);
+  const [autoApprove, setAutoApprove] = useState<AutoTypes>(typesOf(user));
+  const { booksEnabled } = useMe();
   const [canSignIn, setCanSignIn] = useState(!user.disabled);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -223,7 +273,7 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
     setBusy(true); setErr(null);
     try {
       const signIn = canSignIn === !user.disabled ? {} : { disabled: !canSignIn };
-      await api.updateUser(user.id, { role, auto_approve: autoApprove, ...signIn, ...(password ? { password } : {}) });
+      await api.updateUser(user.id, { role, ...typeFlags(autoApprove), ...signIn, ...(password ? { password } : {}) });
       onSaved();
     } catch (e) { setErr((e as Error).message); setBusy(false); }
   };
@@ -251,7 +301,9 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
         </label>
 
         <div className="mb-3">
-          <Toggle label="Auto-approve requests" hint="This user's requests download immediately, skipping the approval queue." checked={autoApprove} onChange={setAutoApprove} />
+          <div className="mb-1 font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Auto-approve</div>
+          <AutoApproveChecks value={autoApprove} onChange={setAutoApprove} books={booksEnabled} label="Auto-approve requests for" />
+          <p className="m-0 mt-1 text-[11px] text-ink-faint">Ticked types download straight away, skipping the approval queue. A series request can pull many seasons.</p>
         </div>
 
         {!isMe && (

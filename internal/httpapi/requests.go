@@ -88,11 +88,13 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	queueKnown := a.trackRequests(r, list)
 	shapeRequests(list, staff)
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"requests":      list,
-		"counts":        counts,
-		"total":         total,
-		"auto_approve":  u.AutoApprove, // this viewer's own auto-approve status
-		"client_health": queueHealth{OK: queueKnown},
+		"requests":     list,
+		"counts":       counts,
+		"total":        total,
+		"auto_approve": u.AutoApprove, // this viewer's own auto-approve, every type
+		// and per type ("movie,series"), which is what their next request follows
+		"auto_approve_types": u.AutoApproval().String(),
+		"client_health":      queueHealth{OK: queueKnown},
 	})
 }
 
@@ -302,7 +304,7 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
 	// only if their account is set to auto-approve.
-	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{AutoApprove: u.AutoApprove})
+	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{AutoApprove: u.AutoApproves(in.MediaType)})
 	if errors.Is(err, requests.ErrExists) {
 		// Only reachable when the duplicate row vanished between detection and
 		// re-fetch — vanishingly rare; the normal duplicate path subscribes instead.

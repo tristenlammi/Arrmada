@@ -129,7 +129,7 @@ func TestDeleteWithBlockPlex(t *testing.T) {
 	ctx := context.Background()
 	_, admin := s.user(t, "owner@example.com", auth.RoleAdmin)
 	local, _ := s.user(t, "local@example.com", auth.RoleRequester)
-	px, err := s.auth.FindOrCreatePlexUser(ctx, "4242", "Grandad", auth.RoleRequester, false)
+	px, err := s.auth.FindOrCreatePlexUser(ctx, "4242", "Grandad", auth.RoleRequester, auth.AutoApproval{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestDeleteWithBlockPlexSnapshotFailureBlocksNothing(t *testing.T) {
 	snap := &snapshotRecorder{fail: fmt.Errorf("disk full")}
 	s := newRouteServer(t, func(d *Deps) { d.Snapshot = snap.fn })
 	_, admin := s.user(t, "owner@example.com", auth.RoleAdmin)
-	px, _ := s.auth.FindOrCreatePlexUser(context.Background(), "99", "Uncle", auth.RoleRequester, false)
+	px, _ := s.auth.FindOrCreatePlexUser(context.Background(), "99", "Uncle", auth.RoleRequester, auth.AutoApproval{})
 	if rec := s.do("DELETE", fmt.Sprintf("/api/v1/users/%d?block_plex=1", px.ID), admin); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("HTTP %d, want 500", rec.Code)
 	}
@@ -193,7 +193,7 @@ func TestBlockUserPlexRoute(t *testing.T) {
 	s := newRouteServer(t, nil)
 	_, admin := s.user(t, "owner@example.com", auth.RoleAdmin)
 	_, kid := s.user(t, "kid@example.com", auth.RoleRequester)
-	px, _ := s.auth.FindOrCreatePlexUser(context.Background(), "77", "Cousin", auth.RoleRequester, false)
+	px, _ := s.auth.FindOrCreatePlexUser(context.Background(), "77", "Cousin", auth.RoleRequester, auth.AutoApproval{})
 
 	if rec := s.do("POST", fmt.Sprintf("/api/v1/users/%d/block-plex", px.ID), kid); rec.Code != http.StatusForbidden {
 		t.Errorf("requester: HTTP %d, want 403", rec.Code)

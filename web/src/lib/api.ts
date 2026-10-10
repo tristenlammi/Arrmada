@@ -835,7 +835,10 @@ export interface AppSettings {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login_enabled: boolean;
+  /** Legacy: true when a new Plex sign-in auto-approves every type. */
   plex_login_auto_approve: boolean;
+  /** The types a new Plex sign-in auto-approves, "movie,series,book" (any subset). */
+  plex_login_auto_approve_types: string;
   /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
   tmdb_region: string;
   // Recycle bin guard rails.
@@ -1188,6 +1191,8 @@ export interface RequestList {
   counts?: RequestCounts;
   total?: number;
   auto_approve: boolean;
+  /** The viewer's own per-type auto-approve, "movie,series,book" (any subset). */
+  auto_approve_types?: string;
   client_health?: QueueHealth;
 }
 
@@ -1279,11 +1284,22 @@ export interface AuthUser {
   username: string;
   role: UserRole;
   disabled?: boolean;
+  /** Every type auto-approves; the per-type flags are what requests follow. */
   auto_approve: boolean;
+  auto_approve_movie?: boolean;
+  auto_approve_series?: boolean;
+  auto_approve_book?: boolean;
   created_at?: string;
   // Signs in with Plex; plex_blocked means that Plex account is on the block list.
   plex_linked?: boolean;
   plex_blocked?: boolean;
+}
+
+/** Which media types a user's requests approve themselves for. */
+export interface AutoApproveFlags {
+  auto_approve_movie?: boolean;
+  auto_approve_series?: boolean;
+  auto_approve_book?: boolean;
 }
 
 // A Plex account kept from signing in (it would otherwise make a new account each time).
@@ -1970,10 +1986,11 @@ export const api = {
   setupAdmin: (username: string, password: string) =>
     req<{ user: AuthUser }>("/api/v1/auth/setup", { method: "POST", body: JSON.stringify({ username, password }) }),
   users: () => req<{ users: AuthUser[] }>("/api/v1/users").then((r) => r.users),
-  createUser: (body: { email: string; password: string; role: string; auto_approve: boolean }) =>
+  // auto_approve_<type> sets one type; the old auto_approve sets all three.
+  createUser: (body: { email: string; password: string; role: string } & AutoApproveFlags) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean }) =>
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean } & AutoApproveFlags) =>
     req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.

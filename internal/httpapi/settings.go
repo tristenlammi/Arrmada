@@ -73,7 +73,9 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"music_enabled":           a.musicEnabled(ctx),
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
 		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
-		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
+		"plex_login_auto_approve": a.plexAutoApproval(ctx).All(),
+		// Which media types a new Plex sign-in auto-approves ("movie,series,book").
+		"plex_login_auto_approve_types": a.plexAutoApproval(ctx).String(),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.
@@ -113,14 +115,16 @@ type settingsUpdate struct {
 	MusicEnabled         *bool   `json:"music_enabled"`
 	PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
 	TMDBRegion           *string `json:"tmdb_region"`
-	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"`
-	RecycleMaxGB         *string `json:"recycle_max_gb"`
-	RecycleRetentionDays *string `json:"recycle_retention_days"`
-	DiskGuard            *bool   `json:"downloads_disk_guard"`
-	DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
-	DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
-	StallMinutes         *int    `json:"downloads_stall_minutes"`
-	UpgradeBudget        *int    `json:"upgrade_max_grabs_per_sweep"`
+	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"` // legacy: every type or none
+	// PlexLoginAutoApproveTypes wins over the legacy bool when both are sent.
+	PlexLoginAutoApproveTypes *string `json:"plex_login_auto_approve_types"`
+	RecycleMaxGB              *string `json:"recycle_max_gb"`
+	RecycleRetentionDays      *string `json:"recycle_retention_days"`
+	DiskGuard                 *bool   `json:"downloads_disk_guard"`
+	DiskGuardPausePct         *string `json:"downloads_disk_guard_pause_pct"`
+	DiskGuardResumePct        *string `json:"downloads_disk_guard_resume_pct"`
+	StallMinutes              *int    `json:"downloads_stall_minutes"`
+	UpgradeBudget             *int    `json:"upgrade_max_grabs_per_sweep"`
 }
 
 // adminSettingChange names the first admin-only setting req would change, or "" if it
@@ -144,7 +148,8 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 		return "the Music module"
 	case boolChanged(req.PlexLoginEnabled, st.GetBool(ctx, "plex_login_enabled", false)):
 		return "Plex sign-in"
-	case boolChanged(req.PlexLoginAutoApprove, st.GetBool(ctx, "plex_login_auto_approve", true)):
+	case req.PlexLoginAutoApproveTypes != nil && auth.ParseAutoApproval(*req.PlexLoginAutoApproveTypes) != a.plexAutoApproval(ctx),
+		req.PlexLoginAutoApproveTypes == nil && req.PlexLoginAutoApprove != nil && auth.AllTypes(*req.PlexLoginAutoApprove) != a.plexAutoApproval(ctx):
 		return "auto-approval of Plex sign-ins' requests"
 	case req.TMDBRegion != nil && !strings.EqualFold(strings.TrimSpace(*req.TMDBRegion), strings.TrimSpace(st.Get(ctx, "tmdb_region", ""))):
 		return "the Discovery region"
@@ -263,7 +268,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.TMDBRegion != nil && !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {
 		return
 	}
-	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
+	if types, ok := plexAutoApproveUpdate(&req); ok && !save(a.deps.Settings.Set(ctx, keyPlexAutoApproveTypes, types)) {
 		return
 	}
 	// The page sends every setting on each save, so note whether the bin's rules really changed.

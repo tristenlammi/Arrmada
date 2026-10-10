@@ -1,5 +1,5 @@
 import type {
-  AppSettings, Attention, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  AppSettings, Attention, AuthUser, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
   TaskStatus,
 } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
@@ -93,6 +93,7 @@ export const settings: AppSettings = {
   music_enabled: true,
   plex_login_enabled: false,
   plex_login_auto_approve: false,
+  plex_login_auto_approve_types: "movie",
   tmdb_region: "US",
   recycle_max_gb: "50",
   recycle_retention_days: "30",
@@ -139,5 +140,17 @@ export const logs: { entries: LogEntry[] } = {
   entries: [
     { time_ms: NOW - 60_000, level: "INFO", msg: "library scan finished", attrs: "movies=42" },
     { time_ms: NOW - 30_000, level: "WARN", msg: "indexer slow to answer", attrs: "indexer=Fixture" },
+  ],
+};
+
+// Settings → Users: the owner, and a Plex sign-in from before per-type auto-approve who
+// still auto-approves every type (shows included).
+export const users: { users: AuthUser[] } = {
+  users: [
+    { id: 1, username: "owner@example.com", role: "admin", auto_approve: false, created_at: "2026-01-01 10:00:00" },
+    {
+      id: 5, username: "Grandad", role: "requester", plex_linked: true, created_at: "2026-02-01 10:00:00",
+      auto_approve: true, auto_approve_movie: true, auto_approve_series: true, auto_approve_book: true,
+    },
   ],
 };
