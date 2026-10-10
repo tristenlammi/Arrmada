@@ -4,7 +4,8 @@ import { api, type UserNotification } from "../lib/api";
 import { lazyPage } from "../lib/lazyPage";
 import { usePoll } from "../lib/usePoll";
 
-// The settings panel (Web Push, Apprise) loads when it's opened.
+// The settings panel (push on this device, a personal Apprise link) loads when ⚙ is
+// first tapped, keeping lib/webpush out of the requester first load.
 const NotificationSettings = lazyPage(() => import("./NotificationSettings"), "NotificationSettings");
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
@@ -15,9 +16,9 @@ function searchTitleOf(n: UserNotification): string {
   return m ? m[1] : "";
 }
 
-// NotificationBell is the inbox: a bell with an unread badge that opens a dropdown of
-// "your request is ready" notifications (and, for staff, "New request" ones), plus a place
-// to set a personal Apprise URL for an external push. Polls the unread count on an interval.
+// NotificationBell is the requester-facing inbox: a bell with an unread badge that opens a
+// dropdown of "your request is ready" notifications, plus a place to set a personal Apprise URL
+// for an external push. Polls the unread count on an interval.
 export function NotificationBell() {
   const [items, setItems] = useState<UserNotification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -96,7 +97,7 @@ export function NotificationBell() {
           {error && <div className="px-3.5 py-1.5 text-[11px] font-medium" style={{ color: "var(--reject)", borderBottom: "1px solid var(--line-soft)" }}>{error}</div>}
 
           {settings && (
-            <Suspense fallback={null}>
+            <Suspense fallback={<div className="px-3.5 py-2.5 text-[11px] text-ink-faint">Loading…</div>}>
               <NotificationSettings />
             </Suspense>
           )}

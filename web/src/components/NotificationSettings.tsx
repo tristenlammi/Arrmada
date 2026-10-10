@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { api, type MyApprise } from "../lib/api";
 import { pushSupported, subscribeThisDevice, thisDeviceEndpoint, unsubscribeThisDevice } from "../lib/webpush";
 
-// The bell's settings panel: this device's Web Push and a personal Apprise link. Its own
-// chunk, loaded when someone opens the panel, so the Web Push code isn't part of every
-// first load.
+// The bell's settings panel (the ⚙ in its dropdown). It loads only when opened: most
+// visits never open it, and lib/webpush would otherwise ride in every requester's first
+// load.
 export function NotificationSettings() {
   return (
     <>

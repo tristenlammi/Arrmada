@@ -42,6 +42,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     { method: "POST", path: "/api/v1/requests", respond: ({ body }) => discover.created(p, body) },
     { method: "POST", path: "/api/v1/requests/bulk", respond: ({ body }) => discover.bulk(body) },
     { method: "GET", path: /^\/api\/v1\/requests\/(\d+)$/, respond: ({ params }) => discover.requestDetail(Number(params[0])) },
+    { method: "POST", path: /^\/api\/v1\/requests\/(\d+)\/approve$/, respond: ({ params, body }) => discover.approved(Number(params[0]), body) },
     get("/api/v1/discover/trending", discover.items),
     get("/api/v1/discover/popular", discover.items),
     get("/api/v1/discover/upcoming", discover.items),
@@ -55,6 +56,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/discover/providers", discover.providers),
     get("/api/v1/discover/search", discover.items),
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
+    { method: "GET", path: /^\/api\/v1\/media\/series\/(\d+)\/seasons$/, respond: ({ params }) => discover.seriesSeasons(Number(params[0])) },
     get("/api/v1/calendar", media.calendar),
     get("/api/v1/me/books", media.myBooks),
 

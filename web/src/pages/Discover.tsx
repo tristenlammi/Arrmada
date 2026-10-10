@@ -7,10 +7,10 @@ import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
-import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
+import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest, type SeriesSeason } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
-import { MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
+import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
 import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
 
@@ -18,6 +18,8 @@ import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToa
 const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
 // The request sheet loads when a request is first opened, not with Discover.
 const RequestSheet = lazyPage(() => import("../components/RequestSheet"), "RequestSheet");
+// "Which seasons?" loads when someone first asks for a show.
+const SeasonPicker = lazyPage(() => import("../components/SeasonPicker"), "SeasonPicker");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -69,13 +71,14 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
   // Rethrows on failure so callers (modal, quick-request) only flip to their success
   // state on an actual success. subscribed=true → you joined an existing request.
-  const doRequest = useCallback(async (c: DiscoverCard, note?: string): Promise<{ subscribed: boolean; status: ReqStatus }> => {
+  // seasons (a show): the season numbers asked for; absent or null is the whole show.
+  const doRequest = useCallback(async (c: DiscoverCard, note?: string, seasons?: number[] | null): Promise<{ subscribed: boolean; status: ReqStatus }> => {
     const key = `${c.media_type}:${c.tmdb_id}`;
     try {
-      const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview, note: note?.trim() || undefined });
+      const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview, note: note?.trim() || undefined, seasons: seasons?.length ? seasons : undefined });
       const status = res.request.status;
       setRequested((m) => new Map(m).set(key, status));
-      flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status));
+      flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status, res.request.seasons));
       return { subscribed: res.subscribed, status };
     } catch (e) {
       flash((e as Error).message, { tone: "error" });
@@ -140,8 +143,10 @@ type ReqStatus = MediaRequest["status"];
 
 // requestedMessage is what asking for a title says: an auto-approved request is already
 // being searched for, anything else waits for someone to approve it.
-function requestedMessage(title: string, status: ReqStatus): string {
-  return status === "approved" ? `Requested “${title}” — searching now` : `Requested “${title}” — waiting for approval`;
+// A show asked for by season names them: Requested “Severance” S2 — waiting for approval.
+function requestedMessage(title: string, status: ReqStatus, seasons?: number[]): string {
+  const what = `Requested “${title}”${seasons?.length ? ` ${formatSeasons(seasons)}` : ""}`;
+  return status === "approved" ? `${what} — searching now` : `${what} — waiting for approval`;
 }
 
 // What asking for a title someone already asked for says: you joined their request.
@@ -151,7 +156,7 @@ const FOLLOWING = "You’re following this request — it’s in your requests n
 const NOTE_MAX = 500;
 
 interface RowCtx {
-  doRequest: (c: DiscoverCard, note?: string) => Promise<{ subscribed: boolean; status: ReqStatus }>;
+  doRequest: (c: DiscoverCard, note?: string, seasons?: number[] | null) => Promise<{ subscribed: boolean; status: ReqStatus }>;
   /** What this session asked for the card, if anything: the status the server answered. */
   isRequested: (c: DiscoverCard) => ReqStatus | undefined;
   canRequest: boolean;
@@ -452,6 +457,8 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [openCard, setOpenCard] = useState<DiscoverCard | null>(null);
+  // Opened by "＋ Request" on a show: the sheet starts on "which seasons?".
+  const [pickSeasons, setPickSeasons] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
 
   useEffect(() => {
@@ -475,6 +482,8 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   const requestable = !badge;
 
   const quick = async () => {
+    // A show is never asked for whole in one click: the sheet asks which seasons.
+    if (cur.media_type === "series") { setPickSeasons(true); setOpenCard(cur); return; }
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(cur); } catch { /* toast shown */ } finally { setQuickBusy(false); }
@@ -517,7 +526,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
         {cur.overview && <p className="m-0 line-clamp-2 max-w-[560px] text-[13px] leading-relaxed sm:line-clamp-3" style={{ color: "rgba(255,255,255,.78)" }}>{cur.overview}</p>}
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <button
-            onClick={() => setOpenCard(cur)}
+            onClick={() => { setPickSeasons(false); setOpenCard(cur); }}
             className="rounded-lg px-4 py-2 text-[12.5px] font-semibold backdrop-blur-sm"
             style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.28)", color: "#fff" }}
           >
@@ -550,7 +559,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
         </div>
       )}
 
-      {openCard && <RequestDetailModal card={openCard} ctx={ctx} onClose={() => setOpenCard(null)} />}
+      {openCard && <RequestDetailModal card={openCard} ctx={ctx} pick={pickSeasons} onClose={() => setOpenCard(null)} />}
     </div>
   );
 }
@@ -673,6 +682,10 @@ function RequestPoster({ rq, staff, queueKnown = true, onOpen }: { rq: MediaRequ
             <span className="flex-none rounded px-1.5 py-px font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
               {BOOK_FORMAT_BADGE[rq.formats]}
             </span>
+          )}
+          {/* A show asked for by season says which: S1–3, S5. */}
+          {rq.media_type === "series" && rq.seasons && rq.seasons.length > 0 && (
+            <span className="flex-none font-mono text-[9.5px] font-bold" style={{ color: "var(--ink-dim)" }}>{formatSeasons(rq.seasons)}</span>
           )}
           <span className="truncate">{stage.detail}</span>
         </div>
@@ -1038,7 +1051,8 @@ function badgeFor(c: DiscoverCard, requested?: ReqStatus): { label: string; tone
 }
 
 function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: boolean }) {
-  const [open, setOpen] = useState(false);
+  // "pick": opened by "＋ Request" on a show, so the sheet starts on "which seasons?".
+  const [open, setOpen] = useState<false | "view" | "pick">(false);
   const [quickBusy, setQuickBusy] = useState(false);
   const canHover = useCanHover();
   const requested = ctx.isRequested(c);
@@ -1050,7 +1064,9 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
 
   // Quick-request straight from the hover overlay — same honest flow as the modal:
   // doRequest toasts success/failure and only marks requested on success.
+  // A show opens the sheet on its season picker instead: never the whole show in one click.
   const quick = async () => {
+    if (c.media_type === "series") { setOpen("pick"); return; }
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(c); } catch { /* toast already shown */ }
@@ -1064,7 +1080,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
         <button
-          onClick={() => setOpen(true)}
+          onClick={() => setOpen("view")}
           aria-label={`View details for ${c.title}`}
           className="absolute inset-0 block h-full w-full text-left"
         >
@@ -1114,7 +1130,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
           <div className="mt-0.5 truncate text-[10px]" style={{ color: "var(--ink-faint)" }} title={c.genres.join(" · ")}>{c.genres.slice(0, 2).join(" · ")}</div>
         )}
       </div>
-      {open && <RequestDetailModal card={c} ctx={ctx} onClose={() => setOpen(false)} />}
+      {open && <RequestDetailModal card={c} ctx={ctx} pick={open === "pick"} onClose={() => setOpen(false)} />}
     </div>
   );
 }
@@ -1133,10 +1149,15 @@ function crewByJob(crew: MediaDetail["crew"], job: string): string {
 
 // ---- Detail sheet -----------------------------------------------------------
 
-function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: RowCtx; onClose: () => void }) {
+// pick: open a show's sheet straight on "which seasons?" (its "＋ Request" was tapped).
+function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; ctx: RowCtx; pick?: boolean; onClose: () => void }) {
   // `current` is swappable — clicking a "More like this" card replaces the sheet's
   // contents in place (one modal, no stacking) while keeping the honest request flow.
   const [current, setCurrent] = useState<DiscoverCard>(card);
+  // A show's seasons and what asking for each would mean; "error" when they couldn't be
+  // read, which falls back to asking for the whole show.
+  const [seasons, setSeasons] = useState<SeriesSeason[] | "error" | null>(null);
+  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<ReqStatus | undefined>(ctx.isRequested(card));
   const [subscribed, setSubscribed] = useState(false);
@@ -1149,37 +1170,62 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   // A stable ref so the detail effect doesn't re-run when the parent re-renders
   // (ctx is a fresh object on every Discover render).
   const ctxRef = useRef(ctx); ctxRef.current = ctx;
+  // The title on show now, so a late seasons answer for another one is dropped.
+  const currentRef = useRef(current); currentRef.current = current;
 
   const c = current;
   const badge = badgeFor(c, done);
   const declined = badge?.label === "Declined";
+  const isShow = c.media_type === "series";
+  // A show partly here or partly asked for still offers the seasons nobody has asked for.
+  const moreSeasons = isShow && ctx.canRequest && Array.isArray(seasons) && seasons.some((s) => s.requestable);
 
   // Fetch detail whenever the shown card changes; reset per-card request state.
   useEffect(() => {
     let alive = true;
     setD(null); setDetailLoading(true); setError(null);
     setDone(ctxRef.current.isRequested(current)); setSubscribed(false); setNote(""); setNoteOpen(false);
+    setSeasons(null); setPicking(current === card && !!pick);
     scrollRef.current?.scrollTo({ top: 0 });
     api.mediaDetail(current.media_type, current.tmdb_id)
       .then((r) => { if (alive) { setD(r); setDetailLoading(false); } })
       .catch(() => { if (alive) setDetailLoading(false); });
+    // One seasons call per show sheet, and only for someone who can ask for it.
+    if (current.media_type === "series" && ctxRef.current.canRequest) {
+      api.seriesSeasons(current.tmdb_id)
+        .then((r) => { if (alive) setSeasons(r); })
+        .catch(() => { if (alive) setSeasons("error"); });
+    }
     return () => { alive = false; };
+    // card and pick are the sheet's opening props; only a change of title resets it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 
   // Only flip to the success state when the request actually succeeded; on failure
   // the error shows inline (plus the toast) and the button stays.
-  const request = async () => {
+  // picked (a show): the seasons chosen; null or absent is the whole show.
+  const request = async (picked?: number[] | null) => {
     setBusy(true); setError(null);
     try {
-      const r = await ctx.doRequest(c, note);
+      const r = await ctx.doRequest(c, note, picked);
       setSubscribed(r.subscribed);
       setDone(r.status);
+      if (isShow) {
+        // The season states moved on: what's asked for now, and whether any is left.
+        setPicking(false); setNote(""); setNoteOpen(false);
+        api.seriesSeasons(c.tmdb_id)
+          .then((r) => { if (currentRef.current === c) setSeasons(r); })
+          .catch(() => { if (currentRef.current === c) setSeasons("error"); });
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
+  // A show's Request opens the season picker; without a season list it asks for the
+  // whole show, as before seasons could be picked.
+  const ask = () => (isShow && seasons !== "error" ? setPicking(true) : request());
 
   const overview = d?.overview || c.overview;
   const runtime = d?.runtime ? `${Math.floor(d.runtime / 60)}h ${d.runtime % 60}m` : "";
@@ -1257,7 +1303,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{FOLLOWING}</span>
               ) : badge && !declined ? (
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>
-                  {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — waiting for approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : done === "approved" ? "Requested — searching now" : "Requested"}
+                  {badge.label === "In library" ? (moreSeasons ? "✓ Partly in your library" : "✓ In your library") : badge.label === "Pending" ? "Requested — waiting for approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : done === "approved" ? "Requested — searching now" : "Requested"}
                 </span>
               ) : !ctx.canRequest ? (
                 <span className="text-[12px] text-ink-faint">Ask your admin for request access.</span>
@@ -1266,10 +1312,16 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                   {declined && badge && (
                     <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>Declined</span>
                   )}
-                  <Button variant="primary" onClick={request} busy={busy} busyLabel="Requesting…">
-                    {declined ? "Request again" : "＋ Request"}
-                  </Button>
+                  {!picking && (
+                    <Button variant="primary" onClick={ask} busy={busy} busyLabel="Requesting…">
+                      {declined ? "Request again" : "＋ Request"}
+                    </Button>
+                  )}
                 </>
+              )}
+              {/* Already here, coming or asked for, but some seasons aren't: ask for those. */}
+              {moreSeasons && ((done && subscribed) || (badge && !declined)) && !picking && (
+                <Button variant="primary" onClick={() => setPicking(true)}>Request more seasons</Button>
               )}
               {d?.trailer_url && (
                 <a href={d.trailer_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
@@ -1279,7 +1331,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
               )}
             </div>
             {/* An optional note for whoever approves it, folded away until asked for. */}
-            {ctx.canRequest && !(done && subscribed) && (!badge || declined) && (
+            {ctx.canRequest && (picking || (!(done && subscribed) && (!badge || declined))) && (
               noteOpen ? (
                 <label className="mt-2.5 flex max-w-[460px] flex-col gap-1 text-[11.5px] text-ink-dim">
                   Note for the admin (optional)
@@ -1303,6 +1355,24 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
             {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
           </div>
         </div>
+
+        {/* Which seasons: full width under the title, where a phone has room for it. */}
+        {isShow && picking && (
+          <div className="px-5 pt-4 sm:px-6">
+            {Array.isArray(seasons) ? (
+              <Suspense fallback={<div className="py-3 text-[12px] text-ink-faint">Loading seasons…</div>}>
+                <SeasonPicker seasons={seasons} busy={busy} onSubmit={(p) => { void request(p); }} onCancel={() => setPicking(false)} />
+              </Suspense>
+            ) : seasons === "error" ? (
+              <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-dim">
+                Couldn’t load the seasons.
+                <Button variant="primary" onClick={() => { void request(); }} busy={busy} busyLabel="Requesting…">Request the whole show</Button>
+              </div>
+            ) : (
+              <div className="py-3 text-[12px] text-ink-faint">Loading seasons…</div>
+            )}
+          </div>
+        )}
 
         <div className="px-5 pb-6 pt-4 sm:px-6">
           {overview ? (
