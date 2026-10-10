@@ -284,6 +284,7 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
           requestId={openID}
           initial={open}
           startDeclining={declineID === openID}
+          closeOnBack={false}
           onChanged={() => { void load(); }}
           onClose={() => { setDeclineID(0); setParam("id", ""); }}
         />

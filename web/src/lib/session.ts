@@ -1,8 +1,17 @@
+import { api } from "./api";
+
 // Where to go back to after signing in again. When a session ends mid-use, the page the
 // person was on is remembered here, so signing back in returns them to it instead of
 // dropping them on Discover.
 
 const KEY = "arrmada.next";
+
+// signOut ends this session and reloads at the root, so every bit of the signed-in app
+// (router, caches, polls) starts over at the sign-in screen.
+export async function signOut(): Promise<void> {
+  try { await api.logout(); } catch { /* clearing the session locally is enough */ }
+  window.location.href = "/";
+}
 
 // sanitizeNext keeps only a same-site path: it must start with a single "/" (not "//" or
 // "/\", which browsers treat as another host), and carry no scheme and no control

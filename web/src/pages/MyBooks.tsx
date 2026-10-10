@@ -57,7 +57,8 @@ export function MyBooks() {
     <div className="mx-auto w-full max-w-[1200px] px-4 py-5 sm:px-6">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="m-0 text-[20px] font-bold">Books</h1>
+          {/* "My shelf", not "Books": Discover's Books tab is the catalogue to ask from. */}
+          <h1 className="m-0 text-[20px] font-bold">My shelf</h1>
           <p className="m-0 mt-1 text-[12.5px] text-ink-dim">
             Download any ebook or audiobook in the library, or listen with an app on your phone.
             {books && <span className="text-ink-faint"> · {books.length} book{books.length === 1 ? "" : "s"}, {ebooks} ebook{ebooks === 1 ? "" : "s"}</span>}

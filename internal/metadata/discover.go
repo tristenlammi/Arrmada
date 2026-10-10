@@ -92,6 +92,10 @@ type MediaDetail struct {
 	// payload as the rest: what the season picker and the per-season request states are
 	// built on. Empty for movies.
 	Seasons []SeasonSummary `json:"seasons,omitempty"`
+	// Adult is TMDB's own adult flag. The detail endpoint refuses such a title outright
+	// (the always-on adult filter), so it never reaches a browser as true; it is
+	// serialised only so the disk cache keeps it.
+	Adult bool `json:"adult,omitempty"`
 }
 
 // SeasonSummary is one season as TMDB lists it on the show: no episodes, just enough to
@@ -126,7 +130,8 @@ func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*Med
 	if tvish(media) {
 		kind = "tv"
 	}
-	key := "tmdb:detail:v2:" + kind + ":" + strconv.Itoa(tmdbID)
+	// v3: records carry Adult; a v2 copy would read as "not adult" until it expired.
+	key := "tmdb:detail:v3:" + kind + ":" + strconv.Itoa(tmdbID)
 	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
 		if kind == "tv" {
 			return t.seriesDetail(ctx, tmdbID)
@@ -153,7 +158,7 @@ func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error
 		MediaType: "movie", TMDBID: m.ID, IMDBID: firstNonEmpty(m.IMDBID, m.ExternalIDs.IMDBID),
 		Title: m.Title, Year: yearOf(m.ReleaseDate), Overview: m.Overview, Runtime: m.Runtime,
 		Status: m.Status, Certification: usCertification(m.ReleaseDates.Results),
-		Ratings: Ratings{TMDB: m.VoteAverage},
+		Ratings: Ratings{TMDB: m.VoteAverage}, Adult: m.Adult,
 	}
 	if m.PosterPath != "" {
 		d.PosterURL = tmdbImageBase + m.PosterPath
@@ -188,7 +193,7 @@ func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, erro
 	d := &MediaDetail{
 		MediaType: "series", TMDBID: s.ID, IMDBID: s.ExternalIDs.IMDBID,
 		Title: s.Name, Year: yearOf(s.FirstAirDate), Overview: s.Overview, Status: s.Status,
-		Ratings: Ratings{TMDB: s.VoteAverage},
+		Ratings: Ratings{TMDB: s.VoteAverage}, Adult: s.Adult,
 	}
 	if s.PosterPath != "" {
 		d.PosterURL = tmdbImageBase + s.PosterPath

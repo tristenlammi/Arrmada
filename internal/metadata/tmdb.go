@@ -349,6 +349,7 @@ func (t *TMDB) seasonEpisodes(ctx context.Context, tmdbID, season int) ([]Episod
 
 type tmdbSeries struct {
 	ID               int         `json:"id"`
+	Adult            bool        `json:"adult"`
 	Name             string      `json:"name"`
 	OriginalName     string      `json:"original_name"`
 	OriginalLanguage string      `json:"original_language"`
@@ -454,6 +455,7 @@ func parseTMDBCollection(body []byte) (*Collection, error) {
 
 type tmdbMovie struct {
 	ID           int     `json:"id"`
+	Adult        bool    `json:"adult"`
 	Title        string  `json:"title"`
 	ReleaseDate  string  `json:"release_date"`
 	Overview     string  `json:"overview"`

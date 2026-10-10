@@ -1,10 +1,11 @@
 import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, Outlet, useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { NotificationBell } from "../components/NotificationBell";
 import { MetadataMissing } from "../components/MetadataMissing";
 import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
+import { titlePath } from "../lib/refLink";
+import { useTitle } from "../lib/title";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
 import { api, type ApiError, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest, type SeriesSeason } from "../lib/api";
@@ -12,7 +13,7 @@ import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
-import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
+import { Button, IconButton, Sheet, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
 const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
@@ -47,6 +48,9 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   // "See all" / Enter, not per keystroke); `searchInput` is what's typed in the omnibox.
   const search = tab === "books" ? "" : q;
   const bookSeed = tab === "books" ? q : "";
+  // ?work=<key>: one book's sheet on the Books tab (a notification's link); closing it drops the key.
+  const work = tab === "books" ? params.get("work") ?? "" : "";
+  const closeWork = () => setParams((p) => { const next = new URLSearchParams(p); next.delete("work"); return next; }, { replace: true });
   const [searchInput, setSearchInput] = useState(search);
   // Back, Forward or a notification link changed the committed search: show it in the box.
   useEffect(() => { setSearchInput(search); }, [search]);
@@ -58,7 +62,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   const setTab = (t: Tab) => {
     if (t === tab && !q) return;
     setSearchInput("");
-    setParams((p) => { const next = withTab(p, "tab", t, "discover"); next.delete("q"); return next; });
+    setParams((p) => { const next = withTab(p, "tab", t, "discover"); next.delete("q"); next.delete("work"); return next; });
   };
   // Committing a search is a new history entry; emptying the box just drops it.
   const commitSearch = (query: string) => {
@@ -91,6 +95,13 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
   const ctx: RowCtx = { doRequest, isRequested, canRequest, flash };
 
+  // A title's own address (/discover/movie/603) opens its sheet over the page. Discover
+  // stays mounted underneath, so its rows, what loaded and the scroll position survive,
+  // and Back from the title lands right where you were.
+  const movieMatch = useMatch("/discover/movie/:tmdbId");
+  const seriesMatch = useMatch("/discover/series/:tmdbId");
+  const titleMatch = movieMatch ? { media: "movie" as const, id: Number(movieMatch.params.tmdbId) } : seriesMatch ? { media: "series" as const, id: Number(seriesMatch.params.tmdbId) } : null;
+
   return (
     <>
       {chrome && <PageHeader title="Discover" />}
@@ -100,15 +111,17 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
             first in the DOM as well, so focus order matches what a phone shows; sm:order-last
             puts it back after the tabs on wider screens. */}
         <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
-          <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
-            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-            {tab !== "books" && (metadataReady ? (
-              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={commitSearch} ctx={ctx} />
-            ) : (
-              <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-            ))}
-            <NotificationBell />
-          </div>
+          {/* Books have their own search inside BooksDiscover — hide the movie/TV one there.
+              The bell lives in the layout's top bar, on every page. */}
+          {tab !== "books" && (
+            <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
+              {metadataReady ? (
+                <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={commitSearch} />
+              ) : (
+                <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+              )}
+            </div>
+          )}
           {/* No tab is current while search results are showing. */}
           <Tabs tabs={TABS} value={search ? null : tab} onChange={setTab} idPrefix="discover" label="Discover sections" className="-mb-px" />
         </div>
@@ -116,7 +129,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
         <TabPanel idPrefix="discover" value={tab}>
           {tab === "books" ? (
             <Suspense fallback={<div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>}>
-              <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+              <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} initialWork={work || undefined} onWorkClosed={closeWork} />
             </Suspense>
           ) : !metadataReady ? (
             // No TMDB key: every movie/TV feed would fail on its own and repeat the same error
@@ -137,8 +150,73 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
           )}
         </TabPanel>
       </div>
+      {titleMatch && titleMatch.id > 0 && <DiscoverTitle media={titleMatch.media} tmdbId={titleMatch.id} ctx={ctx} />}
+      {/* The old /discover/tv/<id> address redirects from here (lib/routes). */}
+      <Outlet />
     </>
   );
+}
+
+// What a title's history entry carries when it was opened from the page: the card it was
+// opened from (shown at once, before the detail arrives), how many title entries are
+// stacked above the list (so closing steps back over all of them), whether the first
+// one was opened cold from a link (then there's no list underneath to step back to), and
+// whether to start on "which seasons?".
+interface TitleState {
+  card?: DiscoverCard;
+  depth?: number;
+  cold?: boolean;
+  pick?: boolean;
+}
+
+// useOpenTitle opens a title's sheet by going to its address, keeping the tab and search
+// (?tab=, ?q=) so closing it returns to the same view. Opening one from inside a sheet
+// ("More like this") stacks another entry, so Back returns to the previous title.
+function useOpenTitle(): (c: DiscoverCard, pick?: boolean) => void {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return (c, pick = false) => {
+    const onTitle = /^\/discover\/(movie|series)\//.test(location.pathname);
+    const st = (onTitle ? location.state : null) as TitleState | null;
+    const state: TitleState = { card: c, depth: (st?.depth ?? 0) + 1, cold: onTitle ? (st?.cold ?? !st?.depth) : false, pick };
+    navigate(titlePath(c.media_type, c.tmdb_id) + location.search, { state });
+  };
+}
+
+// DiscoverTitle is the sheet for the title in the address. Opened from a poster it starts
+// from that card; opened cold (a shared link, a notification, a reload) it starts from a
+// bare id and fills in from the detail answer, which carries the card's badge state.
+function DiscoverTitle({ media, tmdbId, ctx }: { media: "movie" | "series"; tmdbId: number; ctx: RowCtx }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const st = location.state as TitleState | null;
+  const card = st?.card && st.card.media_type === media && st.card.tmdb_id === tmdbId ? st.card : stubCard(media, tmdbId);
+  const close = () => {
+    const depth = st?.depth ?? 0;
+    if (depth > 0 && !st?.cold) navigate(-depth);
+    else navigate({ pathname: "/discover", search: location.search }, { replace: true });
+  };
+  return <RequestDetailModal card={card} ctx={ctx} pick={!!st?.pick} onClose={close} />;
+}
+
+// shareTitle hands the title's address to the phone's share sheet, or copies it where
+// there is none (most desktops). A share the person cancels is not an error.
+async function shareTitle(c: DiscoverCard, flash: ToastFn) {
+  const url = window.location.origin + titlePath(c.media_type, c.tmdb_id);
+  if (typeof navigator.share === "function") {
+    try { await navigator.share({ title: c.title, url }); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    flash("Link copied");
+  } catch {
+    flash("Couldn’t copy the link", { tone: "error" });
+  }
+}
+
+function stubCard(media: "movie" | "series", tmdbId: number): DiscoverCard {
+  return { media_type: media, tmdb_id: tmdbId, title: "", year: 0, vote_average: 0, in_library: false, has_file: false };
 }
 
 type ReqStatus = MediaRequest["status"];
@@ -204,13 +282,13 @@ function pushRecent(q: string): string[] {
   return next;
 }
 
-function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange: (v: string) => void; onSeeAll: (q: string) => void; ctx: RowCtx }) {
+function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v: string) => void; onSeeAll: (q: string) => void }) {
   const [focused, setFocused] = useState(false);
   const [results, setResults] = useState<DiscoverCard[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [highlight, setHighlight] = useState(-1);
   const [recent, setRecent] = useState<string[]>(loadRecent);
-  const [openCard, setOpenCard] = useState<DiscoverCard | null>(null);
+  const openTitle = useOpenTitle();
   const wrap = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const q = value.trim();
@@ -252,8 +330,8 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
   };
   const pick = (c: DiscoverCard) => {
     if (q) setRecent(pushRecent(q));
-    setOpenCard(c);
     setFocused(false);
+    openTitle(c);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -340,8 +418,6 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
           )}
         </div>
       )}
-
-      {openCard && <RequestDetailModal card={openCard} ctx={ctx} onClose={() => setOpenCard(null)} />}
     </div>
   );
 }
@@ -458,10 +534,8 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   const [items, setItems] = useState<DiscoverCard[] | null>(null);
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [openCard, setOpenCard] = useState<DiscoverCard | null>(null);
-  // Opened by "＋ Request" on a show: the sheet starts on "which seasons?".
-  const [pickSeasons, setPickSeasons] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
+  const openTitle = useOpenTitle();
 
   useEffect(() => {
     let alive = true;
@@ -485,7 +559,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
 
   const quick = async () => {
     // A show is never asked for whole in one click: the sheet asks which seasons.
-    if (cur.media_type === "series") { setPickSeasons(true); setOpenCard(cur); return; }
+    if (cur.media_type === "series") { openTitle(cur, true); return; }
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(cur); } catch { /* toast shown */ } finally { setQuickBusy(false); }
@@ -528,7 +602,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
         {cur.overview && <p className="m-0 line-clamp-2 max-w-[560px] text-[13px] leading-relaxed sm:line-clamp-3" style={{ color: "rgba(255,255,255,.78)" }}>{cur.overview}</p>}
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <button
-            onClick={() => { setPickSeasons(false); setOpenCard(cur); }}
+            onClick={() => openTitle(cur)}
             className="rounded-lg px-4 py-2 text-[12.5px] font-semibold backdrop-blur-sm"
             style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.28)", color: "#fff" }}
           >
@@ -560,8 +634,6 @@ function Hero({ ctx }: { ctx: RowCtx }) {
           ))}
         </div>
       )}
-
-      {openCard && <RequestDetailModal card={openCard} ctx={ctx} pick={pickSeasons} onClose={() => setOpenCard(null)} />}
     </div>
   );
 }
@@ -1053,8 +1125,7 @@ function badgeFor(c: DiscoverCard, requested?: ReqStatus): { label: string; tone
 }
 
 function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: boolean }) {
-  // "pick": opened by "＋ Request" on a show, so the sheet starts on "which seasons?".
-  const [open, setOpen] = useState<false | "view" | "pick">(false);
+  const openTitle = useOpenTitle();
   const [quickBusy, setQuickBusy] = useState(false);
   const canHover = useCanHover();
   const requested = ctx.isRequested(c);
@@ -1068,7 +1139,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
   // doRequest toasts success/failure and only marks requested on success.
   // A show opens the sheet on its season picker instead: never the whole show in one click.
   const quick = async () => {
-    if (c.media_type === "series") { setOpen("pick"); return; }
+    if (c.media_type === "series") { openTitle(c, true); return; }
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(c); } catch { /* toast already shown */ }
@@ -1082,7 +1153,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
         <button
-          onClick={() => setOpen("view")}
+          onClick={() => openTitle(c)}
           aria-label={`View details for ${c.title}`}
           className="absolute inset-0 block h-full w-full text-left"
         >
@@ -1132,7 +1203,6 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
           <div className="mt-0.5 truncate text-[10px]" style={{ color: "var(--ink-faint)" }} title={c.genres.join(" · ")}>{c.genres.slice(0, 2).join(" · ")}</div>
         )}
       </div>
-      {open && <RequestDetailModal card={c} ctx={ctx} pick={open === "pick"} onClose={() => setOpen(false)} />}
     </div>
   );
 }
@@ -1151,11 +1221,14 @@ function crewByJob(crew: MediaDetail["crew"], job: string): string {
 
 // ---- Detail sheet -----------------------------------------------------------
 
+// The sheet behind a title's address (DiscoverTitle). card is what to show until the
+// detail arrives; "More like this" goes to that title's address, and the same sheet
+// re-fetches for it rather than stacking another one.
 // pick: open a show's sheet straight on "which seasons?" (its "＋ Request" was tapped).
 function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; ctx: RowCtx; pick?: boolean; onClose: () => void }) {
-  // `current` is swappable — clicking a "More like this" card replaces the sheet's
-  // contents in place (one modal, no stacking) while keeping the honest request flow.
-  const [current, setCurrent] = useState<DiscoverCard>(card);
+  const current = card;
+  const titleKey = `${card.media_type}:${card.tmdb_id}`;
+  const openTitle = useOpenTitle();
   // A show's seasons and what asking for each would mean; "error" when they couldn't be
   // read, which falls back to asking for the whole show.
   const [seasons, setSeasons] = useState<SeriesSeason[] | "error" | null>(null);
@@ -1170,14 +1243,20 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const [quotaOut, setQuotaOut] = useState(false);
   const [d, setD] = useState<MediaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
+  // The detail couldn't be had: 404 is a title that doesn't exist or isn't allowed (the
+  // adult filter); anything else is a failed fetch.
+  const [detailError, setDetailError] = useState<{ status: number; message: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // A stable ref so the detail effect doesn't re-run when the parent re-renders
   // (ctx is a fresh object on every Discover render).
   const ctxRef = useRef(ctx); ctxRef.current = ctx;
   // The title on show now, so a late seasons answer for another one is dropped.
-  const currentRef = useRef(current); currentRef.current = current;
+  const currentRef = useRef(titleKey); currentRef.current = titleKey;
 
-  const c = current;
+  // The detail answer's card wins once it's here: the freshest badge state, and all of a
+  // title opened cold from its address.
+  const c: DiscoverCard = d?.card ? { ...current, ...d.card } : current;
+  useTitle(c.title || undefined);
   const badge = badgeFor(c, done);
   const declined = badge?.label === "Declined";
   const isShow = c.media_type === "series";
@@ -1187,13 +1266,13 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   // Fetch detail whenever the shown card changes; reset per-card request state.
   useEffect(() => {
     let alive = true;
-    setD(null); setDetailLoading(true); setError(null);
+    setD(null); setDetailLoading(true); setDetailError(null); setError(null);
     setDone(ctxRef.current.isRequested(current)); setSubscribed(false); setNote(""); setNoteOpen(false);
-    setSeasons(null); setPicking(current === card && !!pick);
+    setSeasons(null); setPicking(!!pick);
     scrollRef.current?.scrollTo({ top: 0 });
     api.mediaDetail(current.media_type, current.tmdb_id)
       .then((r) => { if (alive) { setD(r); setDetailLoading(false); } })
-      .catch(() => { if (alive) setDetailLoading(false); });
+      .catch((e) => { if (alive) { setDetailLoading(false); setDetailError({ status: (e as ApiError).status ?? 0, message: (e as Error).message }); } });
     // One seasons call per show sheet, and only for someone who can ask for it.
     if (current.media_type === "series" && ctxRef.current.canRequest) {
       api.seriesSeasons(current.tmdb_id)
@@ -1201,9 +1280,9 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
         .catch(() => { if (alive) setSeasons("error"); });
     }
     return () => { alive = false; };
-    // card and pick are the sheet's opening props; only a change of title resets it.
+    // Only a change of title resets the sheet; the card object itself is rebuilt often.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current]);
+  }, [titleKey]);
 
   // Only flip to the success state when the request actually succeeded; on failure
   // the error shows inline (plus the toast) and the button stays.
@@ -1217,9 +1296,10 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
       if (isShow) {
         // The season states moved on: what's asked for now, and whether any is left.
         setPicking(false); setNote(""); setNoteOpen(false);
+        const asked = titleKey;
         api.seriesSeasons(c.tmdb_id)
-          .then((r) => { if (currentRef.current === c) setSeasons(r); })
-          .catch(() => { if (currentRef.current === c) setSeasons("error"); });
+          .then((r) => { if (currentRef.current === asked) setSeasons(r); })
+          .catch(() => { if (currentRef.current === asked) setSeasons("error"); });
       }
     } catch (e) {
       // Declined before: asking again needs a note, and says why it was turned down.
@@ -1245,20 +1325,44 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const r = d?.ratings;
   const similar = (d?.similar ?? []).filter((s) => s.tmdb_id !== c.tmdb_id).slice(0, 12);
 
-  // The shared Modal owns the dialog plumbing (portal, focus trap and restore, Esc,
-  // scroll lock). The panel keeps its own layout: full screen on a phone, a centred
-  // card with an inner scroller above sm, and a slightly darker scrim than a plain
-  // dialog because it sits over artwork.
+  // Opened cold from an address that leads nowhere: a title TMDB doesn't know, or one the
+  // always-on adult filter keeps out (the server answers 404 for both).
+  if (!c.title && detailError) {
+    return (
+      <Sheet onClose={onClose} closeOnBack={false} ariaLabel="Not available" size="sm">
+        <div className="p-6">
+          <h2 className="m-0 text-[16px] font-bold">Not available</h2>
+          <p className="m-0 mt-1.5 text-[12.5px] text-ink-dim">
+            {detailError.status === 404 ? "This title can’t be shown here." : `Couldn’t load it — ${detailError.message}`}
+          </p>
+          <div className="mt-4 flex justify-end"><Button onClick={onClose}>Back to Discover</Button></div>
+        </div>
+      </Sheet>
+    );
+  }
+
+  // The kit Sheet owns the dialog plumbing (portal, focus trap and restore, Esc, scroll
+  // lock). Back needs no help: the title is its own address, so Back leaves it. The panel
+  // keeps its own layout: full screen on a phone, a centred card with an inner scroller
+  // above sm, and a slightly darker scrim than a plain dialog because it sits over artwork.
   return (
-    <Modal
+    <Sheet
       onClose={onClose}
-      ariaLabel={c.title}
-      variant="sheet"
+      closeOnBack={false}
+      ariaLabel={c.title || "Title"}
+      handle={false}
       scrim={0.68}
       panelClassName="flex h-full w-full flex-col overflow-hidden sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-panel"
     >
-      {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
-      <IconButton label="Close" onClick={onClose} className="absolute right-3 top-3 z-20 h-8 w-8 rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</IconButton>
+      {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls.
+          Full screen in the installed iPhone app, it stays clear of the status bar. */}
+      <IconButton label="Close" onClick={onClose} className="absolute right-3 z-20 h-8 w-8 rounded-full" style={{ top: "max(0.75rem, env(safe-area-inset-top, 0px))", background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</IconButton>
+      {/* Every title has an address now, so it can be sent to someone. */}
+      {c.title && (
+        <IconButton label="Share" onClick={() => { void shareTitle(c, ctx.flash); }} className="absolute right-[3.25rem] z-20 h-8 w-8 rounded-full" style={{ top: "max(0.75rem, env(safe-area-inset-top, 0px))", background: "rgba(20,12,7,.7)", color: "#fff" }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M12 3v12M7 8l5-5 5 5" /><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></svg>
+        </IconButton>
+      )}
 
       {/* The backdrop lives INSIDE the scroller: the poster below insets over it with a
           negative margin, and an overflow container clips negative margins — with the
@@ -1277,7 +1381,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
           <div className="min-w-0 flex-1 pt-4">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{c.media_type === "series" ? "TV" : "Movie"}</span>
-              <h2 className="m-0 text-[18px] font-bold leading-tight sm:text-[21px]">{c.title}</h2>
+              <h2 className="m-0 text-[18px] font-bold leading-tight sm:text-[21px]">{c.title || <span className="text-ink-faint">Loading…</span>}</h2>
               <span className="font-mono text-[11.5px] text-ink-faint">{c.year || ""}</span>
             </div>
             {/* Meta line */}
@@ -1308,7 +1412,8 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
               <div className="mt-2 font-mono text-[10.5px]" style={{ color: "var(--avoid-text)" }}>Releases {c.release_date} — request ahead</div>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {done && subscribed ? (
+              {/* Opened cold, nothing is offered until the title is known. */}
+              {!c.title ? null : done && subscribed ? (
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{FOLLOWING}</span>
               ) : badge && !declined ? (
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>
@@ -1340,7 +1445,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
               )}
             </div>
             {/* An optional note for whoever approves it, folded away until asked for. */}
-            {ctx.canRequest && (picking || (!(done && subscribed) && (!badge || declined))) && (
+            {ctx.canRequest && !!c.title && (picking || (!(done && subscribed) && (!badge || declined))) && (
               noteOpen || declined ? (
                 <label className="mt-2.5 flex max-w-[460px] flex-col gap-1 text-[11.5px] text-ink-dim">
                   {declined ? "Tell them why you’d still like it" : "Note for the admin (optional)"}
@@ -1442,7 +1547,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                   return (
                     <button
                       key={`${s.media_type}:${s.tmdb_id}`}
-                      onClick={() => setCurrent(s)}
+                      onClick={() => openTitle(s)}
                       className="group w-[112px] flex-none text-left"
                       aria-label={`View ${s.title}`}
                     >
@@ -1460,7 +1565,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
           )}
         </div>
       </div>
-    </Modal>
+    </Sheet>
   );
 }
 

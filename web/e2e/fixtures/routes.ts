@@ -34,7 +34,11 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/audio", sys.myAudio(p)),
     get("/api/v1/me/audio/listening", sys.myListening),
     get("/api/v1/me/notifications", discover.notifications),
+    { method: "POST", path: /^\/api\/v1\/me\/notifications\/\d+\/read$/, status: 204 },
     get("/api/v1/me/quota", sys.quota(p)),
+    // The Me page's notification settings: no push key (push stays hidden), no Apprise link.
+    get("/api/v1/me/push/key", { key: "" }),
+    get("/api/v1/me/apprise", { set: false, hint: "" }),
 
     // Discover (requester and staff)
     get("/api/v1/requests", discover.requests),
@@ -57,6 +61,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/discover/genres", discover.genres),
     get("/api/v1/discover/providers", discover.providers),
     get("/api/v1/discover/search", discover.items),
+    { method: "GET", path: `/api/v1/media/movie/${discover.hiddenTitleID}`, status: 404, body: { message: "That title isn't available." } },
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
     { method: "GET", path: /^\/api\/v1\/media\/series\/(\d+)\/seasons$/, respond: ({ params }) => discover.seriesSeasons(Number(params[0])) },
     get("/api/v1/calendar", media.calendar),
@@ -65,6 +70,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // Discover → Books
     get(/^\/api\/v1\/books\/discover\/browse\/[a-z_]+$/, books.browse),
     get("/api/v1/books/discover/recommended", { rows: [] }),
+    // Hardcover ("hc:") books also ask for "readers also liked".
+    get("/api/v1/books/discover/similar", { books: [] }),
     { method: "GET", path: "/api/v1/books/discover/detail", respond: ({ url }) => books.detail(url.searchParams.get("key") ?? "") },
 
     // Staff console

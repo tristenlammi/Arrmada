@@ -4,7 +4,7 @@ import { api, type MediaRequest, type QualityProfileInfo } from "../lib/api";
 import { isStaff, useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
 import { formatSeasons, libraryPath, mediaLabel, requestAge, requestStage } from "../lib/requestStage";
-import { Button, Modal, StatusChip, useConfirm, useToast } from "../ui";
+import { Button, Sheet, StatusChip, useConfirm, useToast } from "../ui";
 import { BookFormatBadge } from "./BookFormats";
 import { SeasonTrim } from "./SeasonTrim";
 import { DeclineReasonField, ReRequestFlag, decisionLine } from "./DeclineReason";
@@ -19,8 +19,10 @@ import { refreshAttention } from "../lib/useAttention";
 // approved one became in the library. A requester withdraws their own pending request or
 // stops following someone else's. The server enforces all of it; this only decides what
 // is worth offering.
-export function RequestSheet({ requestId, initial, startDeclining = false, onChanged, onClose }: {
+export function RequestSheet({ requestId, initial, startDeclining = false, closeOnBack = true, onChanged, onClose }: {
   requestId: number;
+  /** Back closes it (the Discover strip). The Requests page keeps ?id= in the address, so Back works through that instead. */
+  closeOnBack?: boolean;
   /** What the opener already has, shown while the fresh copy loads. */
   initial?: MediaRequest;
   /** Open with the decline reason box showing (a row's Decline on the Requests page). */
@@ -80,9 +82,9 @@ export function RequestSheet({ requestId, initial, startDeclining = false, onCha
 
   if (!rq) {
     return (
-      <Modal onClose={onClose} ariaLabel="Request" variant="sheet" size="lg">
+      <Sheet onClose={onClose} closeOnBack={closeOnBack} ariaLabel="Request" size="lg">
         <div className="p-6 text-[12.5px] text-ink-dim">{loadError ?? "Loading…"}</div>
-      </Modal>
+      </Sheet>
     );
   }
 
@@ -127,7 +129,7 @@ export function RequestSheet({ requestId, initial, startDeclining = false, onCha
 
   const big = "min-h-[40px]";
   return (
-    <Modal onClose={onClose} ariaLabel={rq.title} variant="sheet" size="lg" dismissible={!busy}>
+    <Sheet onClose={onClose} closeOnBack={closeOnBack} ariaLabel={rq.title} size="lg" dismissible={!busy}>
       <div className="flex gap-4 p-5 sm:p-6">
         <div className="h-[150px] w-[100px] flex-none overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
           {rq.poster_url && <img src={posterThumb(rq.poster_url)} alt="" className="h-full w-full object-cover" />}
@@ -219,7 +221,7 @@ export function RequestSheet({ requestId, initial, startDeclining = false, onCha
           <Button variant="ghost" className={`${big} ml-auto`} onClick={onClose} disabled={!!busy}>Close</Button>
         </div>
       </div>
-    </Modal>
+    </Sheet>
   );
 }
 

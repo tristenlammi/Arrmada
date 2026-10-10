@@ -1,6 +1,7 @@
 // The shared UI kit. New and migrated code imports overlays, toasts, confirms,
 // buttons and status chips from here instead of hand-building them per page.
 export { Modal, type ModalProps, type ModalSize } from "./Modal";
+export { Sheet, type SheetProps } from "./Sheet";
 export { ConfirmDialog, type ConfirmChoice } from "./ConfirmDialog";
 export { ConfirmProvider, useConfirm, type ConfirmOptions, type ConfirmFn } from "./Confirm";
 export { ToastProvider, useToast, type ToastFn, type ToastOptions, type ToastTone } from "./Toast";

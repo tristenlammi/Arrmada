@@ -182,6 +182,10 @@ func contentType(name string) string {
 		return "text/css; charset=utf-8"
 	case ".svg":
 		return "image/svg+xml"
+	case ".png":
+		// The app icons and the notification badge; iOS and Android refuse an icon
+		// that doesn't come back as an image.
+		return "image/png"
 	case ".webmanifest":
 		return "application/manifest+json"
 	case ".json":

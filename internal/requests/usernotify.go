@@ -500,7 +500,7 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			// Web Push to every device this user enabled it on. Async with its own
 			// deadline — the import fan-out must never block on a push service. The
 			// inbox insert above already deduped repeats, so this can't double-ping.
-			s.push.SendToUserAsync(uid, title, body, "/discover")
+			s.push.SendToUserAsync(uid, title, body, pushPath(ref))
 		}
 		// The request id, not the title: an audiobook's "ready" pairs a user with what they
 		// will listen to, and the log is staff-readable.

@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { badgeFor, useAttention, type NavBadge } from "../lib/useAttention";
 import { FleetMark } from "./FleetMark";
 import { Icon } from "./icons";
+import { NotificationBell } from "./NotificationBell";
 
 const PILL_TONE: Record<NavBadge["tone"], { background: string; color: string }> = {
   accent: { background: "var(--accent-soft)", color: "var(--accent)" },
@@ -39,7 +40,9 @@ function toggleTheme() {
   root.setAttribute("data-theme", current === "dark" ? "light" : "dark");
 }
 
-export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+// bell: this screen is wide enough that the sidebar is always open, so the inbox bell
+// lives in its brand row (AppLayout's compact bar has it otherwise).
+export function Sidebar({ open, onClose, bell = false }: { open: boolean; onClose: () => void; bell?: boolean }) {
   const { user, booksEnabled, musicEnabled } = useMe();
   // Count pills from the Needs-you feed (the staff layout polls it; this only reads).
   const attention = useAttention();
@@ -67,7 +70,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         className={`fixed inset-y-0 left-0 z-50 flex w-[236px] flex-none transform flex-col overflow-y-auto bg-sidebar transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
-        style={{ borderRight: "1px solid var(--line)" }}
+        // As a drawer in the installed iPhone app it runs edge to edge: keep the brand row
+        // below the status bar and the last link above the home indicator.
+        style={{ borderRight: "1px solid var(--line)", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="flex items-center gap-2.5 px-[18px] pb-3 pt-[18px]">
           <span
@@ -77,6 +82,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             <FleetMark className="h-[18px] w-[18px]" />
           </span>
           <span className="text-[15px] font-extrabold tracking-[0.12em]">ARRMADA</span>
+          {bell && <div className="ml-auto"><NotificationBell placement="side" /></div>}
         </div>
 
         <nav className="flex flex-col gap-0.5 px-2.5 pt-2">
