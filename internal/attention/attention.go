@@ -51,6 +51,9 @@ type Item struct {
 	Level  string `json:"level"`
 	Title  string `json:"title"`
 	Detail string `json:"detail,omitempty"`
+	// Name is what the item is about, short ("Dune.2021.2160p"), for an alert that lists
+	// several in one line. Title stands in where it's empty.
+	Name string `json:"-"`
 	// Link is where it gets dealt with. LinkKey names the web UI's LINKS entry for the
 	// same place (the UI resolves it first, so a page that moves is repointed there).
 	Link      string `json:"link,omitempty"`
@@ -167,8 +170,9 @@ type Service struct {
 	log       *slog.Logger
 	now       func() time.Time
 
-	cur  atomic.Pointer[Snapshot]
-	kick chan struct{}
+	cur    atomic.Pointer[Snapshot]
+	kick   chan struct{}
+	alerts Differ // set before the first refresh (SetAlerts); nil = no alerts
 
 	refreshMu  sync.Mutex // one refresh at a time; the fields below are its own
 	prev       map[string][]Item
@@ -189,6 +193,15 @@ func New(frame FrameFunc, pub Publisher, log *slog.Logger, providers ...Provider
 		warnedAt: map[string]time.Time{},
 	}
 }
+
+// Differ is told every refresh's full item list (the Alerter).
+type Differ interface {
+	Diff(ctx context.Context, items []Item) error
+}
+
+// SetAlerts has every refresh end by handing its items to d. Call it before the refresh
+// task starts.
+func (s *Service) SetAlerts(d Differ) { s.alerts = d }
 
 // Current is the latest snapshot; nil until the first refresh finishes (or on a nil
 // service).
@@ -295,8 +308,18 @@ func (s *Service) Refresh(ctx context.Context) error {
 		s.prev[p.Name()] = r.items
 		items = append(items, r.items...)
 	}
-	snap := s.build(items, now)
+	snap, all := s.build(items, now)
 	s.cur.Store(snap)
+	if s.alerts != nil {
+		// Under refreshMu, so diffs never overlap; the whole list, because an item past
+		// the snapshot's cap hasn't gone away.
+		if err := s.alerts.Diff(ctx, all); err != nil && ctx.Err() == nil {
+			if last, ok := s.warnedAt["alerts"]; !ok || now.Sub(last) >= warnEvery {
+				s.warnedAt["alerts"] = now
+				s.log.Warn("attention: couldn't update Needs-you alerts — trying again next refresh", "err", err)
+			}
+		}
+	}
 
 	if s.lastCounts == nil || *s.lastCounts != snap.Counts {
 		c := snap.Counts
@@ -332,8 +355,8 @@ func (s *Service) warn(name string, err error, now time.Time) {
 }
 
 // build turns the providers' items into a snapshot: first-seen times filled in, sorted
-// worst first, counted, grouped and capped.
-func (s *Service) build(items []Item, now time.Time) *Snapshot {
+// worst first, counted, grouped and capped. all is the sorted list before the cap.
+func (s *Service) build(items []Item, now time.Time) (snap *Snapshot, all []Item) {
 	seen := make(map[string]bool, len(items))
 	out := make([]Item, 0, len(items))
 	for _, it := range items {
@@ -359,11 +382,11 @@ func (s *Service) build(items []Item, now time.Time) *Snapshot {
 	}
 	sortItems(out)
 
-	snap := &Snapshot{At: now, Counts: countItems(out), Groups: groupItems(out), Items: out}
+	snap = &Snapshot{At: now, Counts: countItems(out), Groups: groupItems(out), Items: out}
 	if len(snap.Items) > MaxItems {
 		snap.Items = snap.Items[:MaxItems]
 	}
-	return snap
+	return snap, out
 }
 
 // kindOrder is the order kinds are listed in: what blocks something first.

@@ -130,7 +130,7 @@ func (p reviewsProvider) Collect(ctx context.Context, _ *Frame) ([]Item, error) 
 			level = LevelError // a folder it can't write or a full disk: everything else will fail too
 		}
 		it := Item{
-			Key: KindReview + ":" + strconv.FormatInt(rv.ID, 10), Kind: KindReview, Level: level,
+			Key: KindReview + ":" + strconv.FormatInt(rv.ID, 10), Kind: KindReview, Level: level, Name: name,
 			Title:  name + " is held: " + reviewReason(rv.ReasonCode),
 			Detail: clip(rv.Reason, 200),
 			Since:  sqliteMillis(rv.CreatedAt),
@@ -196,7 +196,7 @@ func (p *downloadsProvider) Collect(_ context.Context, f *Frame) ([]Item, error)
 		name := displayName(it, f)
 		switch phase := it.Phase(); {
 		case phase == "error":
-			x := Item{Key: KindDownload + ":" + h, Kind: KindDownload, Level: LevelError,
+			x := Item{Key: KindDownload + ":" + h, Kind: KindDownload, Level: LevelError, Name: name,
 				Title: name + " errored in the download client", Detail: clientStateWords(it.RawState)}
 			linkTo(&x, health.FixDownloadProblems)
 			out = append(out, x)
@@ -217,7 +217,7 @@ func (p *downloadsProvider) Collect(_ context.Context, f *Frame) ([]Item, error)
 			if phase == "metadata" {
 				detail = "It has been waiting for its file list for " + roughDuration(f.Now.Sub(since))
 			}
-			x := Item{Key: KindStalled + ":" + h, Kind: KindStalled, Level: LevelWarning,
+			x := Item{Key: KindStalled + ":" + h, Kind: KindStalled, Level: LevelWarning, Name: name,
 				Title: name + " has stalled", Detail: detail, Since: since.UnixMilli()}
 			linkTo(&x, health.FixDownloadProblems)
 			out = append(out, x)
@@ -316,7 +316,7 @@ func (p importsProvider) Collect(ctx context.Context, f *Frame) ([]Item, error) 
 		if a, ok := f.Acq[h]; ok && a.Title != "" {
 			name = a.Title
 		}
-		it := Item{Key: KindImport + ":" + h, Kind: KindImport, Level: level,
+		it := Item{Key: KindImport + ":" + h, Kind: KindImport, Level: level, Name: name,
 			Title:  "Importing " + name + " keeps failing (" + strconv.Itoa(fl.Attempts) + " tries)",
 			Detail: clip(fl.LastErr, 200)}
 		if !fl.Since.IsZero() {
@@ -354,7 +354,7 @@ func (p wrongCatProvider) Collect(_ context.Context, f *Frame) ([]Item, error) {
 		} else {
 			cat = "“" + cat + "”"
 		}
-		x := Item{Key: KindWrongCat + ":" + h, Kind: KindWrongCat, Level: LevelWarning,
+		x := Item{Key: KindWrongCat + ":" + h, Kind: KindWrongCat, Level: LevelWarning, Name: it.Name,
 			Title: it.Name + " finished in " + cat,
 			Detail: "Arrmada only imports TV from “" + download.CategoryTV + "”: set the category in qBittorrent, " +
 				"or grab it again through Arrmada"}
