@@ -69,7 +69,7 @@ const stream = (over: Partial<InsightsStream>): InsightsStream => ({
   player: "Living Room TV", platform: "webOS", product: "Plex for LG", decision: "transcode",
   bandwidth_kbps: 12000, location: "lan", ip: "192.168.1.20", geo,
   video: { src: "HEVC 4K", stream: "H264 1080p" }, audio: { src: "EAC3", stream: "AAC" }, container: { src: "MKV", stream: "MPEGTS" },
-  hw_transcode: true,
+  hw_transcode: true, hw_decode: true, hw_encode: true, hw_requested: true, hw_title: "Intel (QuickSync)",
   throttled: false, reasons: ["Converting video (HEVC 4K → H264 1080p)"],
   ...over,
 });
@@ -77,7 +77,7 @@ const stream = (over: Partial<InsightsStream>): InsightsStream => ({
 export const activity: InsightsActivity = {
   streams: [
     stream({}),
-    stream({ session_key: "2", title: "Harbour Lights", hw_transcode: false }),
+    stream({ session_key: "2", title: "Harbour Lights", hw_transcode: false, hw_decode: false, hw_encode: false, hw_requested: true, hw_title: "" }),
   ],
   bandwidth: { total_kbps: 24000, lan_kbps: 24000, wan_kbps: 0 }, geo_active: false,
 };

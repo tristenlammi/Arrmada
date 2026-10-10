@@ -26,6 +26,9 @@ const (
 	keyEnabled  = "insights_enabled"
 	keyPoll     = "insights_poll_seconds"
 	keyClientID = "insights_plex_client_id" // stable X-Plex-Client-Identifier for sign-in
+	// keyHWSince is when recorded plays started storing the hardware encode Plex really
+	// used; plays before it stored "hardware was requested" (see PLEX-09).
+	keyHWSince  = "insights_hw_actual_since"
 	plexProduct = "Arrmada"
 )
 
@@ -81,6 +84,9 @@ type Config struct {
 	Status      Status `json:"status"`
 	LastPollAt  int64  `json:"last_poll_at,omitempty"` // unix seconds of the last answer from Plex
 	LastError   string `json:"last_error,omitempty"`   // why the last exchange failed, while it's failing
+	// HWSince is when the recorder began storing the hardware Plex actually used (unix
+	// seconds); History marks older plays' HW badge as "requested". 0 before the first run.
+	HWSince int64 `json:"hw_since,omitempty"`
 }
 
 // Config returns the current connection settings and monitoring status.
@@ -97,7 +103,19 @@ func (s *Service) Config(ctx context.Context) Config {
 	if !h.LastOKAt.IsZero() {
 		c.LastPollAt = h.LastOKAt.Unix()
 	}
+	c.HWSince, _ = strconv.ParseInt(s.settings.Get(ctx, keyHWSince, ""), 10, 64)
 	return c
+}
+
+// markHWSince notes, once, when this install began recording the hardware Plex actually
+// used, so History can tell old plays' "requested" HW flag from the real one.
+func (s *Service) markHWSince(ctx context.Context, now time.Time) {
+	if s.settings.Get(ctx, keyHWSince, "") != "" {
+		return
+	}
+	if err := s.settings.Set(ctx, keyHWSince, strconv.FormatInt(now.Unix(), 10)); err != nil {
+		s.log.Warn("insights: couldn't note when HW recording changed", "err", err)
+	}
 }
 
 // configured reports whether there is a server to talk to: both a URL and a token.

@@ -1,6 +1,7 @@
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "./mockApi";
 import * as ins from "./fixtures/insights";
+import { NOW } from "./fixtures/clock";
 import type { PlexConfig } from "../src/lib/api";
 
 // Insights (PLEX-08/09/18/19): the header badge says what monitoring is really doing, the
@@ -69,6 +70,22 @@ test.describe("admin", () => {
     await page.goto("/insights");
     await expect(page.getByText("2 streams active")).toBeVisible();
     await expect(page.getByText("Monitoring is off — nothing new is recorded.")).toHaveCount(0);
+  });
+
+  test("HW badges say what Plex really uses, and a CPU fallback is flagged", async ({ page }) => {
+    await serveInsights(page, ins.config("recording", { hw_since: Math.floor(NOW / 1000) }));
+    await page.goto("/insights");
+    const gpu = page.getByRole("button", { name: /The Cartographer/ });
+    await expect(gpu.getByText("HW dec+enc")).toBeVisible();
+    const cpu = page.getByRole("button", { name: /Harbour Lights/ });
+    await expect(cpu.getByText("CPU (fell back)")).toBeVisible();
+    await cpu.click();
+    await expect(page.getByText("Fell back to CPU", { exact: true })).toBeVisible();
+
+    // Recorded plays from before the change say their HW flag was only a request.
+    await page.goto("/insights?tab=history");
+    await page.getByRole("cell", { name: /The Cartographer/ }).click();
+    await expect(page.getByText("HW requested")).toHaveAttribute("title", /show HW as requested/);
   });
 
   test("Convert says pausing needs monitoring when it is off", async ({ page }) => {

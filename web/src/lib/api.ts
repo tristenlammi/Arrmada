@@ -1884,6 +1884,8 @@ export interface PlexConfig {
   last_poll_at?: number;
   /** Why the last exchange with Plex failed, while it's failing. */
   last_error?: string;
+  /** Unix seconds: plays recorded before this stored "HW requested", not "HW used". */
+  hw_since?: number;
 }
 export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
 export interface GeoLocation { ip: string; local: boolean; city?: string; country?: string; country_code?: string; lat?: number; lon?: number }
@@ -1895,6 +1897,8 @@ export interface InsightsStream {
   bandwidth_kbps: number; location: string; ip: string; geo: GeoLocation;
   video: StreamDetail; audio: StreamDetail; container: StreamDetail;
   hw_transcode: boolean; throttled: boolean; reasons: string[];
+  /** What Plex is really running on the GPU; hw_requested without hw_encode = fell back to CPU. */
+  hw_decode: boolean; hw_encode: boolean; hw_requested: boolean; hw_title?: string;
 }
 export interface InsightsActivity { streams: InsightsStream[]; bandwidth: { total_kbps: number; lan_kbps: number; wan_kbps: number }; geo_active: boolean }
 export interface HistoryEntry {

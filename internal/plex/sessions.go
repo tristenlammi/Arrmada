@@ -39,11 +39,20 @@ type Session struct {
 	Location  string // lan | wan
 
 	// Transcode (zero-value when direct playing).
-	Transcoding    bool
-	VideoDecision  string // copy | transcode
-	AudioDecision  string // copy | transcode
-	SubDecision    string // "", copy, transcode, burn
+	Transcoding   bool
+	VideoDecision string // copy | transcode
+	AudioDecision string // copy | transcode
+	SubDecision   string // "", copy, transcode, burn
+	// TranscodeHW is whether the GPU is doing any of the work (decode or encode). The HW*
+	// fields say which part: Plex reports what it actually uses, which can differ from
+	// what was asked for — with hardware transcoding switched on, Plex still falls back to
+	// the CPU when the GPU can't take a stream, and only HWRequested stays true.
 	TranscodeHW    bool
+	HWRequested    bool
+	HWDecode       bool
+	HWEncode       bool
+	HWFullPipeline bool   // decode, filters and encode all on the GPU
+	HWTitle        string // Plex's name for the hardware in use ("Intel (QuickSync)"), encoder first
 	Throttled      bool
 	TranscodeSpeed float64 // transcode throughput vs realtime; < 1.0 = falling behind
 	TranscodeProto string
@@ -69,9 +78,14 @@ type Session struct {
 func (s Session) BufferCause() (cause, detail string) {
 	// A transcoder that can't keep up (throughput < realtime) is the clearest, most
 	// common culprit — and it tells you whether hardware transcoding is helping.
+	// The encoder is what sets the pace, so it decides which story this is: a GPU encode
+	// falling behind, a GPU Plex was asked to use but didn't, or a CPU-only setup.
 	if s.Transcoding && s.TranscodeSpeed > 0 && s.TranscodeSpeed < 0.95 {
-		if s.TranscodeHW {
+		switch {
+		case s.HWEncode:
 			return "transcode", fmt.Sprintf("hardware transcode falling behind (%.1f× realtime)", s.TranscodeSpeed)
+		case s.HWRequested:
+			return "transcode_fallback", fmt.Sprintf("Plex fell back to CPU — hardware transcoding was requested but not used (%.1f× realtime)", s.TranscodeSpeed)
 		}
 		return "transcode_cpu", fmt.Sprintf("CPU transcode too slow (%.1f× realtime) — hardware transcoding not in use", s.TranscodeSpeed)
 	}
@@ -156,12 +170,21 @@ type rawSession struct {
 		Protocol      string  `json:"protocol"`
 		Container     string  `json:"container"`
 		Throttled     bool    `json:"throttled"`
-		TranscodeHw   bool    `json:"transcodeHwRequested"`
 		Speed         float64 `json:"speed"`
-		VideoCodec    string  `json:"videoCodec"`
-		AudioCodec    string  `json:"audioCodec"`
-		Width         flexInt `json:"width"`
-		Height        flexInt `json:"height"`
+		// What hardware Plex asked for and what it is really using. Plex doesn't document
+		// the types: decoding/encoding name the API ("qsv", "vaapi", "dxva2"), the others
+		// are flags, and any of them may arrive as a string or a bool — or be missing when
+		// the CPU does the work — so all of them are read tolerantly.
+		HwRequested     flexStr `json:"transcodeHwRequested"`
+		HwDecoding      flexStr `json:"transcodeHwDecoding"`
+		HwDecodingTitle flexStr `json:"transcodeHwDecodingTitle"`
+		HwEncoding      flexStr `json:"transcodeHwEncoding"`
+		HwEncodingTitle flexStr `json:"transcodeHwEncodingTitle"`
+		HwFullPipeline  flexStr `json:"transcodeHwFullPipeline"`
+		VideoCodec      string  `json:"videoCodec"`
+		AudioCodec      string  `json:"audioCodec"`
+		Width           flexInt `json:"width"`
+		Height          flexInt `json:"height"`
 	} `json:"TranscodeSession"`
 	Media []struct {
 		VideoResolution string  `json:"videoResolution"`
@@ -187,7 +210,16 @@ func (m rawSession) flatten() Session {
 	if t := m.TranscodeSession; t != nil {
 		s.Transcoding = true
 		s.VideoDecision, s.AudioDecision, s.SubDecision = t.VideoDecision, t.AudioDecision, t.SubDecision
-		s.TranscodeHW, s.Throttled = t.TranscodeHw, t.Throttled
+		s.HWRequested, s.HWDecode, s.HWEncode = t.HwRequested.on(), t.HwDecoding.on(), t.HwEncoding.on()
+		s.HWFullPipeline = t.HwFullPipeline.on()
+		s.TranscodeHW = s.HWDecode || s.HWEncode
+		switch {
+		case s.HWEncode && t.HwEncodingTitle.on():
+			s.HWTitle = string(t.HwEncodingTitle)
+		case s.HWDecode && t.HwDecodingTitle.on():
+			s.HWTitle = string(t.HwDecodingTitle)
+		}
+		s.Throttled = t.Throttled
 		s.TranscodeSpeed = t.Speed
 		s.TranscodeProto, s.TranscodeCont = t.Protocol, t.Container
 		s.StreamVideoCodec, s.StreamAudioCodec = t.VideoCodec, t.AudioCodec

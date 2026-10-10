@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { LINKS } from "../lib/links";
 import { useTabParam } from "../lib/useTabParam";
 import { usePoll } from "../lib/usePoll";
+import { hwBadge } from "../lib/plexHw";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { api, type PlexConfig, type PlexStatus, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
@@ -57,6 +58,10 @@ function MonitoringOff({ busy, onTurnOn }: { busy: boolean; onTurnOn: () => void
     </div>
   );
 }
+
+// InsightsCfg hands the latest Plex settings to deep components (History's HW badge)
+// without threading a prop through every view.
+const InsightsCfg = createContext<PlexConfig | null>(null);
 
 export function Insights() {
   // The old Notifications tab's address (bookmarks, earlier copy) opens Alerts instead.
@@ -113,6 +118,7 @@ function InsightsPage() {
 
         {status === "off" && RECORDED_TABS.includes(tab) && <MonitoringOff busy={turningOn} onTurnOn={turnOn} />}
 
+        <InsightsCfg.Provider value={live ?? cfg}>
         <TabPanel idPrefix="insights" value={tab}>
           {tab === "settings" ? (
             <>
@@ -138,6 +144,7 @@ function InsightsPage() {
             <ConnectPlex tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
           )}
         </TabPanel>
+        </InsightsCfg.Provider>
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
@@ -165,6 +172,7 @@ const DECISION: Record<string, { label: string; color: string }> = {
 const CAUSE: Record<string, { label: string; color: string }> = {
   transcode: { label: "Transcode overloaded", color: "var(--reject)" },
   transcode_cpu: { label: "CPU transcode (no HW)", color: "var(--reject)" },
+  transcode_fallback: { label: "Plex fell back to CPU", color: "var(--reject)" },
   bandwidth: { label: "Bandwidth / network", color: "var(--avoid)" },
   unknown: { label: "Inconclusive", color: "var(--ink-faint)" },
 };
@@ -422,6 +430,7 @@ function BW({ label, v, accent }: { label: string; v: number; accent?: boolean }
 
 function StreamCard({ s, offsetMs, onOpen }: { s: InsightsStream; offsetMs: number; onOpen: () => void }) {
   const d = DECISION[s.decision] ?? DECISION.direct_play;
+  const hw = hwBadge(s);
   const buffering = s.state === "buffering";
   const pct = s.duration_ms > 0 ? Math.min(100, (offsetMs * 100) / s.duration_ms) : s.progress_pct;
   return (
@@ -438,7 +447,10 @@ function StreamCard({ s, offsetMs, onOpen }: { s: InsightsStream; offsetMs: numb
           <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
         </div>
         <div className="mt-1 truncate text-[11px] text-ink-dim">{s.user} · {s.player || s.platform}</div>
-        <div className="truncate font-mono text-[10px] text-ink-faint">{geoLabel(s.geo)} · {fmtMbps(s.bandwidth_kbps)} Mb/s{s.hw_transcode ? " · HW" : ""}</div>
+        <div className="truncate font-mono text-[10px] text-ink-faint">
+          {geoLabel(s.geo)} · {fmtMbps(s.bandwidth_kbps)} Mb/s
+          {hw && <> · <span style={hw.fellBack ? { color: "var(--avoid)" } : undefined} title={hw.fellBack ? "Plex fell back to CPU — hardware transcoding was requested but not used" : s.hw_title || undefined}>{hw.label}{hw.fellBack ? " (fell back)" : ""}</span></>}
+        </div>
         {/* progress */}
         <div className="mt-auto pt-2">
           <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
@@ -456,6 +468,7 @@ function StreamCard({ s, offsetMs, onOpen }: { s: InsightsStream; offsetMs: numb
 
 function DeepDive({ s, onClose }: { s: InsightsStream; onClose: () => void }) {
   const d = DECISION[s.decision] ?? DECISION.direct_play;
+  const hw = hwBadge(s);
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
       <div className="mt-10 w-full max-w-[560px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
@@ -469,7 +482,8 @@ function DeepDive({ s, onClose }: { s: InsightsStream; onClose: () => void }) {
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
-          {s.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
+          {hw && <span title={s.hw_title || undefined} className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{hw.label}{s.hw_title && hw.label !== "CPU" ? ` · ${s.hw_title}` : ""}</span>}
+          {hw?.fellBack && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>Fell back to CPU</span>}
           {s.throttled && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Throttled</span>}
         </div>
 
@@ -624,6 +638,19 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
   );
 }
 
+// HistoryHW is a recorded play's hardware badge. Plays now record a hardware encode Plex
+// really used; older ones recorded "hardware was requested", which a CPU fallback also set.
+function HistoryHW({ startedAt }: { startedAt: number }) {
+  const since = useContext(InsightsCfg)?.hw_since ?? 0;
+  const old = !since || startedAt < since;
+  return (
+    <span title={old ? `Plays before ${since ? fmtDate(since) : "this update"} show HW as requested — Plex may have fallen back to CPU.` : undefined}
+      className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+      {old ? "HW requested" : "HW enc"}
+    </span>
+  );
+}
+
 function HistoryDetail({ r, onClose }: { r: HistoryEntry; onClose: () => void }) {
   const d = DECISION[r.decision] ?? DECISION.direct_play;
   return (
@@ -638,7 +665,7 @@ function HistoryDetail({ r, onClose }: { r: HistoryEntry; onClose: () => void })
         </div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
-          {r.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
+          {r.hw_transcode && <HistoryHW startedAt={r.started_at} />}
           {r.buffer_count > 0 && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>{r.buffer_count} buffer event{r.buffer_count === 1 ? "" : "s"}</span>}
         </div>
         <div className="grid gap-px overflow-hidden rounded-lg text-[12px]" style={{ background: "var(--line)" }}>

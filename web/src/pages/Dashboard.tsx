@@ -16,6 +16,7 @@ import { needsYouRows } from "../lib/needsYou";
 import { useAttention } from "../lib/useAttention";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
+import { hwBadge } from "../lib/plexHw";
 
 // The dashboard fans out over Plex, the download client and the disks, so it isn't
 // free — but it's the page people leave open. Ten seconds keeps the streams and the
@@ -275,6 +276,7 @@ function NeedsYou() {
 
 function StreamCard({ s }: { s: InsightsStream }) {
   const transcoding = s.decision === "transcode";
+  const hw = hwBadge(s);
   return (
     <div
       className="flex gap-3 rounded-xl p-3"
@@ -296,8 +298,9 @@ function StreamCard({ s }: { s: InsightsStream }) {
         <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
           <Pill>{s.user}</Pill>
           <Pill tone={transcoding ? "warn" : "good"}>
-            {transcoding ? (s.hw_transcode ? "transcode (hw)" : "transcode") : "direct"}
+            {transcoding ? `transcode · ${hw?.label ?? "CPU"}` : "direct"}
           </Pill>
+          {transcoding && hw?.fellBack && <Pill tone="warn">fell back to CPU</Pill>}
           {s.state === "paused" && <Pill>paused</Pill>}
           <span className="text-ink-faint">{s.player}</span>
         </div>
