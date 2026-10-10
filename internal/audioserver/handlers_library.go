@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,10 +138,17 @@ func applyFilter(items []Item, filter string, prog map[string]listening.Progress
 	if !ok {
 		return items
 	}
+	// Apps percent-encode the base64 value, and some (ShelfPlayer) encode a value that's
+	// already encoded ("…%3D" arrives as "…%253D"), so undo that as Audiobookshelf does; a
+	// "+" sent unencoded has become a space by now.
+	if u, err := url.PathUnescape(enc); err == nil {
+		enc = u
+	}
 	val := enc
-	if dec, err := base64.StdEncoding.DecodeString(enc); err == nil {
+	b64 := strings.ReplaceAll(enc, " ", "+")
+	if dec, err := base64.StdEncoding.DecodeString(b64); err == nil {
 		val = string(dec)
-	} else if dec, err := base64.RawStdEncoding.DecodeString(enc); err == nil {
+	} else if dec, err := base64.RawStdEncoding.DecodeString(b64); err == nil {
 		val = string(dec)
 	}
 	out := items[:0:0]
@@ -156,6 +164,8 @@ func applyFilter(items []Item, filter string, prog map[string]listening.Progress
 			}
 		case "series":
 			keep = it.Book.SeriesName != "" && seriesID(it.Book.SeriesName) == val
+		case "narrators":
+			keep = false // no narrators are recorded, so none match (rather than all)
 		case "genres":
 			keep = false
 			for _, g := range it.Book.Subjects {

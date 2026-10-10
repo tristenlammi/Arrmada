@@ -149,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("POST /auth/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	// Streaming by session id, for apps that play without a token (handlers_public.go).
+	mux.HandleFunc("GET /public/session/{sid}/track/{index}", s.handleSessionTrack)
 
 	// Signed-in routes.
 	a := s.requireAuth
@@ -590,7 +592,7 @@ func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 		status = http.StatusOK
 	}
 	p := r.URL.Path
-	quiet := status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.HasSuffix(p, "/cover") ||
+	quiet := status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.Contains(p, "/track/") || strings.HasSuffix(p, "/cover") ||
 		strings.HasSuffix(p, "/image") || strings.HasSuffix(p, "/sync") || strings.HasSuffix(p, "/download") ||
 		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet)
 	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
@@ -603,6 +605,13 @@ func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 			return
 		}
 		attrs = append(attrs, "trace", true)
+	}
+	if tok := bearer(r); tok != "" && s.Accounts != nil {
+		// Which kind of token an app signs its calls with (long-lived or 30-day) explains
+		// a lot about an app that won't load; it says nothing about whose it is.
+		if kind := s.Accounts.tokenKind(r.Context(), tok); kind != "" {
+			attrs = append(attrs, "token_kind", kind)
+		}
 	}
 	s.log.Info("audiobook server: request", attrs...)
 }
