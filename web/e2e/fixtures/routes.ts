@@ -36,7 +36,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/notifications", discover.notifications),
     { method: "POST", path: /^\/api\/v1\/me\/notifications\/\d+\/read$/, status: 204 },
     get("/api/v1/me/quota", sys.quota(p)),
-    // The Me page's notification settings: no push key (push stays hidden), no Apprise link.
+    // The Me page's notification settings: no push key (it says push isn't set up), no Apprise link.
     get("/api/v1/me/push/key", { key: "" }),
     get("/api/v1/me/apprise", { set: false, hint: "" }),
     // Your own Plex link (sidebar footer, Me page): not linked.

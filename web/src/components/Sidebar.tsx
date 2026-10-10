@@ -129,13 +129,16 @@ export function Sidebar({ open, onClose, bell = false }: { open: boolean; onClos
         </nav>
 
         <div className="mt-auto flex items-center gap-2.5 p-3.5" style={{ borderTop: "1px solid var(--line)" }}>
-          <span className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full bg-[#5f5142] text-xs font-bold text-white">
-            {(user?.username?.[0] ?? "?").toUpperCase()}
-          </span>
-          <div className="min-w-0">
-            <div className="truncate text-[12.5px] font-semibold" title={user?.username}>{user?.username ?? "…"}</div>
-            <div className="font-mono text-[10.5px] capitalize text-ink-faint">{user?.role ?? ""}</div>
-          </div>
+          {/* You: notifications, password and signed-in devices live on the Me page. */}
+          <NavLink to="/me" onClick={onClose} aria-label={`${user?.username ?? "Your account"} — Me`} className="flex min-w-0 items-center gap-2.5 rounded-lg">
+            <span className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full bg-[#5f5142] text-xs font-bold text-white">
+              {(user?.username?.[0] ?? "?").toUpperCase()}
+            </span>
+            <div className="min-w-0">
+              <div className="truncate text-[12.5px] font-semibold" title={user?.username}>{user?.username ?? "…"}</div>
+              <div className="font-mono text-[10.5px] capitalize text-ink-faint">{user?.role ?? ""}</div>
+            </div>
+          </NavLink>
           <button
             onClick={toggleTheme}
             title="Toggle theme"
