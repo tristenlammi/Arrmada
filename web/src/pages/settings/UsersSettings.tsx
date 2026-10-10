@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { PlexMergeDialog } from "../../components/PlexMergeDialog";
 import { Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { api, type AuthUser, type PlexBlock, type UserImpact } from "../../lib/api";
 import { LINKS } from "../../lib/links";
@@ -213,7 +214,7 @@ function UsersManager({ meId }: { meId?: number }) {
         {err && <div className="text-[12px]" style={{ color: "var(--reject)" }}>{err}</div>}
       </form>
 
-      {editing && <EditUserModal user={editing} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <EditUserModal user={editing} users={users ?? []} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
   );
@@ -294,7 +295,7 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
   );
 }
 
-function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe: boolean; onClose: () => void; onSaved: () => void }) {
+function EditUserModal({ user, users, isMe, onClose, onSaved }: { user: AuthUser; users: AuthUser[]; isMe: boolean; onClose: () => void; onSaved: () => void }) {
   const [role, setRole] = useState(user.role);
   const [autoApprove, setAutoApprove] = useState<AutoTypes>(typesOf(user));
   const { booksEnabled } = useMe();
@@ -318,6 +319,9 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
   };
 
   const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // Accounts this one could be merged into: any other account with no Plex link of its own.
+  const mergeTargets = users.filter((u) => u.id !== user.id && !u.plex_linked);
+  const [mergeInto, setMergeInto] = useState<number | null>(null);
   const unlinkPlex = async () => {
     setBusy(true); setErr(null);
     try { await api.updateUser(user.id, { plex_unlink: true }); onSaved(); }
@@ -402,6 +406,21 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
               <button onClick={() => setConfirmUnlink(true)} disabled={busy} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unlink Plex</button>
             </div>
           </div>
+        )}
+
+        {/* A duplicate Plex requester (the owner or a family member signed in with Plex
+            before their own account was linked) can be folded into that account. */}
+        {user.plex_linked && !isMe && (user.role === "requester" || user.role === "readonly") && mergeTargets.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg p-3 text-[11.5px] text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            <span className="min-w-0 flex-1">Same person as another account? Merge this one into it: requests, inbox, phones, audiobook progress and the Plex link move there.</span>
+            <select aria-label="Merge into" value={mergeInto ?? ""} onChange={(e) => setMergeInto(e.target.value ? Number(e.target.value) : null)} className="rounded-lg px-2 py-1.5 text-[12px]" style={inputStyle}>
+              <option value="">Merge into…</option>
+              {mergeTargets.map((t) => <option key={t.id} value={t.id}>{t.username} ({t.role})</option>)}
+            </select>
+          </div>
+        )}
+        {mergeInto !== null && (
+          <PlexMergeDialog targetId={mergeInto} fromId={user.id} onClose={() => setMergeInto(null)} onMerged={() => { setMergeInto(null); onSaved(); }} />
         )}
 
         <label className="mb-4 flex flex-col gap-1.5">

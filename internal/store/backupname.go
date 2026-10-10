@@ -20,7 +20,9 @@ const (
 	// kept apart so clearing out guest accounts can't prune the copy holding someone's
 	// audiobook places.
 	BackupPreDeleteEmptyUser BackupKind = "pre-delete-empty-user"
-	BackupUploaded           BackupKind = "uploaded"
+	// BackupPreMergeUser is the copy before merging a duplicate Plex account into another.
+	BackupPreMergeUser BackupKind = "pre-merge-user"
+	BackupUploaded     BackupKind = "uploaded"
 	// BackupPreUpdate is the copy update.sh takes (through `arrmada backup`) before it
 	// rebuilds, so a rollback can put back the database the previous build ran on.
 	BackupPreUpdate BackupKind = "pre-update"
@@ -32,7 +34,7 @@ const backupStamp = "20060102T150405Z"
 
 // backupNameRe is deliberately strict: anything that isn't exactly one of our
 // names (a path, a "..", someone's own file in the folder) is not a backup.
-var backupNameRe = regexp.MustCompile(`^arrmada-(pre-migrate|nightly|manual|pre-restore|pre-delete-user|pre-delete-empty-user|uploaded|pre-update)-(\d{8}T\d{6}Z)\.db$`)
+var backupNameRe = regexp.MustCompile(`^arrmada-(pre-migrate|nightly|manual|pre-restore|pre-delete-user|pre-delete-empty-user|pre-merge-user|uploaded|pre-update)-(\d{8}T\d{6}Z)\.db$`)
 
 // BackupName is the file name for a backup of kind taken at t.
 func BackupName(kind BackupKind, t time.Time) string {

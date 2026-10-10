@@ -253,6 +253,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
 	mux.HandleFunc("GET /api/v1/users/plex-blocks", a.requireRole(auth.RoleAdmin, a.handleListPlexBlocks))
+	// Merge a duplicate Plex requester into the account it belongs with (preview first).
+	mux.HandleFunc("GET /api/v1/users/{id}/plex/merge", a.requireRole(auth.RoleAdmin, a.handlePlexMergePreview))
+	mux.HandleFunc("POST /api/v1/users/{id}/plex/merge", a.requireRole(auth.RoleAdmin, a.handlePlexMerge))
 	mux.HandleFunc("POST /api/v1/users/{id}/block-plex", a.requireRole(auth.RoleAdmin, a.handleBlockUserPlex))
 	mux.HandleFunc("DELETE /api/v1/users/plex-blocks/{plexID}", a.requireRole(auth.RoleAdmin, a.handleUnblockPlex))
 

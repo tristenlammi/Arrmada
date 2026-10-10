@@ -61,7 +61,7 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { label: "Alerts", keywords: "alert alerts notification notifications apprise discord telegram ntfy email slack pushover push phone message", section: "alerts", anchor: "alerts" },
   { label: "Users", keywords: "add user people accounts roles admin manager requester read-only password auto-approve block delete disable sign in", section: "users", anchor: "users" },
   { label: "Plex connection", keywords: "plex server url token connect sign in monitoring insights poll interval", section: "plex", anchor: "plex-connection" },
-  { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users", section: "plex", anchor: "plex-sign-in", adminOnly: true },
+  { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users staff admin owner policy", section: "plex", anchor: "plex-sign-in", adminOnly: true },
   { label: "Request limits", keywords: "quota quotas request limits per week movies seasons books fair use household", section: "users", anchor: "request-limits" },
   { label: "Import from Overseerr / Jellyseerr", keywords: "overseerr jellyseerr requests migrate import", section: "import", anchor: "overseerr-import" },
   { label: "Import from Tautulli", keywords: "tautulli watch history plex insights migrate import", section: "import", anchor: "tautulli-import" },

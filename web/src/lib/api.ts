@@ -835,6 +835,8 @@ export interface AppSettings {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login_enabled: boolean;
+  /** Sign in with Plex may open an admin or manager account linked to that Plex account. */
+  plex_signin_staff: boolean;
   /** Legacy: true when a new Plex sign-in auto-approves every type. */
   plex_login_auto_approve: boolean;
   /** The types a new Plex sign-in auto-approves, "movie,series,book" (any subset). */
@@ -870,7 +872,7 @@ export interface LogEntry {
   attrs?: string;
 }
 // Why a database backup was taken; part of its file name.
-export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded";
+export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "pre-merge-user" | "uploaded";
 
 // One database backup file. Nothing from inside it is ever sent, beyond its schema version.
 export interface BackupFile {

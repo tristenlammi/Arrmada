@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ApiError } from "../lib/api";
+import { useMe } from "../lib/me";
 import { plexApi, type PlexLink, type PlexLinkConflict } from "../lib/plexApi";
 import { usePlexPinSignIn, type PlexFlow } from "../lib/plexSignIn";
 import { useConfirm, useToast } from "../ui";
@@ -14,17 +15,18 @@ import { useConfirm, useToast } from "../ui";
 // A redirect-mode link (iPhone, the installed app) comes back to /discover?plexlink=<id>;
 // whichever copy of this is mounted then finishes it.
 
-type LinkResult = { linked: true; plex_username?: string } | { conflict: PlexLinkConflict };
+const PlexMergeDialog = lazy(() => import("./PlexMergeDialog"));
 
-export default function PlexAccountLink({ variant, onMerge }: {
-  variant: "sidebar" | "menu";
-  /** Admins only: move a duplicate requester's link (and what it holds) onto this account. */
-  onMerge?: (conflict: PlexLinkConflict) => void;
-}) {
+type LinkResult ={ linked: true; plex_username?: string } | { conflict: PlexLinkConflict };
+
+export default function PlexAccountLink({ variant }: { variant: "sidebar" | "menu" }) {
   const toast = useToast();
   const confirm = useConfirm();
+  const { user } = useMe();
   const [link, setLink] = useState<PlexLink | null>(null);
   const [conflict, setConflict] = useState<PlexLinkConflict | null>(null);
+  // Admins: "Move link here" merges the duplicate requester holding this Plex account.
+  const [merging, setMerging] = useState<number | null>(null);
   const [, setParams] = useSearchParams();
   const load = useCallback(() => plexApi.myPlex().then(setLink).catch(() => setLink(null)), []);
   useEffect(() => { void load(); }, [load]);
@@ -96,10 +98,20 @@ export default function PlexAccountLink({ variant, onMerge }: {
       {conflict && (
         <div role="status" style={{ color: "var(--avoid)" }}>
           Already linked to {conflict.already_linked_to}.
-          {conflict.mergeable && conflict.user_id && onMerge && (
-            <> <button type="button" onClick={() => { onMerge(conflict); setConflict(null); }} className={btn} style={{ color: "var(--accent)" }}>Move link here</button></>
+          {conflict.mergeable && conflict.user_id && user && (
+            <> <button type="button" onClick={() => setMerging(conflict.user_id ?? null)} className={btn} style={{ color: "var(--accent)" }}>Move link here</button></>
           )}
         </div>
+      )}
+      {merging !== null && user && (
+        <Suspense fallback={null}>
+          <PlexMergeDialog
+            targetId={user.id}
+            fromId={merging}
+            onClose={() => setMerging(null)}
+            onMerged={() => { setMerging(null); setConflict(null); toast("Merged — your Plex account is linked here", { tone: "good" }); void load(); }}
+          />
+        </Suspense>
       )}
     </div>
   );

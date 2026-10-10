@@ -47,6 +47,27 @@ func GetAccount(ctx context.Context, clientID, token string) (Account, error) {
 // serverIDs returns the machine identifiers (clientIdentifier) of the Plex Media Server resources
 // a token can reach. ownedOnly restricts to servers the token OWNS (i.e. the account's own server).
 func serverIDs(ctx context.Context, clientID, token string, ownedOnly bool) ([]string, error) {
+	servers, err := listServers(ctx, clientID, token)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, s := range servers {
+		if ownedOnly && !s.owned {
+			continue
+		}
+		ids = append(ids, s.id)
+	}
+	return ids, nil
+}
+
+type serverRef struct {
+	id    string
+	owned bool
+}
+
+// listServers is every Plex Media Server resource a token can reach, and whether it owns it.
+func listServers(ctx context.Context, clientID, token string) ([]serverRef, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, plexTV()+"/api/v2/resources", nil)
 	if err != nil {
 		return nil, err
@@ -69,17 +90,14 @@ func serverIDs(ctx context.Context, clientID, token string, ownedOnly bool) ([]s
 	if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
 		return nil, err
 	}
-	var ids []string
+	var out []serverRef
 	for _, r := range resources {
 		if !strings.Contains(r.Provides, "server") || r.ClientIdentifier == "" {
 			continue
 		}
-		if ownedOnly && !r.Owned {
-			continue
-		}
-		ids = append(ids, r.ClientIdentifier)
+		out = append(out, serverRef{id: r.ClientIdentifier, owned: r.Owned})
 	}
-	return ids, nil
+	return out, nil
 }
 
 // OwnedServerID returns the machine identifier of the server the admin token owns — the server
@@ -99,14 +117,22 @@ func OwnedServerID(ctx context.Context, clientID, adminToken string) (string, er
 // identifier — i.e. they're a Home member or a friend the owner shared the server with. This is
 // the authorization gate: only people with real access to your server may sign in.
 func HasServerAccess(ctx context.Context, clientID, userToken, machineID string) (bool, error) {
-	ids, err := serverIDs(ctx, clientID, userToken, false)
+	access, _, err := ServerAccess(ctx, clientID, userToken, machineID)
+	return access, err
+}
+
+// ServerAccess is HasServerAccess plus whether the token OWNS that server — the proof that
+// the person signing in is the server's owner — from one plex.tv call.
+func ServerAccess(ctx context.Context, clientID, userToken, machineID string) (access, owned bool, err error) {
+	servers, err := listServers(ctx, clientID, userToken)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	for _, id := range ids {
-		if id == machineID {
-			return true, nil
+	for _, s := range servers {
+		if s.id == machineID {
+			access = true
+			owned = owned || s.owned
 		}
 	}
-	return false, nil
+	return access, owned, nil
 }

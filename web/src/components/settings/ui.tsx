@@ -61,6 +61,7 @@ export function Toggle({ label, hint, checked, onChange }: { label: string; hint
       <button
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className="relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors"
         style={{ background: checked ? "var(--accent)" : "var(--panel-2)", border: "1px solid var(--line)" }}

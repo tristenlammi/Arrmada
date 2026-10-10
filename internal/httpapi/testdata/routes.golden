@@ -207,6 +207,7 @@ GET /api/v1/system/tasks staff -
 GET /api/v1/users admin -
 GET /api/v1/users/plex-blocks admin -
 GET /api/v1/users/{id}/impact admin -
+GET /api/v1/users/{id}/plex/merge admin -
 GET /api/v1/wanted staff -
 GET /api/v1/ws user -
 POST /api/v1/apikeys/{id}/test admin -
@@ -342,6 +343,7 @@ POST /api/v1/system/restart admin -
 POST /api/v1/system/tasks/{name}/run admin -
 POST /api/v1/users admin -
 POST /api/v1/users/{id}/block-plex admin -
+POST /api/v1/users/{id}/plex/merge admin -
 POST /api/v1/wanted/{kind}/{id}/search staff -
 PUT /api/v1/apikeys/{id} admin -
 PUT /api/v1/audioserver admin -

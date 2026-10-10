@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Section, Toggle, inputStyle } from "../../components/settings/ui";
+import { Note, Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { api, type PlexConfig, type PlexTestResult } from "../../lib/api";
 import { isAdmin, useMe } from "../../lib/me";
 import { plexApi, type PlexConnectResult } from "../../lib/plexApi";
@@ -137,7 +137,7 @@ function PlexConnection() {
           <span className="flex items-center gap-1.5"><input value={poll} onChange={(e) => setPoll(e.target.value)} type="number" min="2" max="60" className="w-[70px] rounded-lg px-2.5 py-1.5 text-[12px]" style={inputStyle} /><span className="text-[11px] text-ink-faint">seconds</span></span>
         </label>
         <label className="flex cursor-pointer items-center gap-2 pt-4 text-[12px]">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          <input type="checkbox" aria-label="Enable monitoring" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           <span><b className="font-semibold">Enable monitoring</b><span className="block text-[10.5px] text-ink-faint">record activity in the background</span></span>
         </label>
       </div>
@@ -184,6 +184,15 @@ function PlexSignIn() {
           />
           <p className="m-0 text-[11px] text-ink-faint">Ticked types download straight away for someone who signs in with Plex for the first time; the rest wait for you. A series request can pull every season of a long show, so it starts with movies only. Existing accounts keep their own settings — change them in Settings → Users.</p>
         </div>
+        <Toggle
+          label="Let staff sign in with Plex"
+          hint="Sign in with Plex may open an admin or manager account linked to that Plex account. Your own first Plex sign-in then links to your admin account, if it's the only one. Off: staff sign in with their password."
+          checked={!!s.plex_signin_staff}
+          onChange={(v) => patch({ plex_signin_staff: v })}
+        />
+        {s.plex_signin_staff && (
+          <Note tone="warn">Anyone who controls a linked Plex account gets that account — for an admin, everything in Arrmada. Keep the Plex account behind two-factor sign-in at plex.tv.</Note>
+        )}
       </Section>
       <SaveBar />
     </>

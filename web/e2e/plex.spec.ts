@@ -1,11 +1,11 @@
 import { test, expect } from "./mockApi";
 import { personas } from "./fixtures/users";
-import { status } from "./fixtures/system";
+import { settings, status } from "./fixtures/system";
 import type { MockRoute } from "./fixtures/routes";
 
-// PLEX-06/07/14, APP-04: Settings → Plex, Sign in with Plex's popup and redirect paths, and
-// linking your own Plex account. plex.tv is never contacted: app.plex.tv answers from a
-// stub, and every PIN call is a fixture.
+// PLEX-06/07/14/15, APP-04: Settings → Plex, Sign in with Plex's popup and redirect paths,
+// linking your own Plex account and merging a duplicate into it. plex.tv is never contacted:
+// app.plex.tv answers from a stub, and every PIN call is a fixture.
 
 const PLEX_STUB = "<!doctype html><title>Plex</title><p>Plex sign-in (e2e stub)</p>";
 
@@ -41,11 +41,16 @@ test.describe("admin", () => {
     expect(api.callsTo("POST", "/api/v1/me/plex/link")[0].path).toBe("/api/v1/me/plex/link"); // popup mode: no ?mode=redirect
   });
 
-  test("a Plex account linked to someone else says who has it", async ({ page, api }) => {
+  test("a Plex account linked to a duplicate requester can be moved here, after a preview", async ({ page, api }) => {
     await page.context().route(/^https:\/\/app\.plex\.tv\//, (r) => r.fulfill({ contentType: "text/html", body: PLEX_STUB }));
     await installExtra(page, api, [
       { method: "POST", path: "/api/v1/me/plex/link", body: { id: 6, auth_url: "https://app.plex.tv/auth#?code=Y" } },
       { method: "GET", path: "/api/v1/me/plex/link/6", status: 409, body: { status: "error", message: "This Plex account is already linked to ownerplex.", already_linked_to: "ownerplex", user_id: 9, mergeable: true } },
+      { method: "GET", path: "/api/v1/users/1/plex/merge", body: {
+        from: "ownerplex", to: "admiral", plex_username: "ownerplex", requests: 12, following: 0, notifications: 4, push_devices: 3,
+        quota_usage: 0, audiobook_progress: true, audiobook_password: false, signed_in_devices: 1, listening_apps: 0,
+      } },
+      { method: "POST", path: "/api/v1/users/1/plex/merge", body: { merged: true } },
     ]);
     await page.goto("/settings/plex");
     const sidebar = page.getByRole("complementary");
@@ -53,6 +58,26 @@ test.describe("admin", () => {
     await sidebar.getByRole("button", { name: "Link", exact: true }).click();
     await popupOpened;
     await expect(sidebar.getByText("Already linked to ownerplex.")).toBeVisible({ timeout: 10_000 });
+
+    await sidebar.getByRole("button", { name: "Move link here" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("12 requests, 4 inbox messages, 3 phones and browsers getting alerts, audiobook progress, the Plex link (ownerplex)", { exact: false })).toBeVisible();
+    await dialog.getByRole("button", { name: "Back up and merge" }).click();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/users/1/plex/merge").length).toBe(1);
+    expect(api.callsTo("POST", "/api/v1/users/1/plex/merge")[0].body).toEqual({ from_user_id: 9 });
+    expect(api.callsTo("GET", "/api/v1/users/1/plex/merge")[0].path).toBe("/api/v1/users/1/plex/merge?from=9");
+  });
+
+  test("the staff sign-in policy carries a warning and saves with the page", async ({ page, api }) => {
+    await installExtra(page, api, [
+      { method: "PUT", path: "/api/v1/settings", respond: ({ body }) => ({ ...settings, ...(body as object) }) },
+    ]);
+    await page.goto("/settings/plex");
+    await page.getByRole("switch", { name: /Let staff sign in with Plex/ }).click();
+    await expect(page.getByText(/Anyone who controls a linked Plex account gets that account/)).toBeVisible();
+    await page.getByRole("button", { name: "Save settings" }).click();
+    await expect.poll(() => api.callsTo("PUT", "/api/v1/settings").length).toBe(1);
+    expect(api.callsTo("PUT", "/api/v1/settings")[0].body).toMatchObject({ plex_signin_staff: true });
   });
 });
 
