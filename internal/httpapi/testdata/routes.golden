@@ -132,7 +132,11 @@ GET /api/v1/me/account user ext
 GET /api/v1/me/apprise user ext
 GET /api/v1/me/audio user ext
 GET /api/v1/me/audio/history user ext
+GET /api/v1/me/audio/items/{key} user ext
+GET /api/v1/me/audio/items/{key}/cover user ext
+GET /api/v1/me/audio/library user ext
 GET /api/v1/me/audio/listening user ext
+GET /api/v1/me/audio/shelves user ext
 GET /api/v1/me/books user ext
 GET /api/v1/me/notifications user ext
 GET /api/v1/me/notify-prefs user ext

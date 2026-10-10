@@ -592,6 +592,27 @@ export interface MyAudio extends AudioConnection { username: string; allowed: bo
  *  wasn't used (rejected), a jump waiting for proof (held), an app removing the place (discarded), or a place put back (restored). */
 export type AudioHistoryKind = "applied" | "before" | "rejected" | "held" | "discarded" | "restored";
 export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string; kind: AudioHistoryKind; dismissed?: boolean }
+// Arrmada's own listening API (/api/v1/me/audio/*, the web player). Every call is about
+// the signed-in person; a 403 means audiobooks are switched off or the account isn't
+// allowed ("message" says which).
+/** A place in an audiobook as the listening API returns it. pending_position is a held jump. */
+export interface AudioProgress { item_key: string; position: number; duration: number; finished: boolean; finished_at?: number; updated_at: number; device?: string; hidden?: boolean; pending_position?: number | null }
+/** An audiobook as the web player lists it. cover is same-origin (cache-busted with ?v=); duration is 0 until its files are read. */
+export interface AudioCard { key: string; book_id: number; version_id?: number; title: string; author?: string; series?: string; series_seq?: string; cover?: string; duration: number; added_at: number; progress: AudioProgress | null }
+export interface AudioShelf { id: "continue-listening" | "continue-series" | "recently-added" | "listen-again" | string; label: string; items: AudioCard[] }
+export interface AudioChapter { id: number; start: number; end: number; title: string }
+/** One audio file in play order; start_offset is where it starts in the whole book; url streams it (Range works). */
+export interface AudioTrack { ino: string; index: number; start_offset: number; duration: number; mime: string; url: string }
+export interface AudioBookmark { item_key: string; time: number; title: string; created_at: number }
+export interface AudioItemDetail extends AudioCard {
+  description?: string; year?: number; genres: string[]; chapters: AudioChapter[]; tracks: AudioTrack[];
+  /** Other audiobooks of the same book (full cast, another narrator). */
+  versions: { key: string; title: string }[];
+  bookmarks: AudioBookmark[];
+}
+export type AudioLibrarySort = "title" | "author" | "added" | "duration";
+export type AudioLibraryFilter = "" | "in-progress" | "finished" | "not-started";
+export interface AudioLibraryPage { items: AudioCard[]; total: number; page: number; limit: number }
 export interface AudioListening {
   days: number;
   since: string; // YYYY-MM-DD, first day covered
@@ -2411,6 +2432,14 @@ export const api = {
   revokeMyDevice: (id: string) => req<void>(`/api/v1/me/audio/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   audioHistory: (item: string) => req<{ history: AudioHistoryEntry[] }>(`/api/v1/me/audio/history?item=${encodeURIComponent(item)}`),
   restoreAudioPlace: (item: string, historyId: number) => req<{ position: number }>("/api/v1/me/audio/restore", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
+  audioShelves: () => req<{ shelves: AudioShelf[] }>("/api/v1/me/audio/shelves"),
+  audioLibrary: (o: { q?: string; sort?: AudioLibrarySort; filter?: AudioLibraryFilter; page?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    const s = qs.toString();
+    return req<AudioLibraryPage>(`/api/v1/me/audio/library${s ? `?${s}` : ""}`);
+  },
+  audioItem: (key: string) => req<AudioItemDetail>(`/api/v1/me/audio/items/${encodeURIComponent(key)}`),
   undiscardAudio: (item: string) => req<{ position: number }>("/api/v1/me/audio/undiscard", { method: "POST", body: JSON.stringify({ item }) }),
   dismissAudioOffer: (item: string, historyId: number) => req<void>("/api/v1/me/audio/dismiss", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
   audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,

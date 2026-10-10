@@ -41,6 +41,7 @@ function ServerView() {
           <div className="flex items-center gap-2 text-[14px] font-bold"><span className="h-2 w-2 rounded-full" style={{ background: dot }} />{state}</div>
           <div className="text-[12px] text-ink-dim">
             {data.running ? `${data.items} audiobook${data.items === 1 ? "" : "s"} served${data.items_ready < data.items ? ` · reading chapters for ${data.items - data.items_ready}` : ""}.` : data.error ? data.error : "Listening apps can't connect while it's off."}
+            {" "}Switching it off also turns off listening in Arrmada.
           </div>
         </div>
         <button onClick={toggle} disabled={busy} className="flex-none rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={data.enabled ? ghost : primary}>{data.enabled ? "Switch off" : "Switch on"}</button>

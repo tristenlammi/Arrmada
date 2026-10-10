@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +34,7 @@ type audioHarness struct {
 	key    string
 	bookID int64
 	title  string
+	data   string // the audiobook server's data dir (covers live in data/covers)
 	logs   *syncBuffer
 }
 
@@ -79,8 +83,19 @@ func newAudioHarness(t *testing.T) *audioHarness {
 		}
 		h.bookID = added[0].ID
 		h.key = audioserver.ItemKey(added[0].ID, 0)
+		h.data = t.TempDir()
 		h.srv = audioserver.New(audioserver.Options{DB: db, Books: bs, Listen: listening.NewStore(db), Users: d.Auth,
-			Settings: d.Settings, Log: log, FFprobe: "ffprobe-not-installed", DataDir: t.TempDir()})
+			Settings: d.Settings, Log: log, FFprobe: "ffprobe-not-installed", DataDir: h.data})
+		// An uploaded cover, as Books' cover upload stores it.
+		if err := os.MkdirAll(filepath.Join(h.data, "covers"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(h.data, "covers", fmt.Sprintf("book-%d.png", h.bookID)), []byte("fake png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := bs.SetCover(ctx, h.bookID, fmt.Sprintf("/api/v1/books/%d/cover-image?v=1", h.bookID)); err != nil {
+			t.Fatal(err)
+		}
 		d.AudioServer = h.srv
 		if err := d.Settings.Set(ctx, audioserver.KeyEnabled, "true"); err != nil {
 			t.Fatal(err)
@@ -204,4 +219,160 @@ func TestMyAudioOffersAndRemoved(t *testing.T) {
 	if rec := h.req("POST", "/api/v1/me/audio/undiscard", map[string]any{"item": h.key}, kidC, true); rec.Code != http.StatusBadRequest {
 		t.Fatalf("undiscard from outside: HTTP %d %s, want it to reach the handler (400: nothing to restore)", rec.Code, rec.Body)
 	}
+}
+
+// decode reads a JSON object reply.
+func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("not a JSON object: %s", rec.Body)
+	}
+	return m
+}
+
+// An allowed requester can browse the shelves, the library and a book, and fetch its
+// cover — from home and through the tunnel.
+func TestWebPlayerShelvesAndDetail(t *testing.T) {
+	h := newAudioHarness(t)
+	kid, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	ctx := context.Background()
+	if _, err := h.srv.Listen().SetProgress(ctx, kid.ID, h.key, 1200, 0, nil, "web"); err != nil {
+		t.Fatal(err)
+	}
+	for _, external := range []bool{false, true} {
+		rec := h.req("GET", "/api/v1/me/audio/shelves", nil, kidC, external)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("shelves (external %v): HTTP %d %s", external, rec.Code, rec.Body)
+		}
+		shelves := decode(t, rec)["shelves"].([]any)
+		first := shelves[0].(map[string]any)
+		if first["id"] != "continue-listening" || first["label"] != "Continue Listening" {
+			t.Fatalf("first shelf = %v", first)
+		}
+		card := first["items"].([]any)[0].(map[string]any)
+		if card["key"] != h.key || card["title"] != h.title || card["author"] != "Matt Dinniman" ||
+			card["progress"].(map[string]any)["position"] != 1200.0 {
+			t.Fatalf("card = %v", card)
+		}
+		cover, _ := card["cover"].(string)
+		if !strings.HasPrefix(cover, "/api/v1/me/audio/items/"+h.key+"/cover?v=") {
+			t.Fatalf("cover = %q", cover)
+		}
+		rec = h.req("GET", cover, nil, kidC, external)
+		if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Cache-Control"), "private") {
+			t.Fatalf("cover (external %v): HTTP %d, Cache-Control %q", external, rec.Code, rec.Header().Get("Cache-Control"))
+		}
+	}
+
+	lib := h.ok("GET", "/api/v1/me/audio/library?q=crawler&sort=added&page=0&limit=10", nil, kidC)
+	if lib["total"] != 1.0 || len(lib["items"].([]any)) != 1 || lib["limit"] != 10.0 {
+		t.Fatalf("library search = %v", lib)
+	}
+	if lib := h.ok("GET", "/api/v1/me/audio/library?q=nothing-like-it", nil, kidC); lib["total"] != 0.0 || len(lib["items"].([]any)) != 0 {
+		t.Fatalf("library search for nothing = %v", lib)
+	}
+	if lib := h.ok("GET", "/api/v1/me/audio/library?filter=not-started", nil, kidC); lib["total"] != 0.0 {
+		t.Fatalf("not-started filter = %v, want the started book left out", lib)
+	}
+	if lib := h.ok("GET", "/api/v1/me/audio/library?filter=in-progress", nil, kidC); lib["total"] != 1.0 {
+		t.Fatalf("in-progress filter = %v", lib)
+	}
+	if lib := h.ok("GET", "/api/v1/me/audio/library?page=1", nil, kidC); lib["total"] != 1.0 || len(lib["items"].([]any)) != 0 {
+		t.Fatalf("page past the end = %v", lib)
+	}
+
+	if _, err := h.srv.Listen().AddBookmark(ctx, kid.ID, h.key, 300, "Good bit"); err != nil {
+		t.Fatal(err)
+	}
+	d := h.ok("GET", "/api/v1/me/audio/items/"+h.key, nil, kidC)
+	tracks := d["tracks"].([]any)
+	if d["key"] != h.key || len(tracks) != 2 || d["chapters"] == nil || d["versions"] == nil {
+		t.Fatalf("detail = %v", d)
+	}
+	tr := tracks[1].(map[string]any)
+	if tr["index"] != 2.0 || tr["mime"] != "audio/mpeg" || !strings.HasPrefix(tr["url"].(string), "/api/v1/me/audio/items/"+h.key+"/file/") {
+		t.Fatalf("track = %v", tr)
+	}
+	if bm := d["bookmarks"].([]any); len(bm) != 1 || bm[0].(map[string]any)["title"] != "Good bit" {
+		t.Fatalf("bookmarks = %v", bm)
+	}
+	if rec := h.req("GET", "/api/v1/me/audio/items/b999", nil, kidC, false); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown item: HTTP %d", rec.Code)
+	}
+}
+
+// The listening API follows the audiobook server's one switch and its allow-list.
+func TestWebPlayerRespectsAllowListAndSwitch(t *testing.T) {
+	h := newAudioHarness(t)
+	kid, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	_, viewC := h.rs.user(t, "viewer", auth.RoleReadonly)
+	ctx := context.Background()
+	paths := []string{"/api/v1/me/audio/shelves", "/api/v1/me/audio/library", "/api/v1/me/audio/items/" + h.key,
+		"/api/v1/me/audio/items/" + h.key + "/cover"}
+	expect := func(c *http.Cookie, code int, msg string) {
+		t.Helper()
+		for _, p := range paths {
+			rec := h.req("GET", p, nil, c, false)
+			if rec.Code != code {
+				t.Errorf("GET %s: HTTP %d, want %d", p, rec.Code, code)
+				continue
+			}
+			if msg != "" && decode(t, rec)["message"] != msg {
+				t.Errorf("GET %s: %s, want %q", p, rec.Body, msg)
+			}
+		}
+	}
+	expect(nil, http.StatusUnauthorized, "")
+	expect(viewC, http.StatusForbidden, "Your account isn't set up for audiobooks")
+	if err := h.srv.SetAllowed(ctx, kid.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	expect(kidC, http.StatusForbidden, "Your account isn't set up for audiobooks")
+	if err := h.srv.SetAllowed(ctx, kid.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rs.deps.Settings.Set(ctx, audioserver.KeyEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	expect(kidC, http.StatusForbidden, "Audiobooks are switched off")
+}
+
+// noItemInLogs fails when any captured log line names the item, its book, its title or
+// its author, or pairs the account with an item route — admins see how much and when
+// people listen, never what.
+func (h *audioHarness) noItemInLogs(user string, wantRoutes ...string) {
+	h.t.Helper()
+	logged := h.logs.String()
+	keyRe := regexp.MustCompile(`(^|[^a-z0-9])` + regexp.QuoteMeta(h.key) + `([^0-9v]|$)`)
+	if keyRe.MatchString(logged) {
+		h.t.Errorf("the log names item %s:\n%s", h.key, logged)
+	}
+	for _, secret := range []string{h.title, "Dungeon", "Dinniman", "Good bit", "crawler"} {
+		if strings.Contains(logged, secret) {
+			h.t.Errorf("the log contains %q:\n%s", secret, logged)
+		}
+	}
+	for _, line := range strings.Split(logged, "\n") {
+		if strings.Contains(line, user) && strings.Contains(line, "/me/audio/") {
+			h.t.Errorf("a line pairs the user with a listening route: %s", line)
+		}
+	}
+	for _, want := range wantRoutes {
+		if !strings.Contains(logged, want) {
+			h.t.Errorf("the log is missing %q (is request logging on?):\n%s", want, logged)
+		}
+	}
+}
+
+// Browsing logs route patterns only: no item key, title, author or search text.
+func TestWebPlayerBrowsingLogHasNoItemKey(t *testing.T) {
+	h := newAudioHarness(t)
+	_, kidC := h.rs.user(t, "kiddo", auth.RoleRequester)
+	h.ok("GET", "/api/v1/me/audio/shelves", nil, kidC)
+	h.ok("GET", "/api/v1/me/audio/library?q=crawler", nil, kidC)
+	h.ok("GET", "/api/v1/me/audio/items/"+h.key, nil, kidC)
+	h.req("GET", "/api/v1/me/audio/items/"+h.key+"/cover", nil, kidC, false)
+	h.req("GET", "/api/v1/me/audio/items/b999", nil, kidC, false)
+	h.noItemInLogs("kiddo", "GET /api/v1/me/audio/items/{key}", "GET /api/v1/me/audio/items/{key}/cover", "GET /api/v1/me/audio/library")
 }
