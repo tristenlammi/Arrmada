@@ -94,13 +94,15 @@ func (s *Service) plexGate(ctx context.Context, req Request) (plexVerdict, strin
 		return plexOff, "", nil
 	}
 	since := req.onDiskAt
-	first := since == 0
-	if first {
-		at, err := s.repo.MarkOnDisk(ctx, req.ID, s.clock().Unix())
+	first := false
+	if since == 0 {
+		now := s.clock().Unix()
+		at, err := s.repo.MarkOnDisk(ctx, req.ID, now)
 		if err != nil {
 			return plexWait, "", fmt.Errorf("record that request %d is waiting for Plex: %w", req.ID, err)
 		}
-		since = at
+		// A copy of the row read before another path stamped it finds that stamp instead.
+		since, first = at, at == now
 	}
 	look := s.plexLook(ctx, req.MediaType, req.TMDBID)
 	v := s.plexJudge(look, time.Unix(since, 0))
