@@ -858,6 +858,9 @@ func main() {
 			},
 		),
 	)
+	// Each refresh ends by diffing the feed into Needs-you and health alerts: once per
+	// problem, never repeated by a restart (attention/alerts.go).
+	needsYou.SetAlerts(attention.NewAlerter(st.DB(), notifySvc, settingsSvc, log))
 	healthReg.SetOnChange(needsYou.Kick)
 	coordinator.SetAttentionKick(needsYou.Kick)
 	requestsSvc.SetAttentionKick(needsYou.Kick)
