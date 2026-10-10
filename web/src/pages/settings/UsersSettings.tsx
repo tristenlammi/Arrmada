@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { PlexMergeDialog } from "../../components/PlexMergeDialog";
 import { Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { api, type AuthUser, type PlexBlock, type UserImpact } from "../../lib/api";
+import { accountApi } from "../../lib/accountApi";
 import { LINKS } from "../../lib/links";
 import { useMe } from "../../lib/me";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
@@ -328,6 +329,17 @@ function EditUserModal({ user, users, isMe, onClose, onSaved }: { user: AuthUser
     catch (e) { setErr((e as Error).message); setBusy(false); setConfirmUnlink(false); }
   };
 
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const [signedOut, setSignedOut] = useState<string | null>(null);
+  const signOutEverywhere = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await accountApi.signOutEverywhere(user.id);
+      setSignedOut(r.signed_out > 0 ? `Signed out of ${r.signed_out} ${r.signed_out === 1 ? "browser" : "browsers"}.` : "They weren’t signed in anywhere.");
+    } catch (e) { setErr((e as Error).message); }
+    setBusy(false); setConfirmSignOut(false);
+  };
+
   const blockPlex = async () => {
     setBusy(true); setErr(null);
     try { await api.blockUserPlex(user.id); onSaved(); }
@@ -423,6 +435,15 @@ function EditUserModal({ user, users, isMe, onClose, onSaved }: { user: AuthUser
           <PlexMergeDialog targetId={mergeInto} fromId={user.id} onClose={() => setMergeInto(null)} onMerged={() => { setMergeInto(null); onSaved(); }} />
         )}
 
+        {/* A lost phone or a shared computer: end every browser session without changing
+            their password or turning their sign-in off. You never see their devices. */}
+        {!isMe && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            <span className="text-[11.5px] text-ink-dim">{signedOut ?? "Signs them out of Arrmada in every browser. They can sign straight back in; audiobook apps aren’t affected."}</span>
+            <button onClick={() => setConfirmSignOut(true)} disabled={busy} className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Sign out everywhere</button>
+          </div>
+        )}
+
         <label className="mb-4 flex flex-col gap-1.5">
           <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">New password <span className="text-ink-faint">(optional)</span></span>
           <input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="leave blank to keep current" className="rounded-lg px-3 py-2 text-[12.5px]" style={inputStyle} />
@@ -444,6 +465,17 @@ function EditUserModal({ user, users, isMe, onClose, onSaved }: { user: AuthUser
             busy={busy}
             onConfirm={unlinkPlex}
             onCancel={() => setConfirmUnlink(false)}
+          />
+        )}
+        {confirmSignOut && (
+          <ConfirmDialog
+            title={<>Sign {user.username} out everywhere?</>}
+            body={<p className="m-0">Every browser and phone signed in as them will have to sign in again. Their password, requests and audiobook apps stay as they are.</p>}
+            confirmLabel="Sign out everywhere"
+            busyLabel="Signing out…"
+            busy={busy}
+            onConfirm={signOutEverywhere}
+            onCancel={() => setConfirmSignOut(false)}
           />
         )}
         {confirmBlock && (

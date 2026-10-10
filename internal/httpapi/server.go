@@ -258,6 +258,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/me/account", a.signedIn(a.handleMyAccount).ext())
 	mux.HandleFunc("POST /api/v1/me/password", a.signedIn(a.handleChangeMyPassword).ext())
 	mux.HandleFunc("POST /api/v1/me/sessions/revoke-others", a.signedIn(a.handleRevokeMyOtherSessions).ext())
+	mux.HandleFunc("GET /api/v1/me/sessions", a.signedIn(a.handleMySessions).ext())
+	mux.HandleFunc("DELETE /api/v1/me/sessions/{id}", a.signedIn(a.handleRevokeMySession).ext())
 
 	// User management (admin only).
 	mux.HandleFunc("GET /api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))
@@ -265,6 +267,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("PUT /api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateUser))
 	mux.HandleFunc("GET /api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
+	// "Sign out everywhere": ends every browser session of the account (a count back only).
+	mux.HandleFunc("POST /api/v1/users/{id}/sessions/revoke", a.requireRole(auth.RoleAdmin, a.handleRevokeUserSessions))
 	mux.HandleFunc("GET /api/v1/users/plex-blocks", a.requireRole(auth.RoleAdmin, a.handleListPlexBlocks))
 	// Merge a duplicate Plex requester into the account it belongs with (preview first).
 	mux.HandleFunc("GET /api/v1/users/{id}/plex/merge", a.requireRole(auth.RoleAdmin, a.handlePlexMergePreview))

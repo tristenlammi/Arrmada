@@ -465,10 +465,15 @@ func (s *Service) SetDisabled(ctx context.Context, id int64, disabled bool) erro
 	})
 }
 
-// RevokeUserSessions logs a user out of every device (also used on disable).
-func (s *Service) RevokeUserSessions(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
-	return err
+// RevokeUserSessions logs a user out of every browser (an admin's "Sign out everywhere")
+// and says how many sessions ended.
+func (s *Service) RevokeUserSessions(ctx context.Context, id int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // Authenticate verifies a username/password and returns the user on success. The exact
@@ -534,19 +539,9 @@ var dummyHash = func() []byte {
 
 // CreateSession issues a new session token (returned raw once) and stores only
 // its hash. Returns the raw token and its expiry.
+// Sign-in records the browser it's for with CreateSessionFrom (sessions.go).
 func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time.Time, error) {
-	raw, err := randToken(32)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	expires := s.now().Add(s.sessionTTL)
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
-		hashToken(raw), userID, sqlTime(expires))
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	return raw, expires, nil
+	return s.CreateSessionFrom(ctx, userID, SessionClient{})
 }
 
 // ValidateSession returns the user for a non-expired session token.
@@ -563,14 +558,16 @@ func (s *Service) ValidateSessionInfo(ctx context.Context, raw string) (*User, t
 		disabled   int
 		am, as, ab int
 		expires    sql.NullString
+		seen       sql.NullString
 	)
 	// strftime hands the expiry back as plain text whatever the driver makes of a
 	// TIMESTAMP column, in the same layout sqlTime writes.
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book, strftime('%Y-%m-%d %H:%M:%S', s.expires_at)
+		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book, strftime('%Y-%m-%d %H:%M:%S', s.expires_at),
+		       strftime('%Y-%m-%d %H:%M:%S', s.last_seen_at)
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`,
-		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &expires)
+		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &expires, &seen)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && disabled != 0) {
 		return nil, time.Time{}, ErrNotFound
 	}
@@ -578,6 +575,8 @@ func (s *Service) ValidateSessionInfo(ctx context.Context, raw string) (*User, t
 		return nil, time.Time{}, err
 	}
 	u.setAutoApproval(am, as, ab)
+	// "Last seen" for the owner's device list, written at most every ten minutes.
+	s.touchSession(ctx, raw, parseSQLTime(seen.String))
 	exp, err := time.ParseInLocation("2006-01-02 15:04:05", expires.String, time.UTC)
 	if err != nil {
 		// Still a valid session (the database said it hasn't expired); the zero time just

@@ -338,6 +338,24 @@ test.describe("account at 375px", () => {
     await expect(account(page).getByRole("button", { name: "Change" })).toBeVisible();
   });
 
+  // SEC-15: the device list, one sign-out at a time.
+  test("lists your devices, this one marked, and signs one out", async ({ page, api }) => {
+    await override(page, api, [{ method: "DELETE", path: /^\/api\/v1\/me\/sessions\/([0-9a-f]+)$/, status: 204 }]);
+    await page.goto("/me#account");
+    const devices = account(page).getByRole("list", { name: "Signed-in devices" });
+    await expect(devices.getByRole("listitem")).toHaveCount(2);
+    const here = devices.getByRole("listitem").filter({ hasText: "This device" });
+    await expect(here).toContainText("Chrome on Android");
+    await expect(here).toContainText("home network");
+    await expect(here.getByRole("button")).toHaveCount(0); // this one is signed out with Sign out
+    const mac = devices.getByRole("listitem").filter({ hasText: "Safari on Mac" });
+    await expect(mac).toContainText("Last seen 3d ago · from 203.0.113.x");
+    await fitsScreen(page);
+    await mac.getByRole("button", { name: "Sign out Safari on Mac" }).tap();
+    await expect(devices.getByRole("listitem")).toHaveCount(1);
+    expect(api.callsTo("DELETE", "/api/v1/me/sessions/")[0].path).toBe("/api/v1/me/sessions/0f9e8d7c6b5a");
+  });
+
   test("sign out other devices asks first and keeps this one", async ({ page, api }) => {
     await override(page, api, [{ method: "POST", path: "/api/v1/me/sessions/revoke-others", body: { signed_out: 3 } }]);
     await page.goto("/me");
@@ -348,5 +366,22 @@ test.describe("account at 375px", () => {
     await expect(page.getByText("Signed out of 3 other devices")).toBeVisible();
     expect(api.callsTo("POST", "/api/v1/me/sessions/revoke-others")).toHaveLength(1);
     await expect(page.getByRole("heading", { level: 1, name: "deckhand" })).toBeVisible();
+  });
+});
+
+// SEC-15: an admin signs someone out everywhere from Edit user, after a confirm, and sees
+// a count — never their devices.
+test.describe("admin sign out everywhere", () => {
+  test.use({ persona: "admin", viewport: { width: 1280, height: 900 } });
+
+  test("Edit user → Sign out everywhere", async ({ page, api }) => {
+    await override(page, api, [{ method: "POST", path: "/api/v1/users/5/sessions/revoke", body: { signed_out: 2 } }]);
+    await page.goto("/settings/users");
+    await page.getByRole("button", { name: "Edit user" }).nth(1).click();
+    await page.getByRole("button", { name: "Sign out everywhere" }).click();
+    const dialog = page.getByRole("dialog", { name: "Sign Grandad out everywhere?" });
+    await dialog.getByRole("button", { name: "Sign out everywhere" }).click();
+    await expect(page.getByText("Signed out of 2 browsers.")).toBeVisible();
+    expect(api.callsTo("POST", "/api/v1/users/5/sessions/revoke")).toHaveLength(1);
   });
 });

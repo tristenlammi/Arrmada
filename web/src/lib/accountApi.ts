@@ -26,4 +26,21 @@ export const accountApi = {
     req<{ password_set: boolean; signed_out: number }>("/api/v1/me/password", { method: "POST", body: JSON.stringify({ current, new: next }) }),
   /** Signs out every other browser; this one stays. */
   signOutOthers: () => req<{ signed_out: number }>("/api/v1/me/sessions/revoke-others", { method: "POST" }),
+  /** Where you're signed in (your own sessions only). */
+  sessions: () => req<{ sessions: MySession[] }>("/api/v1/me/sessions").then((r) => r.sessions ?? []),
+  signOutSession: (id: string) => req<void>(`/api/v1/me/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Admin: sign someone out of every browser. Answers a count, never their devices. */
+  signOutEverywhere: (userId: number) => req<{ signed_out: number }>(`/api/v1/users/${userId}/sessions/revoke`, { method: "POST" }),
 };
+
+/** One browser you're signed in on. */
+export interface MySession {
+  id: string;
+  created_at: string;
+  last_seen_at: string;
+  /** "Chrome on Windows", "Home Screen app on iPhone"… */
+  device: string;
+  /** "local" (your home network), a coarse address like "203.0.113.x", or "". */
+  network: string;
+  current: boolean;
+}
