@@ -424,7 +424,9 @@ func (s *Server) handleBatchProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProgress(w http.ResponseWriter, r *http.Request) {
-	if err := s.listen.DeleteProgress(r.Context(), userOf(r).ID, r.PathValue("id")); err != nil {
+	// A soft delete: the app stops seeing the place, and the person can put it back from
+	// Arrmada ("removed in Lissen").
+	if err := s.listen.DeleteProgress(r.Context(), userOf(r).ID, r.PathValue("id"), firstNonEmpty(clientName(r), "app")); err != nil {
 		writeError(w, http.StatusInternalServerError, "Couldn't remove progress")
 		return
 	}

@@ -272,7 +272,9 @@ POST /api/v1/insights/plex/test staff -
 POST /api/v1/jobs/{id}/cancel staff -
 POST /api/v1/library/fit/preview staff -
 POST /api/v1/me/audio/accept user ext
+POST /api/v1/me/audio/dismiss user ext
 POST /api/v1/me/audio/restore user ext
+POST /api/v1/me/audio/undiscard user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
 POST /api/v1/me/password user ext

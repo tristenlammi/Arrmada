@@ -66,6 +66,9 @@ type Progress struct {
 	Device     string  `json:"device,omitempty"`
 	SessionID  string  `json:"-"`
 	Hidden     bool    `json:"hidden,omitempty"`
+	// DiscardedAt is when an app removed the place (unix ms; 0 for a live place). Only
+	// the store's own reads and Discarded see a removed place.
+	DiscardedAt int64 `json:"discarded_at,omitempty"`
 
 	// A big jump backwards waiting for proof.
 	PendingPosition *float64 `json:"pending_position,omitempty"`

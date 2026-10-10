@@ -213,3 +213,40 @@ func TestSyncNumericStringsAccepted(t *testing.T) {
 		t.Fatalf("string timeListened not counted: %+v", sess)
 	}
 }
+
+// An app's "discard progress" hides the place from every app reply, but it's a soft
+// delete: the place can be put back from Arrmada, exactly as it was.
+func TestDeletedProgressHiddenFromApps(t *testing.T) {
+	h := newHarness(t)
+	h.signIn()
+	ctx := context.Background()
+	key := itemKeyFor(h.book.ID, 0)
+	path := "/api/me/progress/" + key
+	h.json("PATCH", path, map[string]any{"currentTime": 3000, "duration": 36000})
+
+	if code, out := h.do("DELETE", path, nil, nil); code != 200 {
+		t.Fatalf("delete: HTTP %d %s", code, out)
+	}
+	if code, _ := h.do("GET", path, nil, nil); code != 404 {
+		t.Fatalf("GET after delete: HTTP %d, want 404", code)
+	}
+	if mp := list1(t, h.json("GET", "/api/me", nil)["mediaProgress"]); len(mp) != 0 {
+		t.Fatalf("/api/me still lists the place: %v", mp)
+	}
+	if mp := list1(t, h.json("GET", "/api/me/progress", nil)["mediaProgress"]); len(mp) != 0 {
+		t.Fatalf("/api/me/progress still lists the place: %v", mp)
+	}
+	if li := list1(t, h.json("GET", "/api/me/items-in-progress", nil)["libraryItems"]); len(li) != 0 {
+		t.Fatalf("items-in-progress still lists the place: %v", li)
+	}
+	removed, _ := h.srv.listen.Discarded(ctx, h.readerID())
+	if len(removed) != 1 || removed[0].Position != 3000 || removed[0].By != "Lissen" {
+		t.Fatalf("Discarded = %+v, want the 3000 removed in Lissen", removed)
+	}
+	if err := h.srv.listen.Undiscard(ctx, h.readerID(), key); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.json("GET", path, nil)["currentTime"].(float64); got != 3000 {
+		t.Fatalf("after putting it back the place is %v, want 3000", got)
+	}
+}

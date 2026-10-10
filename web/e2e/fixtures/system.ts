@@ -72,7 +72,7 @@ export const pendingRestart: PendingRestart = {
 export function myAudio(p: PersonaInfo): MyAudio {
   return {
     enabled: true, running: true, host_port: "13378", public_url: "",
-    username: p.user.username, allowed: true, has_password: false, min_password_length: 8, devices: [], places: [],
+    username: p.user.username, allowed: true, has_password: false, min_password_length: 8, devices: [], places: [], removed: [],
   };
 }
 

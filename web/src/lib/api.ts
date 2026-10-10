@@ -580,9 +580,18 @@ export interface AudioServerAdmin extends AudioConnection {
 }
 export interface AudioPlace { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; updated_at: number; device?: string;
   /** A big jump back that's being held until it proves itself (or the person confirms it). */
-  pending_position?: number | null; pending_at?: number }
-export interface MyAudio extends AudioConnection { username: string; allowed: boolean; has_password: boolean; min_password_length: number; devices: AudioDevice[]; places: AudioPlace[] }
-export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string }
+  pending_position?: number | null; pending_at?: number;
+  /** A later spot an app sent that wasn't used (e.g. offline listening uploaded after another device moved the place). */
+  offer?: AudioOffer | null }
+/** A place an app sent that wasn't used, offered back: restore it with history_id, or dismiss it. */
+export interface AudioOffer { history_id: number; position: number; at: number; device?: string; reason: string }
+/** A place an app removed ("discard progress"), restorable for 90 days. device is who removed it. */
+export interface AudioRemoved { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; discarded_at: number; device?: string }
+export interface MyAudio extends AudioConnection { username: string; allowed: boolean; has_password: boolean; min_password_length: number; devices: AudioDevice[]; places: AudioPlace[]; removed: AudioRemoved[] }
+/** What a timeline row is: the place moved (applied), the place just before a change (before), a place an app sent that
+ *  wasn't used (rejected), a jump waiting for proof (held), an app removing the place (discarded), or a place put back (restored). */
+export type AudioHistoryKind = "applied" | "before" | "rejected" | "held" | "discarded" | "restored";
+export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string; kind: AudioHistoryKind; dismissed?: boolean }
 export interface AudioListening {
   days: number;
   since: string; // YYYY-MM-DD, first day covered
@@ -2402,6 +2411,8 @@ export const api = {
   revokeMyDevice: (id: string) => req<void>(`/api/v1/me/audio/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   audioHistory: (item: string) => req<{ history: AudioHistoryEntry[] }>(`/api/v1/me/audio/history?item=${encodeURIComponent(item)}`),
   restoreAudioPlace: (item: string, historyId: number) => req<{ position: number }>("/api/v1/me/audio/restore", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
+  undiscardAudio: (item: string) => req<{ position: number }>("/api/v1/me/audio/undiscard", { method: "POST", body: JSON.stringify({ item }) }),
+  dismissAudioOffer: (item: string, historyId: number) => req<void>("/api/v1/me/audio/dismiss", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
   audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),

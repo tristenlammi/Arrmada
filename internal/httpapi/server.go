@@ -224,6 +224,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE /api/v1/me/audio/devices/{family}", a.signedIn(a.handleRevokeMyDevice).ext())
 	mux.HandleFunc("GET /api/v1/me/audio/history", a.signedIn(a.handleMyAudioHistory).ext())
 	mux.HandleFunc("POST /api/v1/me/audio/restore", a.signedIn(a.handleMyAudioRestore).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/undiscard", a.signedIn(a.handleMyAudioUndiscard).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/dismiss", a.signedIn(a.handleMyAudioDismiss).ext())
 	mux.HandleFunc("GET /api/v1/books/{id}/audiobook", a.signedIn(a.handleBookAudiobook).ext())
 
 	// Auth
