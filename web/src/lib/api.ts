@@ -613,6 +613,13 @@ export interface AudioItemDetail extends AudioCard {
 export type AudioLibrarySort = "title" | "author" | "added" | "duration";
 export type AudioLibraryFilter = "" | "in-progress" | "finished" | "not-started";
 export interface AudioLibraryPage { items: AudioCard[]; total: number; page: number; limit: number }
+/** A web-player session just opened: play from start_time. restart = a finished book starting again from 0:00. */
+export interface AudioPlayStart { session_id: string; start_time: number; duration: number; tracks: AudioTrack[]; chapters: AudioChapter[]; restart: boolean }
+/** A web-player report. Leave current_time out when the player doesn't know where it is — that never moves the place.
+ *  time_listened is wall-clock seconds actually played since the last report. */
+export interface AudioSyncReport { current_time?: number; time_listened: number; duration?: number }
+/** The saved place after a sync or close. held_position is a big jump waiting for proof (null when none). */
+export interface AudioSyncResult { position: number; held_position: number | null; finished: boolean; duration: number }
 export interface AudioListening {
   days: number;
   since: string; // YYYY-MM-DD, first day covered
@@ -2440,6 +2447,23 @@ export const api = {
     return req<AudioLibraryPage>(`/api/v1/me/audio/library${s ? `?${s}` : ""}`);
   },
   audioItem: (key: string) => req<AudioItemDetail>(`/api/v1/me/audio/items/${encodeURIComponent(key)}`),
+  audioPlay: (key: string, device: { device_id?: string; device_name?: string } = {}) =>
+    req<AudioPlayStart>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/play`, { method: "POST", body: JSON.stringify(device) }),
+  audioSync: (sid: string, r: AudioSyncReport) =>
+    req<AudioSyncResult>(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/sync`, { method: "POST", body: JSON.stringify(r) }),
+  audioClose: (sid: string, r: AudioSyncReport) =>
+    req<AudioSyncResult>(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/close`, { method: "POST", body: JSON.stringify(r) }),
+  /** Close from pagehide/visibilitychange, when a fetch may be cut off: true if the browser queued it. */
+  audioCloseBeacon: (sid: string, r: AudioSyncReport): boolean =>
+    typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function" &&
+    navigator.sendBeacon(`/api/v1/me/audio/sessions/${encodeURIComponent(sid)}/close`, new Blob([JSON.stringify(r)], { type: "application/json" })),
+  /** The same-origin URL of one audio file (tracks[].url already is one); the sign-in cookie authorises it. */
+  audioFileUrl: (key: string, ino: string) => `/api/v1/me/audio/items/${encodeURIComponent(key)}/file/${encodeURIComponent(ino)}`,
+  audioBookmarks: (key: string) => req<{ bookmarks: AudioBookmark[] }>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks`),
+  addAudioBookmark: (key: string, time: number, title = "") =>
+    req<AudioBookmark>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks`, { method: "POST", body: JSON.stringify({ time, title }) }),
+  deleteAudioBookmark: (key: string, time: number) =>
+    req<void>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks/${Math.floor(time)}`, { method: "DELETE" }),
   undiscardAudio: (item: string) => req<{ position: number }>("/api/v1/me/audio/undiscard", { method: "POST", body: JSON.stringify({ item }) }),
   dismissAudioOffer: (item: string, historyId: number) => req<void>("/api/v1/me/audio/dismiss", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
   audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tristenlammi/arrmada/internal/listening"
 )
@@ -229,4 +230,75 @@ func tracksFor(it Item, files []AudioFile) []Track {
 // browser (it comes through Arrmada's own sign-in), cached for a day.
 func (s *Server) ServeCover(w http.ResponseWriter, r *http.Request, key string) {
 	s.serveCover(w, r, key, "private, max-age=86400")
+}
+
+// PlayStart is a web-player session just opened.
+type PlayStart struct {
+	SessionID string    `json:"session_id"`
+	StartTime float64   `json:"start_time"` // where to start playing (seconds into the book)
+	Duration  float64   `json:"duration"`
+	Tracks    []Track   `json:"tracks"`
+	Chapters  []Chapter `json:"chapters"`
+	// Restart: the book was finished, so this session starts again from 0:00. The
+	// restart is held until about 30 s of listening carries on from there.
+	Restart bool `json:"restart"`
+}
+
+// StartSession opens a play session for the web player at the user's saved place (or
+// 0:00, or 0:00 again for a finished book). It's the same durable session the apps get,
+// so the same guards apply to everything it reports; the listening log records it as
+// "Web player · <browser>" from "Arrmada web" — when and how long, never what.
+func (s *Server) StartSession(ctx context.Context, userID int64, key, deviceID, deviceName string) (PlayStart, error) {
+	it, err := s.item(ctx, key)
+	if err != nil {
+		return PlayStart{}, ErrNotFound
+	}
+	files, _ := s.probe.files(ctx, it.Path, true)
+	sess, _, err := s.listen.OpenSession(ctx, userID, it.Key, clip(deviceID, 100), "Web player · "+clip(deviceName, 60), "Arrmada web")
+	if err != nil {
+		return PlayStart{}, err
+	}
+	return PlayStart{SessionID: sess.ID, StartTime: sess.StartPos, Duration: totalDuration(files), Tracks: tracksFor(it, files),
+		Chapters: nonNilChapters(bookChapters(files)), Restart: sess.Restart}, nil
+}
+
+// SyncResult is the place after a web-player sync or close.
+type SyncResult struct {
+	Position float64 `json:"position"` // the saved place
+	// HeldPosition is a big jump waiting for proof (nil when none): the player keeps
+	// playing from there, and it becomes the place after ~30 s of listening on (or on
+	// reaching the end, for a jump ahead), or when the person confirms it.
+	HeldPosition *float64 `json:"held_position"`
+	Finished     bool     `json:"finished"`
+	Duration     float64  `json:"duration"`
+}
+
+// SyncSession applies a web-player report through exactly the path an app's session
+// sync takes. pos is nil when the player didn't say where it is (that never moves the
+// place). listened is wall-clock seconds played since the last report.
+func (s *Server) SyncSession(ctx context.Context, userID int64, sid string, pos *float64, listened, dur float64, closeIt bool) (SyncResult, error) {
+	d, err := s.syncSession(ctx, userID, sid, pos, listened, dur, closeIt)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	return SyncResult{Position: d.Progress.Position, HeldPosition: d.Progress.PendingPosition, Finished: d.Progress.Finished,
+		Duration: d.Progress.Duration}, nil
+}
+
+// ServeFile streams one of an item's audio files to the web player (Range requests make
+// seeking work). The browser's own sign-in cookie authorises it, so the URL has no token.
+func (s *Server) ServeFile(w http.ResponseWriter, r *http.Request, key, ino string) {
+	s.serveFile(w, r, key, ino, false)
+}
+
+// clip trims s to at most n bytes (whole runes).
+func clip(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

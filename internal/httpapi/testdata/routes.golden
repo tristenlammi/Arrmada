@@ -11,6 +11,7 @@ DELETE /api/v1/downloadclients/{id} staff -
 DELETE /api/v1/indexers/{id} staff -
 DELETE /api/v1/insights/import/runs/{id}/rows admin -
 DELETE /api/v1/me/audio/devices/{family} user ext
+DELETE /api/v1/me/audio/items/{key}/bookmarks/{time} user ext
 DELETE /api/v1/me/audio/password user ext
 DELETE /api/v1/me/plex/link user ext
 DELETE /api/v1/me/sessions/{id} user ext
@@ -133,7 +134,9 @@ GET /api/v1/me/apprise user ext
 GET /api/v1/me/audio user ext
 GET /api/v1/me/audio/history user ext
 GET /api/v1/me/audio/items/{key} user ext
+GET /api/v1/me/audio/items/{key}/bookmarks user ext
 GET /api/v1/me/audio/items/{key}/cover user ext
+GET /api/v1/me/audio/items/{key}/file/{ino} user ext
 GET /api/v1/me/audio/library user ext
 GET /api/v1/me/audio/listening user ext
 GET /api/v1/me/audio/shelves user ext
@@ -277,7 +280,11 @@ POST /api/v1/jobs/{id}/cancel staff -
 POST /api/v1/library/fit/preview staff -
 POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/dismiss user ext
+POST /api/v1/me/audio/items/{key}/bookmarks user ext
+POST /api/v1/me/audio/items/{key}/play user ext
 POST /api/v1/me/audio/restore user ext
+POST /api/v1/me/audio/sessions/{sid}/close user ext
+POST /api/v1/me/audio/sessions/{sid}/sync user ext
 POST /api/v1/me/audio/undiscard user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext

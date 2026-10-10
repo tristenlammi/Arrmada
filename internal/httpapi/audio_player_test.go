@@ -376,3 +376,181 @@ func TestWebPlayerBrowsingLogHasNoItemKey(t *testing.T) {
 	h.req("GET", "/api/v1/me/audio/items/b999", nil, kidC, false)
 	h.noItemInLogs("kiddo", "GET /api/v1/me/audio/items/{key}", "GET /api/v1/me/audio/items/{key}/cover", "GET /api/v1/me/audio/library")
 }
+
+// play opens a web-player session and returns the reply.
+func (h *audioHarness) play(c *http.Cookie) map[string]any {
+	h.t.Helper()
+	return h.ok("POST", "/api/v1/me/audio/items/"+h.key+"/play", map[string]any{"device_id": "tab-1"}, c)
+}
+
+// sync posts a web-player report (pos nil: not sent) and returns the HTTP reply.
+func (h *audioHarness) sync(c *http.Cookie, sid, verb string, body any) *httptest.ResponseRecorder {
+	h.t.Helper()
+	return h.req("POST", "/api/v1/me/audio/sessions/"+sid+"/"+verb, body, c, false)
+}
+
+// The web player starts a session, syncs and closes it, under exactly the guards the
+// apps get: a big jump back is held, and a report without a position never moves the
+// place.
+func TestWebPlayerPlaySyncClose(t *testing.T) {
+	h := newAudioHarness(t)
+	kid, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	ctx := context.Background()
+	start := h.play(kidC)
+	sid, _ := start["session_id"].(string)
+	if sid == "" || start["start_time"] != 0.0 || start["restart"] != false || len(start["tracks"].([]any)) != 2 {
+		t.Fatalf("play = %v", start)
+	}
+
+	rec := h.sync(kidC, sid, "sync", map[string]any{"current_time": 600, "time_listened": 0})
+	if res := decode(t, rec); rec.Code != 200 || res["position"] != 600.0 || res["held_position"] != nil {
+		t.Fatalf("sync forward: HTTP %d %v", rec.Code, res)
+	}
+	// Far back: held, not saved — the same as an app's sync.
+	rec = h.sync(kidC, sid, "sync", map[string]any{"current_time": 10, "time_listened": 0})
+	if res := decode(t, rec); res["position"] != 600.0 || res["held_position"] != 10.0 {
+		t.Fatalf("sync far back = %v, want 600 kept and 10 held", res)
+	}
+	// Closes that don't say where the player is: an empty body, null, {}.
+	for _, body := range []any{nil, "null", "{}", map[string]any{"time_listened": 3}} {
+		rec = h.sync(kidC, sid, "close", body)
+		if res := decode(t, rec); rec.Code != 200 || res["position"] != 600.0 {
+			t.Fatalf("close with %v: HTTP %d %v, want the place left at 600", body, rec.Code, res)
+		}
+	}
+	p, _, _ := h.srv.Listen().Progress(ctx, kid.ID, h.key)
+	if p.Position != 600 || p.PendingPosition == nil || *p.PendingPosition != 10 {
+		t.Fatalf("place = %+v, want 600 with 10 held", p)
+	}
+	sess, err := h.srv.Listen().GetSession(ctx, kid.ID, sid)
+	if err != nil || !sess.Closed || sess.Client != "Arrmada web" || !strings.HasPrefix(sess.Device, "Web player · ") {
+		t.Fatalf("session = %+v %v", sess, err)
+	}
+	if rec := h.sync(kidC, "no-such-session", "sync", map[string]any{"current_time": 5}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session: HTTP %d", rec.Code)
+	}
+	if rec := h.sync(kidC, sid, "sync", "not json"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("garbage body: HTTP %d", rec.Code)
+	}
+}
+
+// Audio streams with Range, so the player can seek.
+func TestWebPlayerStreamsWithRange(t *testing.T) {
+	h := newAudioHarness(t)
+	_, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	tracks := h.play(kidC)["tracks"].([]any)
+	u := tracks[0].(map[string]any)["url"].(string)
+	for _, external := range []bool{false, true} {
+		rec := h.req("GET", u, nil, kidC, external, "Range", "bytes=0-9")
+		if rec.Code != http.StatusPartialContent || rec.Header().Get("Content-Range") == "" || rec.Body.Len() != 10 {
+			t.Fatalf("range (external %v): HTTP %d, Content-Range %q, %d bytes", external, rec.Code, rec.Header().Get("Content-Range"), rec.Body.Len())
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.HasPrefix(cc, "private") {
+			t.Fatalf("Cache-Control = %q, want private", cc)
+		}
+	}
+	if rec := h.req("GET", "/api/v1/me/audio/items/"+h.key+"/file/nope", nil, kidC, false); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown file: HTTP %d", rec.Code)
+	}
+	if rec := h.req("GET", u, nil, nil, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("signed out: HTTP %d", rec.Code)
+	}
+}
+
+// One person's session id is no use to anyone else.
+func TestWebPlayerCannotTouchOthersSessions(t *testing.T) {
+	h := newAudioHarness(t)
+	kid, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	_, momC := h.rs.user(t, "mom", auth.RoleRequester)
+	_, adminC := h.rs.user(t, "boss", auth.RoleAdmin)
+	sid := h.play(kidC)["session_id"].(string)
+	h.sync(kidC, sid, "sync", map[string]any{"current_time": 300})
+	for _, c := range []*http.Cookie{momC, adminC} {
+		for _, verb := range []string{"sync", "close"} {
+			if rec := h.sync(c, sid, verb, map[string]any{"current_time": 5}); rec.Code != http.StatusNotFound {
+				t.Fatalf("%s someone else's session: HTTP %d, want 404", verb, rec.Code)
+			}
+		}
+	}
+	if p, _, _ := h.srv.Listen().Progress(context.Background(), kid.ID, h.key); p.Position != 300 {
+		t.Fatalf("the kid's place moved to %v", p.Position)
+	}
+}
+
+// Bookmarks: add (a second one at the same second renames it), list, remove.
+func TestWebPlayerBookmarks(t *testing.T) {
+	h := newAudioHarness(t)
+	_, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	_, momC := h.rs.user(t, "mom", auth.RoleRequester)
+	base := "/api/v1/me/audio/items/" + h.key + "/bookmarks"
+	if b := h.ok("POST", base, map[string]any{"time": 300.7, "title": "Good bit"}, kidC); b["time"] != 300.0 || b["title"] != "Good bit" {
+		t.Fatalf("add = %v", b)
+	}
+	h.ok("POST", base, map[string]any{"time": 300.2, "title": "Best bit"}, kidC)
+	h.ok("POST", base, map[string]any{"time": 900, "title": ""}, kidC)
+	list := h.ok("GET", base, nil, kidC)["bookmarks"].([]any)
+	if len(list) != 2 || list[0].(map[string]any)["title"] != "Best bit" {
+		t.Fatalf("bookmarks = %v", list)
+	}
+	if mine := h.ok("GET", base, nil, momC)["bookmarks"].([]any); len(mine) != 0 {
+		t.Fatalf("another account sees the kid's bookmarks: %v", mine)
+	}
+	if rec := h.req("DELETE", base+"/300", nil, kidC, false); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if list := h.ok("GET", base, nil, kidC)["bookmarks"].([]any); len(list) != 1 {
+		t.Fatalf("after delete = %v", list)
+	}
+	if rec := h.req("POST", base, map[string]any{"time": -1}, kidC, false); rec.Code != http.StatusBadRequest {
+		t.Fatalf("negative time: HTTP %d", rec.Code)
+	}
+	if rec := h.req("POST", "/api/v1/me/audio/items/b999/bookmarks", map[string]any{"time": 1}, kidC, false); rec.Code != http.StatusNotFound {
+		t.Fatalf("bookmark on an unknown item: HTTP %d", rec.Code)
+	}
+}
+
+// A whole listening session in the web player: the admin's Listening overview shows
+// when and how long on "Web player", never the book — and no log line names it either.
+func TestWebPlayerSessionInListenLogWithoutTitle(t *testing.T) {
+	h := newAudioHarness(t)
+	_, kidC := h.rs.user(t, "kiddo", auth.RoleRequester)
+	_, adminC := h.rs.user(t, "boss", auth.RoleAdmin)
+	h.ok("GET", "/api/v1/me/audio/shelves", nil, kidC)
+	h.ok("GET", "/api/v1/me/audio/library?q=crawler", nil, kidC)
+	h.ok("GET", "/api/v1/me/audio/items/"+h.key, nil, kidC)
+	start := h.req("POST", "/api/v1/me/audio/items/"+h.key+"/play", map[string]any{"device_id": "tab-1"}, kidC, true,
+		"User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+	if start.Code != 200 {
+		t.Fatalf("play: HTTP %d %s", start.Code, start.Body)
+	}
+	sid := decode(t, start)["session_id"].(string)
+	u := decode(t, start)["tracks"].([]any)[0].(map[string]any)["url"].(string)
+	h.req("GET", u, nil, kidC, true, "Range", "bytes=0-99")
+	h.sync(kidC, sid, "sync", map[string]any{"current_time": 40, "time_listened": 10})
+	h.sync(kidC, sid, "sync", map[string]any{"current_time": 2, "time_listened": 10}) // held: logs nothing about it
+	h.ok("POST", "/api/v1/me/audio/items/"+h.key+"/bookmarks", map[string]any{"time": 30, "title": "Good bit"}, kidC)
+	h.req("DELETE", "/api/v1/me/audio/items/"+h.key+"/bookmarks/30", nil, kidC, false)
+	h.sync(kidC, sid, "close", nil)
+	h.ok("GET", "/api/v1/me/audio", nil, kidC)
+
+	log := h.ok("GET", "/api/v1/audioserver/listening", nil, adminC)
+	raw, _ := json.Marshal(log)
+	for _, secret := range []string{h.key, h.title, "Dinniman", "Good bit"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the admin's listening overview contains %q: %s", secret, raw)
+		}
+	}
+	// The listening log has the session as the web player's, with no book column at all.
+	// (Under 30 s, the overview itself leaves it out.)
+	var rows int
+	if err := h.rs.st.DB().QueryRow(`SELECT COUNT(*) FROM listen_log WHERE device = ? AND client = 'Arrmada web' AND seconds > 0`,
+		"Web player · Safari on iPhone").Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("web-player rows in the listening log = %d %v, want 1", rows, err)
+	}
+	h.noItemInLogs("kiddo",
+		"POST /api/v1/me/audio/items/{key}/play",
+		"POST /api/v1/me/audio/sessions/{sid}/sync",
+		"POST /api/v1/me/audio/sessions/{sid}/close",
+		"GET /api/v1/me/audio/items/{key}/file/{ino}",
+		"DELETE /api/v1/me/audio/items/{key}/bookmarks/{time}")
+}

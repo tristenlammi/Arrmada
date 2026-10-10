@@ -151,6 +151,9 @@ func coarseNetwork(ip string) string {
 	return addr.Mask(net.CIDRMask(48, 128)).String() + "/48"
 }
 
+// UASummary is uaSummary for other packages (the web player names its sessions with it).
+func UASummary(ua string) string { return uaSummary(ua) }
+
 // uaSummary turns a User-Agent into "Chrome on Windows". The installed iPhone app sends
 // Safari's agent without the "Safari/" part, so it reads as the Home Screen app.
 func uaSummary(ua string) string {
