@@ -183,6 +183,24 @@ func TestManifestContentType(t *testing.T) {
 	}
 }
 
+// The PNG app icons must come back as images: iOS ignores a touch icon that doesn't,
+// and Windows' MIME table can't be trusted to say so.
+func TestAppIconsArePNG(t *testing.T) {
+	fsys := testFS()
+	for _, name := range []string{"icon-192.png", "badge-96.png", "apple-touch-icon.png"} {
+		fsys[name] = &fstest.MapFile{Data: []byte("\x89PNG\r\n\x1a\n")}
+	}
+	for _, name := range []string{"icon-192.png", "badge-96.png", "apple-touch-icon.png"} {
+		rec := get(t, newHandler(fsys, true), "/"+name, "br, gzip")
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d", name, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "image/png" {
+			t.Errorf("%s: Content-Type = %q", name, got)
+		}
+	}
+}
+
 func TestPlaceholderWithoutBuild(t *testing.T) {
 	rec := get(t, newHandler(fstest.MapFS{}, false), "/assets/x.js", "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "web UI not built yet") {

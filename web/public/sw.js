@@ -7,7 +7,9 @@
 // byte-different sw.js: the browser installs it, and activate drops the previous
 // build's cache instead of old bundles piling up forever.
 const CACHE = "arrmada-__BUILD__";
-const SHELL = ["/", "/index.html", "/icon.svg", "/manifest.webmanifest"];
+// The PNGs are what a notification shows (icon and Android's monochrome badge), so
+// they're kept for when a push arrives while the server is out of reach.
+const SHELL = ["/", "/index.html", "/icon.svg", "/manifest.webmanifest", "/icon-192.png", "/badge-96.png", "/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -74,8 +76,10 @@ self.addEventListener("push", (e) => {
   e.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: "/icon.svg",
-      badge: "/icon.svg",
+      // Android won't draw an SVG here, and the badge must be a single-colour PNG
+      // (only its alpha is used).
+      icon: "/icon-192.png",
+      badge: "/badge-96.png",
       data: { url: data.url },
       tag: data.body || data.title, // collapse duplicate pings for the same item
     })

@@ -12,7 +12,8 @@
     "lint": "eslint src e2e playwright.config.ts",
     "lint:fix": "eslint src e2e playwright.config.ts --fix",
     "test": "vitest run",
-    "e2e": "tsc --noEmit -p e2e && playwright test"
+    "e2e": "tsc --noEmit -p e2e && playwright test",
+    "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
