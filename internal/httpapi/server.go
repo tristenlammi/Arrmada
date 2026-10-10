@@ -236,6 +236,11 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/me/push/subscribe", a.signedIn(a.handlePushSubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/unsubscribe", a.signedIn(a.handlePushUnsubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/status", a.signedIn(a.handlePushStatus).ext())
+	// Your own Plex link (Discover's recommendations, and where Plex sign-in lands).
+	mux.HandleFunc("GET /api/v1/me/plex", a.signedIn(a.handleMyPlex).ext())
+	mux.HandleFunc("POST /api/v1/me/plex/link", a.signedIn(a.handlePlexLinkStart).ext())
+	mux.HandleFunc("GET /api/v1/me/plex/link/{id}", a.signedIn(a.handlePlexLinkPoll).ext())
+	mux.HandleFunc("DELETE /api/v1/me/plex/link", a.signedIn(a.handlePlexUnlink).ext())
 	mux.HandleFunc("GET /api/v1/me/apprise", a.signedIn(a.handleGetMyApprise).ext())
 	mux.HandleFunc("GET /api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
 	mux.HandleFunc("GET /api/v1/me/quota", a.signedIn(a.handleMyQuota).ext())

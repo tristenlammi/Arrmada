@@ -11,6 +11,7 @@ DELETE /api/v1/downloadclients/{id} staff -
 DELETE /api/v1/indexers/{id} staff -
 DELETE /api/v1/me/audio/devices/{family} user ext
 DELETE /api/v1/me/audio/password user ext
+DELETE /api/v1/me/plex/link user ext
 DELETE /api/v1/movies/{id} staff -
 DELETE /api/v1/movies/{id}/blocklist/{bid} staff -
 DELETE /api/v1/movies/{id}/file staff -
@@ -127,6 +128,8 @@ GET /api/v1/me/audio/history user ext
 GET /api/v1/me/audio/listening user ext
 GET /api/v1/me/books user ext
 GET /api/v1/me/notifications user ext
+GET /api/v1/me/plex user ext
+GET /api/v1/me/plex/link/{id} user ext
 GET /api/v1/me/push/key user ext
 GET /api/v1/me/quota user ext
 GET /api/v1/media/series/{id}/seasons user ext
@@ -256,6 +259,7 @@ POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
+POST /api/v1/me/plex/link user ext
 POST /api/v1/me/push/status user ext
 POST /api/v1/me/push/subscribe user ext
 POST /api/v1/me/push/unsubscribe user ext

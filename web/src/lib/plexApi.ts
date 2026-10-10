@@ -13,7 +13,27 @@ export const plexApi = {
   // Settings → Plex: connect the server (stores the token, finds the server).
   connectStart: (m: PlexMode) => req<PlexPin>(`/api/v1/insights/plex/auth${mode(m)}`, { method: "POST" }),
   connectPoll: (id: number) => req<PlexConnectResult>(`/api/v1/insights/plex/auth/${id}`),
+  // Your own account's Plex link.
+  myPlex: () => req<PlexLink>("/api/v1/me/plex"),
+  linkStart: (m: PlexMode) => req<PlexPin>(`/api/v1/me/plex/link${mode(m)}`, { method: "POST" }),
+  linkPoll: (id: number) => req<{ pending?: boolean; linked?: boolean; plex_username?: string }>(`/api/v1/me/plex/link/${id}`),
+  unlink: () => req<PlexLink>("/api/v1/me/plex/link", { method: "DELETE" }),
 };
+
+export interface PlexLink {
+  linked: boolean;
+  plex_username?: string;
+  /** The account has a password, so unlinking Plex leaves a way in. */
+  can_unlink: boolean;
+}
+
+// PlexLinkConflict is the 409 when the Plex account belongs to another account. user_id
+// and mergeable come to admins only, for a requester's link they may move here.
+export interface PlexLinkConflict {
+  already_linked_to: string;
+  user_id?: number;
+  mergeable?: boolean;
+}
 
 // PlexConnectResult: authorized with server_name means connected; with choices, several of
 // the owner's servers answered and they pick one; with neither, no server could be reached.

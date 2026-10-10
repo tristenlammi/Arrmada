@@ -137,10 +137,7 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	// Use the numeric Plex account id — the identifier Overseerr/Tautulli also key on — so imported
 	// requests and watch history line up with the account that signs in.
-	plexID := strconv.FormatInt(acct.ID, 10)
-	if acct.ID == 0 && acct.UUID != "" {
-		plexID = acct.UUID
-	}
+	plexID := plexAccountID(acct)
 	// A blocked Plex account is turned away before an account is found or made for it.
 	if ok, msg := a.plexSignInAllowed(ctx, plexID, nil); !ok {
 		a.writeError(w, http.StatusForbidden, msg)
@@ -154,6 +151,13 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	if ok, msg := a.plexSignInAllowed(ctx, plexID, u); !ok {
 		a.writeError(w, http.StatusForbidden, msg)
+		return
+	}
+	// A Plex account linked to an admin or manager doesn't open that account: anyone who
+	// gets hold of the Plex account would otherwise have the staff console.
+	if u.Role.AtLeast(auth.RoleManager) {
+		a.deps.Log.Warn("users: Plex sign-in into a staff account refused", "user_id", u.ID)
+		a.writeError(w, http.StatusForbidden, "This Plex account is linked to a staff account — sign in with your password.")
 		return
 	}
 	a.startSession(w, r, u, http.StatusOK)

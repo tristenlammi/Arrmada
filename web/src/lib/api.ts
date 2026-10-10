@@ -1300,6 +1300,10 @@ export interface AuthUser {
   // Signs in with Plex; plex_blocked means that Plex account is on the block list.
   plex_linked?: boolean;
   plex_blocked?: boolean;
+  /** The Plex name the link was made with. */
+  plex_username?: string;
+  /** Plex is their only way in (no password anyone knows): unlinking would strand them. */
+  plex_only?: boolean;
 }
 
 /** One kind of request limit: limit 0 is unlimited; resets_at is when the oldest use frees up. */
@@ -2012,7 +2016,7 @@ export const api = {
   createUser: (body: { email: string; password: string; role: string } & AutoApproveFlags) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota } & AutoApproveFlags) =>
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota; plex_unlink?: boolean } & AutoApproveFlags) =>
     req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.

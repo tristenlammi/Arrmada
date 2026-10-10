@@ -1,4 +1,4 @@
-import { Suspense, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -8,11 +8,14 @@ import { api } from "../lib/api";
 import { useDocumentTitle } from "../lib/title";
 import { requesterNav } from "../lib/nav";
 
+const PlexAccountLink = lazy(() => import("./PlexAccountLink"));
+
 // UserLayout is the requester-facing shell: no nav menu, just a slim branded top bar
 // over Discover, Calendar, Books and Audiobooks. This is what installs as the PWA on phones.
 export function UserLayout() {
   const { user, external, booksEnabled } = useMe();
-  const [menu, setMenu] = useState(false);
+  // Back from linking Plex on plex.tv (?plexlink=): open the menu, whose Plex row finishes it.
+  const [menu, setMenu] = useState(() => new URLSearchParams(window.location.search).has("plexlink"));
   const { pathname } = useLocation();
   useDocumentTitle();
   // Outside sessions get no Calendar (the /calendar route isn't mounted or
@@ -51,6 +54,7 @@ export function UserLayout() {
               <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
               <div className="absolute right-0 z-50 mt-2 w-[200px] rounded-xl p-2" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
                 <div className="truncate px-2.5 py-1.5 text-[12px] text-ink-dim" title={user?.username}>{user?.username || "Guest"}</div>
+                <Suspense fallback={null}><PlexAccountLink variant="menu" /></Suspense>
                 <div className="my-1 h-px" style={{ background: "var(--line)" }} />
                 <Link to="/audiobooks" onClick={() => setMenu(false)} className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--ink)" }}>Audiobook password</Link>
                 <button onClick={logout} className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--reject)" }}>Sign out</button>

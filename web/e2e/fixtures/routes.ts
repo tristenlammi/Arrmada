@@ -35,6 +35,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/audio/listening", sys.myListening),
     get("/api/v1/me/notifications", discover.notifications),
     get("/api/v1/me/quota", sys.quota(p)),
+    // Your own Plex link (sidebar footer, requester menu): not linked.
+    get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 
     // Discover (requester and staff)
     get("/api/v1/requests", discover.requests),

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { visibleNav } from "../lib/nav";
 import { useMe, isAdmin } from "../lib/me";
@@ -6,6 +6,8 @@ import { api } from "../lib/api";
 import { badgeFor, useAttention, type NavBadge } from "../lib/useAttention";
 import { FleetMark } from "./FleetMark";
 import { Icon } from "./icons";
+
+const PlexAccountLink = lazy(() => import("./PlexAccountLink"));
 
 const PILL_TONE: Record<NavBadge["tone"], { background: string; color: string }> = {
   accent: { background: "var(--accent-soft)", color: "var(--accent)" },
@@ -151,6 +153,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             </svg>
           </button>
         </div>
+        {/* Your own Plex link (Discover's recommendations use its watch history). */}
+        <Suspense fallback={null}><PlexAccountLink variant="sidebar" /></Suspense>
       </aside>
     </>
   );

@@ -157,6 +157,7 @@ function UsersManager({ meId }: { meId?: number }) {
               <span className="grid h-7 w-7 flex-none place-items-center rounded-full text-[11px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{u.username[0]?.toUpperCase()}</span>
               <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" style={u.disabled ? { color: "var(--ink-faint)" } : undefined}>{u.username}</span>
               {u.disabled && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--reject-soft)", color: "var(--reject)" }} title="Can't sign in. Nothing of theirs was deleted.">Disabled</span>}
+              {u.plex_linked && <span className="hidden max-w-[140px] truncate rounded-full px-2 py-0.5 text-[10.5px] sm:inline" style={{ background: "var(--panel)", color: "var(--ink-dim)", border: "1px solid var(--line)" }} title="Linked Plex account">Plex{u.plex_username ? ` · ${u.plex_username}` : ""}</span>}
               {autoChip(typesOf(u)) && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>{autoChip(typesOf(u))}</span>}
               {/* A Plex sign-in from before per-type auto-approve may still approve whole shows. */}
               {u.plex_linked && u.auto_approve_series && u.role === "requester" && (
@@ -316,6 +317,13 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
     } catch (e) { setErr((e as Error).message); setBusy(false); }
   };
 
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  const unlinkPlex = async () => {
+    setBusy(true); setErr(null);
+    try { await api.updateUser(user.id, { plex_unlink: true }); onSaved(); }
+    catch (e) { setErr((e as Error).message); setBusy(false); setConfirmUnlink(false); }
+  };
+
   const blockPlex = async () => {
     setBusy(true); setErr(null);
     try { await api.blockUserPlex(user.id); onSaved(); }
@@ -385,11 +393,14 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
             <span className="text-[11.5px] text-ink-dim">
               {user.plex_blocked
                 ? "Their Plex account is blocked from signing in here. Unblock it under Blocked Plex accounts."
-                : "Signs in with Plex. Blocking their Plex account stops them signing in with it (and stops a new account being made if you delete this one)."}
+                : `Linked to Plex${user.plex_username ? ` as ${user.plex_username}` : ""}. Blocking their Plex account stops them signing in with it (and stops a new account being made if you delete this one).`}
             </span>
-            {!user.plex_blocked && (
-              <button onClick={() => setConfirmBlock(true)} disabled={busy} className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Block their Plex account</button>
-            )}
+            <div className="flex flex-none flex-col gap-1.5">
+              {!user.plex_blocked && (
+                <button onClick={() => setConfirmBlock(true)} disabled={busy} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Block their Plex account</button>
+              )}
+              <button onClick={() => setConfirmUnlink(true)} disabled={busy} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unlink Plex</button>
+            </div>
           </div>
         )}
 
@@ -403,6 +414,19 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
           <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
           <button onClick={save} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save changes"}</button>
         </div>
+        {confirmUnlink && (
+          <ConfirmDialog
+            title={<>Unlink {user.username}'s Plex account{user.plex_username ? ` (${user.plex_username})` : ""}?</>}
+            body={user.plex_only
+              ? <p className="m-0">Plex is their only way in: nobody knows a password for this account. After unlinking, their next Sign in with Plex makes a new, empty account. Set a new password here first if they should keep using this one.</p>
+              : <p className="m-0">Sign in with Plex won't open this account any more, and Discover stops using their Plex watch history. They can link it again from their account menu.</p>}
+            confirmLabel="Unlink"
+            busyLabel="Unlinking…"
+            busy={busy}
+            onConfirm={unlinkPlex}
+            onCancel={() => setConfirmUnlink(false)}
+          />
+        )}
         {confirmBlock && (
           <ConfirmDialog
             title={<>Block {user.username}'s Plex account?</>}
