@@ -6,6 +6,7 @@ import { posterThumb } from "../lib/img";
 import { formatSeasons, libraryPath, mediaLabel, requestAge, requestStage } from "../lib/requestStage";
 import { Button, Modal, StatusChip, useConfirm, useToast } from "../ui";
 import { BookFormatBadge } from "./BookFormats";
+import { SeasonTrim } from "./SeasonTrim";
 import { refreshAttention } from "../lib/useAttention";
 
 // RequestSheet is one request, opened from the Discover strip, a row on the Requests page
@@ -35,6 +36,8 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<QualityProfileInfo[] | null>(null);
   const [profile, setProfile] = useState("");
+  // Staff trimming a series request: the seasons left ticked, or null to approve it as asked.
+  const [keep, setKeep] = useState<number[] | null>(null);
 
   // The fresh copy: tracking moves on, and a list row may be minutes old.
   useEffect(() => {
@@ -99,7 +102,7 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
       setBusy(null);
     }
   };
-  const approve = () => act("approve", () => api.approveRequest(rq.id, { quality_profile: profile || undefined }), `Approved “${rq.title}” — searching now`, false);
+  const approve = () => act("approve", () => api.approveRequest(rq.id, { quality_profile: profile || undefined, ...(keep ? { seasons: keep } : {}) }), `Approved “${rq.title}”${keep ? ` ${formatSeasons(keep)}` : ""} — searching now`, false);
   const decline = async () => {
     const yes = await confirm({
       title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`,
@@ -183,14 +186,14 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
             </select>
           </label>
         )}
-        {/* Season trimming for a series request belongs here, above Approve. */}
+        {staff && pending && rq.media_type === "series" && <SeasonTrim rq={rq} disabled={!!busy} onChange={setKeep} />}
 
         {error && <div className="text-[12px] font-medium" style={{ color: "var(--reject)" }} role="alert">{error}</div>}
 
         <div className="flex flex-wrap gap-2">
           {staff && pending && (
             <>
-              <Button variant="primary" className={big} onClick={approve} busy={busy === "approve"} busyLabel="Approving…" disabled={!!busy}>Approve</Button>
+              <Button variant="primary" className={big} onClick={approve} busy={busy === "approve"} busyLabel="Approving…" disabled={!!busy || keep?.length === 0}>{keep?.length ? `Approve ${formatSeasons(keep)}` : "Approve"}</Button>
               <Button className={big} onClick={decline} busy={busy === "decline"} busyLabel="Declining…" disabled={!!busy}>Decline</Button>
             </>
           )}
