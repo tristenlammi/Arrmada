@@ -7,7 +7,7 @@ import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
-import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest, type SeriesSeason } from "../lib/api";
+import { api, type ApiError, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest, type SeriesSeason } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
@@ -20,6 +20,8 @@ const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover")
 const RequestSheet = lazyPage(() => import("../components/RequestSheet"), "RequestSheet");
 // "Which seasons?" loads when someone first asks for a show.
 const SeasonPicker = lazyPage(() => import("../components/SeasonPicker"), "SeasonPicker");
+// "3 movie requests left this week": its own chunk, only fetched when a sheet opens.
+const QuotaHint = lazyPage(() => import("../components/QuotaHint"), "QuotaHint");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -1164,6 +1166,8 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const [note, setNote] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The requester has no movie requests left (QuotaHint says when the next frees up).
+  const [quotaOut, setQuotaOut] = useState(false);
   const [d, setD] = useState<MediaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1218,7 +1222,12 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
           .catch(() => { if (currentRef.current === c) setSeasons("error"); });
       }
     } catch (e) {
-      setError((e as Error).message);
+      // Declined before: asking again needs a note, and says why it was turned down.
+      const b = (e as ApiError).body;
+      if (b?.code === "needs_note") {
+        setNoteOpen(true);
+        setError(`Declined before${b.decline_reason ? `: ${String(b.decline_reason)}` : ""}. Say why you’d still like it, then ask again.`);
+      } else setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1313,7 +1322,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                     <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>Declined</span>
                   )}
                   {!picking && (
-                    <Button variant="primary" onClick={ask} busy={busy} busyLabel="Requesting…">
+                    <Button variant="primary" onClick={ask} busy={busy} busyLabel="Requesting…" disabled={quotaOut && !isShow}>
                       {declined ? "Request again" : "＋ Request"}
                     </Button>
                   )}
@@ -1332,9 +1341,9 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
             </div>
             {/* An optional note for whoever approves it, folded away until asked for. */}
             {ctx.canRequest && (picking || (!(done && subscribed) && (!badge || declined))) && (
-              noteOpen ? (
+              noteOpen || declined ? (
                 <label className="mt-2.5 flex max-w-[460px] flex-col gap-1 text-[11.5px] text-ink-dim">
-                  Note for the admin (optional)
+                  {declined ? "Tell them why you’d still like it" : "Note for the admin (optional)"}
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value.slice(0, NOTE_MAX))}
@@ -1351,6 +1360,10 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                   ＋ Add a note for the admin (optional)
                 </button>
               )
+            )}
+            {/* A movie's request limit, when there is one (a show's is in the season picker). */}
+            {ctx.canRequest && !isShow && !(done && subscribed) && (!badge || declined) && (
+              <Suspense fallback={null}><QuotaHint kind="movie" onOut={setQuotaOut} /></Suspense>
             )}
             {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
           </div>

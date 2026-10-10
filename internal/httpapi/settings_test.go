@@ -97,6 +97,7 @@ func TestManagerCannotChangeAdminSettings(t *testing.T) {
 
 	for _, body := range []string{
 		`{"books_enabled":false}`, `{"music_enabled":true}`, `{"plex_login_auto_approve":false}`,
+		`{"plex_login_auto_approve_types":"movie,series"}`,
 		`{"tmdb_region":"US"}`, `{"recycle_retention_days":"1"}`, `{"downloads_disk_guard":false}`,
 		`{"downloads_disk_guard_pause_pct":"80"}`, `{"downloads_disk_guard_resume_pct":"5"}`,
 	} {

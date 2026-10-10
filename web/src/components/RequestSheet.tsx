@@ -7,20 +7,24 @@ import { formatSeasons, libraryPath, mediaLabel, requestAge, requestStage } from
 import { Button, Modal, StatusChip, useConfirm, useToast } from "../ui";
 import { BookFormatBadge } from "./BookFormats";
 import { SeasonTrim } from "./SeasonTrim";
+import { DeclineReasonField, ReRequestFlag, decisionLine } from "./DeclineReason";
 import { refreshAttention } from "../lib/useAttention";
 
 // RequestSheet is one request, opened from the Discover strip, a row on the Requests page
 // or a notification's ?id= link: who asked and when, their note, where it has got to, and
 // the actions this viewer may take — every one a plainly visible button.
 //
-// Staff approve with a profile, decline or delete a pending request, and open what an
+// Staff approve with a profile, decline (with a reason the requester sees) or delete a
+// pending request, see who decided and whether it's a re-request, and open what an
 // approved one became in the library. A requester withdraws their own pending request or
 // stops following someone else's. The server enforces all of it; this only decides what
 // is worth offering.
-export function RequestSheet({ requestId, initial, onChanged, onClose }: {
+export function RequestSheet({ requestId, initial, startDeclining = false, onChanged, onClose }: {
   requestId: number;
   /** What the opener already has, shown while the fresh copy loads. */
   initial?: MediaRequest;
+  /** Open with the decline reason box showing (a row's Decline on the Requests page). */
+  startDeclining?: boolean;
   /** Something changed (approved, declined, withdrawn…): the opener refreshes its list. */
   onChanged: () => void;
   onClose: () => void;
@@ -38,6 +42,9 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
   const [profile, setProfile] = useState("");
   // Staff trimming a series request: the seasons left ticked, or null to approve it as asked.
   const [keep, setKeep] = useState<number[] | null>(null);
+  // Declining: the reason box is open (the Decline button there is the confirmation).
+  const [declining, setDeclining] = useState(startDeclining);
+  const [reason, setReason] = useState("");
 
   // The fresh copy: tracking moves on, and a list row may be minutes old.
   useEffect(() => {
@@ -103,13 +110,8 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
     }
   };
   const approve = () => act("approve", () => api.approveRequest(rq.id, { quality_profile: profile || undefined, ...(keep ? { seasons: keep } : {}) }), `Approved “${rq.title}”${keep ? ` ${formatSeasons(keep)}` : ""} — searching now`, false);
-  const decline = async () => {
-    const yes = await confirm({
-      title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`,
-      body: "They’ll be told.", confirmLabel: "Decline", tone: "danger",
-    });
-    if (yes) act("decline", () => api.declineRequest(rq.id), `Declined “${rq.title}”`, false);
-  };
+  const decline = () => act("decline", async () => { await api.declineRequest(rq.id, reason.trim()); setDeclining(false); }, `Declined “${rq.title}”`, false);
+  const decided = staff ? decisionLine(rq) : "";
   const remove = async () => {
     const yes = await confirm({ title: `Delete the request for “${rq.title}”?`, body: "It’s removed for everyone following it. Nothing in the library changes.", confirmLabel: "Delete", tone: "danger" });
     if (yes) act("delete", () => api.deleteRequest(rq.id), "Request deleted", true);
@@ -149,6 +151,8 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
             {staff && rq.requested_by_name ? <>Requested by <b className="text-ink">{rq.requested_by_name}</b></> : own ? "Your request" : following ? "Someone else asked for this; you’re following it" : "Requested"}
             {requestAge(rq.created_at) && <span className="text-ink-faint"> · {requestAge(rq.created_at)}</span>}
           </div>
+          {decided && <div className="mt-1 text-[11.5px] text-ink-faint">{decided}</div>}
+          {staff && <div className="mt-1.5"><ReRequestFlag rq={rq} /></div>}
         </div>
       </div>
 
@@ -188,13 +192,24 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
         )}
         {staff && pending && rq.media_type === "series" && <SeasonTrim rq={rq} disabled={!!busy} onChange={setKeep} />}
 
+        {staff && pending && declining && (
+          <div className="flex flex-col gap-2 rounded-lg p-3" style={{ border: "1px solid var(--line)" }}>
+            <div className="text-[12.5px] font-semibold">Decline “{rq.title}”{rq.requested_by_name ? ` for ${rq.requested_by_name}` : ""}? They’ll be told.</div>
+            <DeclineReasonField value={reason} onChange={setReason} disabled={!!busy} />
+            <div className="flex flex-wrap gap-2">
+              <Button variant="danger" className={big} onClick={decline} busy={busy === "decline"} busyLabel="Declining…" disabled={!!busy}>Decline and tell them</Button>
+              <Button variant="ghost" className={big} onClick={() => setDeclining(false)} disabled={!!busy}>Cancel</Button>
+            </div>
+          </div>
+        )}
+
         {error && <div className="text-[12px] font-medium" style={{ color: "var(--reject)" }} role="alert">{error}</div>}
 
         <div className="flex flex-wrap gap-2">
           {staff && pending && (
             <>
               <Button variant="primary" className={big} onClick={approve} busy={busy === "approve"} busyLabel="Approving…" disabled={!!busy || keep?.length === 0}>{keep?.length ? `Approve ${formatSeasons(keep)}` : "Approve"}</Button>
-              <Button className={big} onClick={decline} busy={busy === "decline"} busyLabel="Declining…" disabled={!!busy}>Decline</Button>
+              {!declining && <Button className={big} onClick={() => setDeclining(true)} disabled={!!busy}>Decline…</Button>}
             </>
           )}
           {lib && <Link to={lib} className={`${big} inline-flex items-center rounded-lg px-4 text-[12.5px] font-semibold`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>Open in library</Link>}

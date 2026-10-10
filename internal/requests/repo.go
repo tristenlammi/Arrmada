@@ -56,6 +56,16 @@ type Request struct {
 	// Followers names who else follows it, on the staff detail view only.
 	Followers []Follower `json:"followers,omitempty"`
 
+	// The last decision: who made it (staff only — 0 and "" for an auto-approval) and
+	// when (unix seconds, 0 while undecided). DeclineReason is what staff told the
+	// requester; a re-request keeps the previous one until the next decision.
+	DeclineReason string `json:"decline_reason,omitempty"`
+	DecidedBy     int64  `json:"decided_by,omitempty"`
+	DecidedByName string `json:"decided_by_name,omitempty"`
+	DecidedAt     int64  `json:"decided_at,omitempty"`
+	// ReRequest counts how often it was asked for again after a decline (> 0: flagged).
+	ReRequest int `json:"rerequest,omitempty"`
+
 	// Seasons are the regular seasons a series request asks for, ascending; empty means
 	// the whole show (every request made before seasons existed, and "All seasons").
 	// On create it is what the caller asked for.
@@ -93,7 +103,8 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons, ready_at`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons, ready_at,
+	decline_reason, decided_by, decided_by_name, decided_at, rerequest`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
@@ -101,7 +112,7 @@ func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var seasons string
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
 		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats, &seasons,
-		&r.ReadyAt)
+		&r.ReadyAt, &r.DeclineReason, &r.DecidedBy, &r.DecidedByName, &r.DecidedAt, &r.ReRequest)
 	r.BookID = bookID.Int64
 	r.Seasons = decodeSeasons(seasons)
 	return r, err
@@ -147,10 +158,11 @@ func nullID(id int64) any {
 func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO requests (media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-			quality_profile, requested_by, requested_by_name, note, book_id, formats, seasons)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			quality_profile, requested_by, requested_by_name, note, book_id, formats, seasons, rerequest, decline_reason)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.MediaType, req.TMDBID, req.OLKey, req.Title, req.Author, req.Year, req.PosterURL, req.Overview, req.Status,
-		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats, encodeSeasons(req.Seasons))
+		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats, encodeSeasons(req.Seasons),
+		req.ReRequest, req.DeclineReason)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Request{}, ErrExists
@@ -297,17 +309,26 @@ func (r *Repo) MarkReady(ctx context.Context, id, at int64) error {
 	return err
 }
 
-// SetStatus updates a request's status. A non-empty profile also updates the
-// stored quality profile; an empty profile leaves it alone (so a decline doesn't
-// erase the profile the requester picked).
-func (r *Repo) SetStatus(ctx context.Context, id int64, status, profile string) error {
+// Decision is who decided a request, when, and (declines) what the requester is told.
+type Decision struct {
+	By     int64
+	ByName string
+	At     int64 // unix seconds
+	Reason string
+}
+
+// Decide records a decision: the status, who made it and when, and the decline reason (an
+// approval clears it). A non-empty profile also updates the stored quality profile; an
+// empty one leaves it alone (so a decline doesn't erase the profile the requester picked).
+func (r *Repo) Decide(ctx context.Context, id int64, status, profile string, d Decision) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE requests
 		    SET status = ?,
 		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
+		        decided_by = ?, decided_by_name = ?, decided_at = ?, decline_reason = ?,
 		        updated_at = CURRENT_TIMESTAMP
 		  WHERE id = ?`,
-		status, profile, profile, id)
+		status, profile, profile, d.By, d.ByName, d.At, d.Reason, id)
 	if err != nil {
 		return err
 	}
@@ -317,27 +338,34 @@ func (r *Repo) SetStatus(ctx context.Context, id int64, status, profile string) 
 	return nil
 }
 
-// Resurrect re-opens a declined request under a new requester: status back to
-// pending, requested_by swapped to the caller. A non-empty profile replaces the
-// stored one; empty keeps the original choice.
-func (r *Repo) Resurrect(ctx context.Context, id, userID int64, userName, profile string) error {
+// Resurrect re-opens a declined request under a new requester: status back to pending,
+// requested_by swapped to the caller, their note in place of the old one, and flagged as
+// asked for again (the decline reason stays, for staff, until the next decision). A
+// non-empty profile replaces the stored one; empty keeps the original choice.
+func (r *Repo) Resurrect(ctx context.Context, id, userID int64, userName, profile, note string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE requests
 		    SET status = ?,
 		        requested_by = ?,
 		        requested_by_name = ?,
 		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
+		        note = ?,
+		        rerequest = rerequest + 1,
 		        updated_at = CURRENT_TIMESTAMP
-		  WHERE id = ?`,
-		StatusPending, userID, userName, profile, profile, id)
+		  WHERE id = ? AND status = ?`,
+		StatusPending, userID, userName, profile, profile, note, id, StatusDeclined)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+		return errNotDeclined
 	}
 	return nil
 }
+
+// errNotDeclined: Resurrect found the request no longer declined (someone else asked for
+// it again a moment earlier) or gone.
+var errNotDeclined = errors.New("request is not declined")
 
 // Delete removes a request (and its subscriber rows).
 func (r *Repo) Delete(ctx context.Context, id int64) error {

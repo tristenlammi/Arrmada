@@ -3,9 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -87,11 +89,13 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	queueKnown := a.trackRequests(r, list)
 	shapeRequests(list, staff)
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"requests":      list,
-		"counts":        counts,
-		"total":         total,
-		"auto_approve":  u.AutoApprove, // this viewer's own auto-approve status
-		"client_health": queueHealth{OK: queueKnown},
+		"requests":     list,
+		"counts":       counts,
+		"total":        total,
+		"auto_approve": u.AutoApprove, // this viewer's own auto-approve, every type
+		// and per type ("movie,series"), which is what their next request follows
+		"auto_approve_types": u.AutoApproval().String(),
+		"client_health":      queueHealth{OK: queueKnown},
 	})
 }
 
@@ -154,14 +158,19 @@ func (a *api) handleUnsubscribeRequest(w http.ResponseWriter, r *http.Request) {
 // handleBulkRequests approves or declines up to 100 pending requests at once. Each is
 // decided on its own, so the answer says how each one went: {results: [{id, ok, error}]}.
 //
-//	POST /api/v1/requests/bulk {action: approve|decline, ids, quality_profile?}
+//	POST /api/v1/requests/bulk {action: approve|decline, ids, quality_profile?, reason?}
 func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action         string  `json:"action"`
 		IDs            []int64 `json:"ids"`
 		QualityProfile string  `json:"quality_profile"`
+		Reason         string  `json:"reason"` // declines: what each requester is told
 	}
 	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	reason, ok := declineReason(w, a, req.Reason)
+	if !ok {
 		return
 	}
 	if req.Action != requests.BulkApprove && req.Action != requests.BulkDecline {
@@ -191,7 +200,7 @@ func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	if u != nil {
 		by, byName = u.ID, u.Username
 	}
-	results := a.deps.Requests.Bulk(r.Context(), req.Action, ids, req.QualityProfile, by, byName)
+	results := a.deps.Requests.Bulk(r.Context(), req.Action, ids, req.QualityProfile, reason, by, byName)
 	a.writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
@@ -222,6 +231,8 @@ func shapeRequests(list []requests.Request, staff bool) {
 			continue
 		}
 		list[i].LibraryID = 0
+		// Who decided is for staff; the requester reads the decision and its reason.
+		list[i].DecidedBy, list[i].DecidedByName = 0, ""
 		if list[i].Relation != requests.RelationOwner {
 			list[i].RequestedBy, list[i].RequestedByName, list[i].Note = 0, "", ""
 		}
@@ -294,7 +305,18 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
 	// only if their account is set to auto-approve.
-	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{AutoApprove: u.AutoApprove})
+	// Staff are never held to request limits.
+	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{
+		AutoApprove: u.AutoApproves(in.MediaType), QuotaExempt: u.Role.AtLeast(auth.RoleManager),
+	})
+	var over *requests.ErrQuotaExceeded
+	if errors.As(err, &over) {
+		a.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"status": "error", "message": quotaMessage(over), "code": "quota",
+			"kind": over.Kind, "limit": over.Limit, "used": over.Used, "resets_at": over.ResetsAt.UTC().Format(time.RFC3339),
+		})
+		return
+	}
 	if errors.Is(err, requests.ErrExists) {
 		// Only reachable when the duplicate row vanished between detection and
 		// re-fetch — vanishingly rare; the normal duplicate path subscribes instead.
@@ -305,13 +327,29 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusConflict, "those seasons are already in the library")
 		return
 	}
+	// A declined title asked for again needs a note; the answer says why it was declined
+	// so the sheet can show it next to the note box.
+	var needs *requests.NeedsNoteError
+	if errors.As(err, &needs) {
+		a.writeJSON(w, http.StatusConflict, map[string]any{
+			"status": "error", "message": err.Error(), "code": "needs_note", "decline_reason": needs.DeclineReason,
+		})
+		return
+	}
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// subscribed=true means the caller was attached to an existing request rather
-	// than creating (or resurrecting) one.
-	a.writeJSON(w, http.StatusOK, map[string]any{"request": created, "subscribed": subscribed})
+	// than creating (or resurrecting) one. Shaped like any list row: a requester who only
+	// follows it never sees who asked, their note, or who decided.
+	created.Relation = requests.RelationOwner
+	if created.RequestedBy != u.ID {
+		created.Relation = requests.RelationSubscriber
+	}
+	list := []requests.Request{created}
+	shapeRequests(list, u.Role.AtLeast(auth.RoleManager))
+	a.writeJSON(w, http.StatusOK, map[string]any{"request": list[0], "subscribed": subscribed})
 }
 
 func (a *api) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +395,21 @@ func (a *api) handleDeclineRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var o requests.DeclineOptions
+	// The body is optional: {reason} is what the requester is told.
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			a.writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	reason, ok := declineReason(w, a, body.Reason)
+	if !ok {
+		return
+	}
+	o := requests.DeclineOptions{Reason: reason}
 	if u, ok := userFrom(r); ok {
 		o.DecidedBy, o.DecidedByName = u.ID, u.Username
 	}
@@ -370,6 +422,17 @@ func (a *api) handleDeclineRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "declined"})
+}
+
+// declineReason trims a decline reason and refuses one over requests.DeclineReasonMax
+// characters with 400 (ok=false: the answer has been written).
+func declineReason(w http.ResponseWriter, a *api, raw string) (string, bool) {
+	reason := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(reason) > requests.DeclineReasonMax {
+		a.writeError(w, http.StatusBadRequest, "the reason can be at most 280 characters")
+		return "", false
+	}
+	return reason, true
 }
 
 func (a *api) handleDeleteRequest(w http.ResponseWriter, r *http.Request) {

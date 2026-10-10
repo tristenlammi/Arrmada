@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type BookSource, type BookAuthor, type BookDiscoverCard, type BookMeta, type BookRecommendedRow } from "../lib/api";
+import { api, type ApiError, type BookSource, type BookAuthor, type BookDiscoverCard, type BookMeta, type BookRecommendedRow } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useCanHover } from "../lib/useCanHover";
 import { coversFormat, editionState, initialBookFormats, lastBookFormats, rememberBookFormats, type BookFormats } from "../lib/bookFormats";
 import { FormatChoice } from "../components/BookFormats";
+import { QuotaHint } from "../components/QuotaHint";
 
 // BooksDiscover is the Books area of Discover — deliberately separate from the movie/TV
 // experience: its own search (titles + authors), Open Library browse rows, author
@@ -66,14 +67,15 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
 
   // Rethrows on failure so the modal only flips to its success state on real success.
   // formats: read / listen / both; left out, the server uses the owner's default.
-  const request = useCallback(async (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats): Promise<{ subscribed: boolean }> => {
+  // note: why they'd still like it, when asking again for a declined book.
+  const request = useCallback(async (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats, note?: string): Promise<{ subscribed: boolean }> => {
     try {
       const res = await api.createRequest({
         media_type: "book", ol_key: b.key, title: b.title,
         author: ("author" in b && b.author) ? b.author : (authorName || ""),
         year: b.year || 0, poster_url: b.cover_url,
         overview: "description" in b ? b.description : undefined,
-        formats,
+        formats, note: note?.trim() || undefined,
       });
       setRequested((s) => new Map(s).set(b.key, formats ?? ""));
       flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready"
@@ -123,7 +125,7 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
 }
 
 interface BookCtx {
-  request: (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats) => Promise<{ subscribed: boolean }>;
+  request: (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats, note?: string) => Promise<{ subscribed: boolean }>;
   isRequested: (key: string) => boolean;
   // What this session's request for a key asked for ("" = the server default).
   requestedFormats: (key: string) => BookFormats | "" | undefined;
@@ -578,6 +580,9 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
   const [done, setDone] = useState(ctx.isRequested(b.key));
   const [subscribed, setSubscribed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Asking again for a declined book takes a note; a request limit at zero blocks the button.
+  const [note, setNote] = useState("");
+  const [quotaOut, setQuotaOut] = useState(false);
   const badge = badgeFor(b, done ? (ctx.requestedFormats(b.key) ?? "") : false);
   const declined = badge?.label === "Declined";
   // Read / Listen / Both: the viewer's last choice, else the owner's default once the
@@ -605,11 +610,14 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
     try {
       const f = formats ?? choice ?? undefined;
       if (!formats && choice) rememberBookFormats(choice);
-      const r = await ctx.request(detail ?? b, authorName, f);
+      const r = await ctx.request(detail ?? b, authorName, f, note);
       setSubscribed(r.subscribed);
       setDone(true);
     } catch (e) {
-      setError((e as Error).message);
+      const body = (e as ApiError).body;
+      setError(body?.code === "needs_note"
+        ? `Declined before${body.decline_reason ? `: ${String(body.decline_reason)}` : ""}. Say why you’d still like it, then ask again.`
+        : (e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -673,10 +681,24 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
                       {declined && badge && (
                         <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>Declined</span>
                       )}
-                      <button onClick={() => doRequest()} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+                      <button onClick={() => doRequest()} disabled={busy || quotaOut} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
                         {busy ? "Requesting…" : declined ? "Request again" : "＋ Request"}
                       </button>
                     </div>
+                    {declined && (
+                      <label className="flex max-w-[460px] flex-col gap-1 text-[11.5px] text-ink-dim">
+                        Tell them why you’d still like it
+                        <textarea
+                          value={note}
+                          onChange={(e) => setNote(e.target.value.slice(0, 500))}
+                          maxLength={500}
+                          rows={2}
+                          className="rounded-lg px-3 py-2 text-[12.5px]"
+                          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                        />
+                      </label>
+                    )}
+                    <QuotaHint kind="book" onOut={setQuotaOut} />
                   </div>
                 )}
                 {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}

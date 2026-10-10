@@ -65,6 +65,10 @@ type seasonPlan struct {
 	// declinedBy are the requesters of declined rows that asked for some of the new
 	// row's seasons: they're added to it as subscribers, so they hear the outcome.
 	declinedBy []int64
+	// units is how many seasons the new row counts against a request limit: the seasons
+	// nobody has covered yet (on a whole-show row too), or one for a whole show with no
+	// season list to count.
+	units int
 }
 
 // planSeasons works out a series request. asked is what the caller wants (nil or empty:
@@ -101,7 +105,7 @@ func planSeasons(asked, known []int, onDisk map[int]bool, rows []seasonRow) (sea
 				return seasonPlan{follow: []int64{r.id}}, nil
 			}
 		}
-		p := seasonPlan{insert: true}
+		p := seasonPlan{insert: true, units: 1}
 		for i := len(rows) - 1; i >= 0; i-- {
 			if r := rows[i]; r.status == StatusDeclined && r.seasons == nil {
 				p.reopen = r.id
@@ -162,7 +166,7 @@ func planSeasons(asked, known []int, onDisk map[int]bool, rows []seasonRow) (sea
 		return seasonPlan{follow: follow}, nil
 	}
 
-	p := seasonPlan{insert: true, seasons: remainder, follow: follow}
+	p := seasonPlan{insert: true, seasons: remainder, follow: follow, units: len(remainder)}
 	if whole && !someCovered {
 		p.seasons = nil
 		for _, r := range rows {

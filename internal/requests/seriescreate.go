@@ -14,9 +14,19 @@ import (
 // never both cover the same season. A new row (or a declined one asked for again) is
 // announced like any new ask; following an existing request isn't one.
 func (s *Service) createSeries(ctx context.Context, in Request, opts CreateOptions) (Request, bool, error) {
+	q, err := s.quotaFor(ctx, in, opts)
+	if err != nil {
+		return Request{}, false, err
+	}
+	if q != nil {
+		s.quotaMu.Lock() // before seriesMu, always
+	}
 	s.seriesMu.Lock()
-	created, subscribed, inserted, err := s.createSeriesLocked(ctx, in)
+	created, subscribed, inserted, err := s.createSeriesLocked(ctx, in, opts, q)
 	s.seriesMu.Unlock()
+	if q != nil {
+		s.quotaMu.Unlock()
+	}
 	if err != nil {
 		return Request{}, false, err
 	}
@@ -44,7 +54,14 @@ func (s *Service) createSeries(ctx context.Context, in Request, opts CreateOptio
 
 // createSeriesLocked plans and writes a series request. inserted is true for a new row
 // (which an auto-approving requester's request is then approved as).
-func (s *Service) createSeriesLocked(ctx context.Context, in Request) (out Request, subscribed, inserted bool, err error) {
+//
+// Asking again for seasons a declined request asked for is a re-request, whether it
+// re-opens that row or makes a new one: it needs a note (nothing is written without one)
+// and is flagged with the earlier decline's reason.
+//
+// A limited requester's new row counts its seasons (a whole-show ask, every known regular
+// season); following rows that cover what they asked for is free.
+func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts CreateOptions, q *quotaCharge) (out Request, subscribed, inserted bool, err error) {
 	existing, err := s.repo.ListByMedia(ctx, "series", in.TMDBID)
 	if err != nil {
 		return Request{}, false, false, err
@@ -87,6 +104,25 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request) (out Reque
 	if err != nil {
 		return Request{}, false, false, err
 	}
+	if plan.insert {
+		if prev, ok := lastDeclinedOverlapping(existing, plan.seasons); ok {
+			if err := needsNote(in, opts, prev); err != nil {
+				return Request{}, false, false, err
+			}
+			if plan.reopen == 0 {
+				in.ReRequest, in.DeclineReason = 1, prev.DeclineReason
+			}
+		}
+	}
+	units := 0
+	if plan.insert {
+		// Only the seasons nobody covers yet count — what the season picker counts too.
+		units = plan.units
+		// Nothing is written — not even the follows — when the new seasons don't fit.
+		if err := s.checkQuota(ctx, q, QuotaSeason, units); err != nil {
+			return Request{}, false, false, err
+		}
+	}
 
 	// Follow the rows that cover what the caller asked for and the new row doesn't.
 	for _, id := range plan.follow {
@@ -116,6 +152,7 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request) (out Reque
 		}
 		inserted = true
 	}
+	s.chargeQuota(ctx, q, out.ID, QuotaSeason, units)
 	// Whoever asked for these seasons before and was turned down hears how it goes now.
 	for _, uid := range plan.declinedBy {
 		if uid == in.RequestedBy || uid == out.RequestedBy {
@@ -132,4 +169,17 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request) (out Reque
 		}
 	}
 	return out, false, inserted, nil
+}
+
+// lastDeclinedOverlapping is the newest declined request among rows that asked for any of
+// seasons (nil: the whole show).
+func lastDeclinedOverlapping(rows []Request, seasons []int) (Request, bool) {
+	var out Request
+	found := false
+	for _, r := range rows {
+		if r.Status == StatusDeclined && overlaps(r.Seasons, seasons) && (!found || r.ID > out.ID) {
+			out, found = r, true
+		}
+	}
+	return out, found
 }

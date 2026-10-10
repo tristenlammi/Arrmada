@@ -82,6 +82,14 @@ func Groups() []Group { return append([]Group(nil), groups...) }
 
 var builtinEvents = []EventDef{
 	{
+		// Emitted directly by requests (announceCreated), exactly once per new ask: a
+		// fresh request waiting for approval, or a declined title asked for again. Never
+		// for an auto-approval, a follow or an import.
+		Key: "request.created", Group: GroupRequests, DefaultOn: true,
+		Label: "New request", Hint: "Someone asked for something and it's waiting for your approval.",
+		Format: formatRequestCreated,
+	},
+	{
 		Key: "request.auto_approved", Topic: "request.auto_approved", Group: GroupRequests,
 		Label: "Auto-approved request", Hint: "Someone allowed to auto-approve asked for something, and it's on its way.",
 		Format: func(d map[string]any) (Message, bool) {

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -51,12 +51,17 @@ func (r Role) AtLeast(min Role) bool { return roleRank[r] >= roleRank[min] }
 
 // User is a lightweight identity used across requests.
 type User struct {
-	ID          int64  `json:"id"`
-	Username    string `json:"username"`
-	Role        Role   `json:"role"`
-	Disabled    bool   `json:"disabled"`
-	AutoApprove bool   `json:"auto_approve"`
-	CreatedAt   string `json:"created_at,omitempty"`
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	Role     Role   `json:"role"`
+	Disabled bool   `json:"disabled"`
+	// AutoApprove is true when every media type auto-approves (older clients read it);
+	// the per-type flags below are what requests follow (AutoApproves).
+	AutoApprove       bool   `json:"auto_approve"`
+	AutoApproveMovie  bool   `json:"auto_approve_movie"`
+	AutoApproveSeries bool   `json:"auto_approve_series"`
+	AutoApproveBook   bool   `json:"auto_approve_book"`
+	CreatedAt         string `json:"created_at,omitempty"`
 	// PlexLinked: signs in with Plex, so the admin can block that Plex account.
 	PlexLinked bool `json:"plex_linked"`
 }
@@ -137,9 +142,10 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 		return nil, err
 	}
 
+	aa := boolToInt(autoApprove)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, role, auto_approve) VALUES (?, ?, ?, ?)`,
-		username, string(hash), string(role), boolToInt(autoApprove))
+		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		username, string(hash), string(role), aa, aa, aa, aa)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrUserExists
@@ -147,25 +153,27 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &User{ID: id, Username: username, Role: role, AutoApprove: autoApprove}, nil
+	u := &User{ID: id, Username: username, Role: role}
+	u.setAutoApproval(aa, aa, aa)
+	return u, nil
 }
 
 // FindOrCreatePlexUser returns the user linked to a Plex account, creating a passwordless one
 // (its username derived from the Plex name, de-duplicated) if none exists yet. An existing link
 // keeps its current role/auto-approve — only new users get the provided defaults. A disabled
 // linked user is returned as-is so the caller can refuse the sign-in.
-func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername string, role Role, autoApprove bool) (*User, error) {
+func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername string, role Role, autoApprove AutoApproval) (*User, error) {
 	if strings.TrimSpace(plexID) == "" {
 		return nil, errors.New("missing plex id")
 	}
 	var u User
-	var disabled, aa int
+	var disabled, am, as, ab int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, role, disabled, auto_approve FROM users WHERE plex_id = ?`, plexID).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &aa)
+		`SELECT id, username, role, disabled, `+autoApproveCols+` FROM users WHERE plex_id = ?`, plexID).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab)
 	if err == nil {
 		u.Disabled = disabled == 1
-		u.AutoApprove = aa == 1
+		u.setAutoApproval(am, as, ab)
 		return &u, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -183,14 +191,17 @@ func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername
 		return nil, err
 	}
 	username := s.uniqueUsername(ctx, plexUsername)
+	am, as, ab = boolToInt(autoApprove.Movie), boolToInt(autoApprove.Series), boolToInt(autoApprove.Book)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, role, auto_approve, plex_id) VALUES (?, ?, ?, ?, ?)`,
-		username, string(hash), string(role), boolToInt(autoApprove), plexID)
+		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`, plex_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		username, string(hash), string(role), boolToInt(autoApprove.All()), am, as, ab, plexID)
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &User{ID: id, Username: username, Role: role, AutoApprove: autoApprove}, nil
+	nu := &User{ID: id, Username: username, Role: role}
+	nu.setAutoApproval(am, as, ab)
+	return nu, nil
 }
 
 // uniqueUsername returns base (trimmed), appending "-N" until it's free.
@@ -222,12 +233,13 @@ func (s *Service) PlexIDForUser(ctx context.Context, userID int64) string {
 	return strings.TrimSpace(plexID.String)
 }
 
-func (s *Service) UpdateUser(ctx context.Context, id int64, role Role, autoApprove bool) error {
+func (s *Service) UpdateUser(ctx context.Context, id int64, role Role, autoApprove AutoApproval) error {
 	if !ValidRole(role) {
 		return errors.New("invalid role")
 	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE users SET role = ?, auto_approve = ? WHERE id = ?`, string(role), boolToInt(autoApprove), id)
+		`UPDATE users SET role = ?, auto_approve = ?, auto_approve_movie = ?, auto_approve_series = ?, auto_approve_book = ? WHERE id = ?`,
+		string(role), boolToInt(autoApprove.All()), boolToInt(autoApprove.Movie), boolToInt(autoApprove.Series), boolToInt(autoApprove.Book), id)
 	if err != nil {
 		return err
 	}
@@ -247,7 +259,7 @@ func boolToInt(b bool) int {
 // ListUsers returns all accounts (no secrets), oldest first.
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, role, disabled, auto_approve, created_at, COALESCE(plex_id, '') != '' FROM users ORDER BY id`)
+		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '' FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -255,13 +267,33 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var disabled, autoApprove int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt, &u.PlexLinked); err != nil {
+		var disabled, am, as, ab int
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
-		u.AutoApprove = autoApprove != 0
+		u.setAutoApproval(am, as, ab)
 		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// StaffIDs returns the enabled managers and admins, oldest first: who hears that a new
+// request is waiting.
+func (s *Service) StaffIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM users WHERE disabled = 0 AND role IN (?, ?) ORDER BY id`, string(RoleManager), string(RoleAdmin))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
@@ -338,17 +370,18 @@ func (s *Service) ReportCaseDuplicates(ctx context.Context) {
 
 func (s *Service) userWhere(ctx context.Context, where string, arg any) (*User, error) {
 	var u User
-	var disabled, autoApprove int
+	var disabled, am, as, ab int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, role, disabled, auto_approve, created_at, COALESCE(plex_id, '') != '' FROM users WHERE `+where+` LIMIT 1`, arg).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt, &u.PlexLinked)
+		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '' FROM users WHERE `+where+` LIMIT 1`, arg).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
 		return nil, err
 	}
-	u.Disabled, u.AutoApprove = disabled != 0, autoApprove != 0
+	u.Disabled = disabled != 0
+	u.setAutoApproval(am, as, ab)
 	return &u, nil
 }
 
@@ -431,15 +464,15 @@ func (s *Service) RevokeUserSessions(ctx context.Context, id int64) error {
 // only by case fail closed rather than guess which one was meant.
 func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
 	var (
-		u           User
-		hash        string
-		disabled    int
-		autoApprove int
+		u          User
+		hash       string
+		disabled   int
+		am, as, ab int
 	)
 	username = strings.TrimSpace(username)
-	const cols = `SELECT id, username, password_hash, role, disabled, auto_approve FROM users WHERE `
+	const cols = `SELECT id, username, password_hash, role, disabled, ` + autoApproveCols + ` FROM users WHERE `
 	err := s.db.QueryRowContext(ctx, cols+`username = ?`, username).
-		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &autoApprove)
+		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &am, &as, &ab)
 	if errors.Is(err, sql.ErrNoRows) {
 		var ids []int64
 		if ids, err = s.caseInsensitiveIDs(ctx, username); err != nil {
@@ -448,7 +481,7 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 		switch {
 		case len(ids) == 1:
 			err = s.db.QueryRowContext(ctx, cols+`id = ?`, ids[0]).
-				Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &autoApprove)
+				Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &am, &as, &ab)
 		case len(ids) > 1:
 			s.warnAmbiguous(ids)
 			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
@@ -457,7 +490,7 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 			err = sql.ErrNoRows
 		}
 	}
-	u.AutoApprove = autoApprove != 0
+	u.setAutoApproval(am, as, ab)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Spend a REAL bcrypt cycle so response time doesn't leak whether the
 		// username exists. The previous placeholder was too short to parse, so
@@ -513,25 +546,25 @@ func (s *Service) ValidateSession(ctx context.Context, raw string) (*User, error
 // can decide whether to extend it.
 func (s *Service) ValidateSessionInfo(ctx context.Context, raw string) (*User, time.Time, error) {
 	var (
-		u           User
-		disabled    int
-		autoApprove int
-		expires     sql.NullString
+		u          User
+		disabled   int
+		am, as, ab int
+		expires    sql.NullString
 	)
 	// strftime hands the expiry back as plain text whatever the driver makes of a
 	// TIMESTAMP column, in the same layout sqlTime writes.
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve, strftime('%Y-%m-%d %H:%M:%S', s.expires_at)
+		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book, strftime('%Y-%m-%d %H:%M:%S', s.expires_at)
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`,
-		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &expires)
+		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &expires)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && disabled != 0) {
 		return nil, time.Time{}, ErrNotFound
 	}
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	u.AutoApprove = autoApprove != 0
+	u.setAutoApproval(am, as, ab)
 	exp, err := time.ParseInLocation("2006-01-02 15:04:05", expires.String, time.UTC)
 	if err != nil {
 		// Still a valid session (the database said it hasn't expired); the zero time just
@@ -582,22 +615,22 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID int64, name string) (
 // ValidateAPIKey returns the user owning the given API key and stamps last-used.
 func (s *Service) ValidateAPIKey(ctx context.Context, key string) (*User, error) {
 	var (
-		u           User
-		disabled    int
-		autoApprove int
+		u          User
+		disabled   int
+		am, as, ab int
 	)
 	h := hashToken(key)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve
+		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book
 		FROM api_keys k JOIN users u ON u.id = k.user_id
-		WHERE k.key_hash = ?`, h).Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove)
+		WHERE k.key_hash = ?`, h).Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && disabled != 0) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	u.AutoApprove = autoApprove != 0
+	u.setAutoApproval(am, as, ab)
 	_, _ = s.db.ExecContext(ctx, `UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE key_hash = ?`, h)
 	return &u, nil
 }

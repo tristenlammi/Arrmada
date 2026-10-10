@@ -220,10 +220,11 @@ func TestReadyPerSeasonRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Approve(f.ctx, pair.ID, ApproveOptions{}); err != nil {
+	approved, err := f.s.Approve(f.ctx, pair.ID, ApproveOptions{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	approvedRef := fmt.Sprintf("series:77:r%d:approved", pair.ID)
+	approvedRef := fmt.Sprintf("series:77:r%d:approved:%d", pair.ID, approved.DecidedAt)
 
 	fillSeason(t, f, sr.ID, 3, 2)
 	if err := f.s.NotifySeriesReady(f.ctx, sr.ID); err != nil {

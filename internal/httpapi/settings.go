@@ -12,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
@@ -59,6 +60,7 @@ func (a *api) seriesMonitorDefault(ctx context.Context) string {
 
 func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	quota := requests.GlobalLimits(func(key string) string { return a.deps.Settings.Get(ctx, key, "") })
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"search_on_add":           a.deps.Settings.GetBool(ctx, keySearchOnAdd, true),
 		"series_monitor_default":  a.seriesMonitorDefault(ctx),
@@ -73,7 +75,9 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"music_enabled":           a.musicEnabled(ctx),
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
 		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
-		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
+		"plex_login_auto_approve": a.plexAutoApproval(ctx).All(),
+		// Which media types a new Plex sign-in auto-approves ("movie,series,book").
+		"plex_login_auto_approve_types": a.plexAutoApproval(ctx).String(),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.
@@ -91,6 +95,9 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// How many upgrades one upgrade sweep may grab (0 = no limit); the rest wait for
 		// the next sweep, so a profile edit can't queue the whole library at once.
 		"upgrade_max_grabs_per_sweep": automation.ParseUpgradeBudget(a.deps.Settings.Get(ctx, automation.KeyUpgradeBudget, "")),
+		// Request limits per person, per window of days (0 = unlimited; Settings → Users).
+		"request_quota_days": quota.Days, "request_quota_movies": quota.Movie,
+		"request_quota_seasons": quota.Season, "request_quota_books": quota.Book,
 	})
 }
 
@@ -113,14 +120,20 @@ type settingsUpdate struct {
 	MusicEnabled         *bool   `json:"music_enabled"`
 	PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
 	TMDBRegion           *string `json:"tmdb_region"`
-	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"`
-	RecycleMaxGB         *string `json:"recycle_max_gb"`
-	RecycleRetentionDays *string `json:"recycle_retention_days"`
-	DiskGuard            *bool   `json:"downloads_disk_guard"`
-	DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
-	DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
-	StallMinutes         *int    `json:"downloads_stall_minutes"`
-	UpgradeBudget        *int    `json:"upgrade_max_grabs_per_sweep"`
+	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"` // legacy: every type or none
+	// PlexLoginAutoApproveTypes wins over the legacy bool when both are sent.
+	PlexLoginAutoApproveTypes *string `json:"plex_login_auto_approve_types"`
+	RecycleMaxGB              *string `json:"recycle_max_gb"`
+	RecycleRetentionDays      *string `json:"recycle_retention_days"`
+	DiskGuard                 *bool   `json:"downloads_disk_guard"`
+	DiskGuardPausePct         *string `json:"downloads_disk_guard_pause_pct"`
+	DiskGuardResumePct        *string `json:"downloads_disk_guard_resume_pct"`
+	StallMinutes              *int    `json:"downloads_stall_minutes"`
+	UpgradeBudget             *int    `json:"upgrade_max_grabs_per_sweep"`
+	QuotaDays                 *int    `json:"request_quota_days"`
+	QuotaMovies               *int    `json:"request_quota_movies"`
+	QuotaSeasons              *int    `json:"request_quota_seasons"`
+	QuotaBooks                *int    `json:"request_quota_books"`
 }
 
 // adminSettingChange names the first admin-only setting req would change, or "" if it
@@ -144,7 +157,8 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 		return "the Music module"
 	case boolChanged(req.PlexLoginEnabled, st.GetBool(ctx, "plex_login_enabled", false)):
 		return "Plex sign-in"
-	case boolChanged(req.PlexLoginAutoApprove, st.GetBool(ctx, "plex_login_auto_approve", true)):
+	case req.PlexLoginAutoApproveTypes != nil && auth.ParseAutoApproval(*req.PlexLoginAutoApproveTypes) != a.plexAutoApproval(ctx),
+		req.PlexLoginAutoApproveTypes == nil && req.PlexLoginAutoApprove != nil && auth.AllTypes(*req.PlexLoginAutoApprove) != a.plexAutoApproval(ctx):
 		return "auto-approval of Plex sign-ins' requests"
 	case req.TMDBRegion != nil && !strings.EqualFold(strings.TrimSpace(*req.TMDBRegion), strings.TrimSpace(st.Get(ctx, "tmdb_region", ""))):
 		return "the Discovery region"
@@ -157,6 +171,8 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 	case strChanged(req.DiskGuardPausePct, st.Get(ctx, keyDiskGuardPause, strconv.Itoa(download.DefaultDiskGuardPause))),
 		strChanged(req.DiskGuardResumePct, st.Get(ctx, keyDiskGuardResume, strconv.Itoa(download.DefaultDiskGuardResum))):
 		return "the disk guard's thresholds"
+	case quotaChanged(req, requests.GlobalLimits(func(key string) string { return st.Get(ctx, key, "") })):
+		return "the request limits"
 	}
 	return ""
 }
@@ -210,6 +226,10 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "upgrades per sweep must be between 0 (no limit) and "+strconv.Itoa(maxUpgradeBudget))
 		return
 	}
+	if msg := validQuota(req.QuotaDays, req.QuotaMovies, req.QuotaSeasons, req.QuotaBooks); msg != "" {
+		a.writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	// ISO 3166-1 alpha-2 ("AU"), or empty to go back to TMDB's global lists. Checked up
 	// here with the rest, so a bad region doesn't leave the keys before it saved.
 	var region string
@@ -223,6 +243,14 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
 		return
+	}
+	for key, v := range map[string]*int{
+		requests.KeyQuotaDays: req.QuotaDays, requests.KeyQuotaMovies: req.QuotaMovies,
+		requests.KeyQuotaSeasons: req.QuotaSeasons, requests.KeyQuotaBooks: req.QuotaBooks,
+	} {
+		if v != nil && !save(a.deps.Settings.Set(ctx, key, strconv.Itoa(*v))) {
+			return
+		}
 	}
 	if req.SeriesMonitorDefault != nil {
 		if !series.ValidPreset(*req.SeriesMonitorDefault) {
@@ -263,7 +291,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.TMDBRegion != nil && !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {
 		return
 	}
-	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
+	if types, ok := plexAutoApproveUpdate(&req); ok && !save(a.deps.Settings.Set(ctx, keyPlexAutoApproveTypes, types)) {
 		return
 	}
 	// The page sends every setting on each save, so note whether the bin's rules really changed.

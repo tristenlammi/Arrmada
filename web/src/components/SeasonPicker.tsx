@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SeriesSeason } from "../lib/api";
 import { latestSeason, missingSeasons, pickLabel, sameSeasons, seasonChip, seasonMeta, seasonSelectable, seasonTitle } from "../lib/seasons";
+import { quotaLeft, quotaLine, useQuota } from "../lib/quota";
 import { Button, StatusChip } from "../ui";
 
 // SeasonPicker is "which seasons?" in the title sheet when someone asks for a show. It
@@ -28,6 +29,14 @@ export function SeasonPicker({ seasons, busy, onSubmit, onCancel }: {
   const someCovered = seasons.some((s) => s.state !== "requestable" && s.state !== "unaired");
   const follows = (pick ?? []).some((n) => seasons.some((s) => s.number === n && s.state === "requested"));
   const ticked = (n: number) => (pick === null ? selectable.includes(n) : pick.includes(n));
+  // A season limit, when there is one. It counts what the server counts: every season
+  // asked for that isn't already asked for by someone or complete on disk — so following a
+  // request is free, and All seasons counts the not-yet-aired and on-the-way ones too.
+  const quota = useQuota();
+  const left = quotaLeft(quota, "season");
+  const counts = (s: SeriesSeason) => s.state !== "requested" && s.state !== "in_library";
+  const counted = pick === null ? seasons.filter(counts).length : seasons.filter((s) => pick.includes(s.number) && counts(s)).length;
+  const overQuota = left !== null && counted > left;
   const toggle = (n: number) => {
     const base = pick ?? selectable;
     setPick(base.includes(n) ? base.filter((x) => x !== n) : [...base, n].sort((a, b) => a - b));
@@ -88,8 +97,13 @@ export function SeasonPicker({ seasons, busy, onSubmit, onCancel }: {
       <p className="m-0 mt-2 text-[11px] text-ink-faint">
         {pick === null ? "The whole show. Anything already here or on the way is skipped." : follows ? "Only the seasons ticked. Where someone already asked for one, you’ll follow their request." : "Only the seasons ticked."}
       </p>
+      {left !== null && (
+        <p className="m-0 mt-1 text-[11px]" style={{ color: overQuota ? "var(--avoid-text)" : "var(--ink-faint)" }}>
+          {quotaLine(quota, "season")}{overQuota && left > 0 ? ` — tick ${left === 1 ? "one" : `at most ${left}`}.` : ""}
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button variant="primary" className="min-h-[40px]" onClick={() => onSubmit(pick)} disabled={pick !== null && pick.length === 0} busy={busy} busyLabel="Requesting…">
+        <Button variant="primary" className="min-h-[40px]" onClick={() => onSubmit(pick)} disabled={(pick !== null && pick.length === 0) || overQuota} busy={busy} busyLabel="Requesting…">
           {pickLabel(pick)}
         </Button>
         <Button variant="ghost" className="min-h-[40px]" onClick={onCancel} disabled={busy}>Cancel</Button>

@@ -835,7 +835,15 @@ export interface AppSettings {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login_enabled: boolean;
+  /** Legacy: true when a new Plex sign-in auto-approves every type. */
   plex_login_auto_approve: boolean;
+  /** The types a new Plex sign-in auto-approves, "movie,series,book" (any subset). */
+  plex_login_auto_approve_types: string;
+  /** Request limits per person per window of days (0 = unlimited). */
+  request_quota_days: number;
+  request_quota_movies: number;
+  request_quota_seasons: number;
+  request_quota_books: number;
   /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
   tmdb_region: string;
   // Recycle bin guard rails.
@@ -1162,6 +1170,14 @@ export interface MediaRequest {
   library_id?: number;
   /** Staff only, on GET /requests/{id}: who else follows it. */
   followers?: { name: string }[];
+  /** What staff told the requester when declining; a re-request keeps the previous one. */
+  decline_reason?: string;
+  /** Staff only: who made the last decision (absent for an auto-approval). */
+  decided_by_name?: string;
+  /** When the last decision was made (unix seconds); absent while undecided. */
+  decided_at?: number;
+  /** How often it was asked for again after a decline; > 0 flags a re-request. */
+  rerequest?: number;
 }
 
 /** A section of the request list (GET /api/v1/requests?section=). */
@@ -1180,6 +1196,8 @@ export interface RequestList {
   counts?: RequestCounts;
   total?: number;
   auto_approve: boolean;
+  /** The viewer's own per-type auto-approve, "movie,series,book" (any subset). */
+  auto_approve_types?: string;
   client_health?: QueueHealth;
 }
 
@@ -1271,11 +1289,31 @@ export interface AuthUser {
   username: string;
   role: UserRole;
   disabled?: boolean;
+  /** Every type auto-approves; the per-type flags are what requests follow. */
   auto_approve: boolean;
+  auto_approve_movie?: boolean;
+  auto_approve_series?: boolean;
+  auto_approve_book?: boolean;
+  /** Users list only: their own request limits. */
+  quota?: UserQuota;
   created_at?: string;
   // Signs in with Plex; plex_blocked means that Plex account is on the block list.
   plex_linked?: boolean;
   plex_blocked?: boolean;
+}
+
+/** One kind of request limit: limit 0 is unlimited; resets_at is when the oldest use frees up. */
+export interface QuotaUse { limit: number; used: number; resets_at?: string }
+/** GET /me/quota: the caller's request limits per window of `days`. */
+export interface MyQuota { days: number; movie: QuotaUse; season: QuotaUse; book: QuotaUse }
+/** A user's own limits: -1 follows the global limit, 0 is unlimited. */
+export interface UserQuota { movies: number; seasons: number; books: number }
+
+/** Which media types a user's requests approve themselves for. */
+export interface AutoApproveFlags {
+  auto_approve_movie?: boolean;
+  auto_approve_series?: boolean;
+  auto_approve_book?: boolean;
 }
 
 // A Plex account kept from signing in (it would otherwise make a new account each time).
@@ -1962,10 +2000,11 @@ export const api = {
   setupAdmin: (username: string, password: string) =>
     req<{ user: AuthUser }>("/api/v1/auth/setup", { method: "POST", body: JSON.stringify({ username, password }) }),
   users: () => req<{ users: AuthUser[] }>("/api/v1/users").then((r) => r.users),
-  createUser: (body: { email: string; password: string; role: string; auto_approve: boolean }) =>
+  // auto_approve_<type> sets one type; the old auto_approve sets all three.
+  createUser: (body: { email: string; password: string; role: string } & AutoApproveFlags) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean }) =>
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota } & AutoApproveFlags) =>
     req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.
@@ -2371,7 +2410,7 @@ export const api = {
     req<void>(`/api/v1/requests/${id}/subscription`, { method: "DELETE" }),
   // Approve or decline several at once; each is decided on its own, so one failure
   // doesn't stop the rest.
-  bulkRequests: (body: { action: "approve" | "decline"; ids: number[]; quality_profile?: string }) =>
+  bulkRequests: (body: { action: "approve" | "decline"; ids: number[]; quality_profile?: string; reason?: string }) =>
     req<{ results: { id: number; ok: boolean; error?: string }[] }>("/api/v1/requests/bulk", { method: "POST", body: JSON.stringify(body) }),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
@@ -2393,8 +2432,10 @@ export const api = {
       body: JSON.stringify({ quality_profile: b.quality_profile ?? "", ...(b.seasons?.length ? { seasons: b.seasons } : {}) }),
     });
   },
-  declineRequest: (id: number) =>
-    req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST" }),
+  myQuota: () => req<MyQuota>("/api/v1/me/quota"),
+  // reason (≤ 280 characters) is what the requester is told.
+  declineRequest: (id: number, reason = "") =>
+    req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
   deleteRequest: (id: number) =>
     req<void>(`/api/v1/requests/${id}`, { method: "DELETE" }),
 

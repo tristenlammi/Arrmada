@@ -62,7 +62,7 @@ func TestCreateUserKeepsPlexNameCase(t *testing.T) {
 	if u.Username != "Tristen" {
 		t.Errorf("stored %q, want the case kept", u.Username)
 	}
-	p, err := s.FindOrCreatePlexUser(ctx, "123", "GrandMa", RoleRequester, false)
+	p, err := s.FindOrCreatePlexUser(ctx, "123", "GrandMa", RoleRequester, AutoApproval{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestCreateUserKeepsPlexNameCase(t *testing.T) {
 		t.Errorf("plex user stored as %q, want the case kept", p.Username)
 	}
 	// A second Plex name that only differs by case gets de-duplicated, not collided.
-	p2, err := s.FindOrCreatePlexUser(ctx, "456", "grandma", RoleRequester, false)
+	p2, err := s.FindOrCreatePlexUser(ctx, "456", "grandma", RoleRequester, AutoApproval{})
 	if err != nil {
 		t.Fatal(err)
 	}

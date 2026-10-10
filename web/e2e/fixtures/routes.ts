@@ -34,6 +34,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/audio", sys.myAudio(p)),
     get("/api/v1/me/audio/listening", sys.myListening),
     get("/api/v1/me/notifications", discover.notifications),
+    get("/api/v1/me/quota", sys.quota(p)),
 
     // Discover (requester and staff)
     get("/api/v1/requests", discover.requests),
@@ -43,6 +44,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     { method: "POST", path: "/api/v1/requests/bulk", respond: ({ body }) => discover.bulk(body) },
     { method: "GET", path: /^\/api\/v1\/requests\/(\d+)$/, respond: ({ params }) => discover.requestDetail(Number(params[0])) },
     { method: "POST", path: /^\/api\/v1\/requests\/(\d+)\/approve$/, respond: ({ params, body }) => discover.approved(Number(params[0]), body) },
+    { method: "POST", path: /^\/api\/v1\/requests\/(\d+)\/decline$/, body: { status: "declined" } },
     get("/api/v1/discover/trending", discover.items),
     get("/api/v1/discover/popular", discover.items),
     get("/api/v1/discover/upcoming", discover.items),
@@ -108,6 +110,10 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/insights/plex", mod.plexConfig),
     get("/api/v1/insights/stats", mod.insightsStats),
     get("/api/v1/settings", sys.settings),
+    // Settings → Users: two accounts, one a Plex sign-in that still auto-approves shows.
+    get("/api/v1/users/plex-blocks", { blocks: [] }),
+    get("/api/v1/users", sys.users),
+    { method: "PUT", path: /^\/api\/v1\/users\/(\d+)$/, respond: ({ params, body }) => ({ id: Number(params[0]), ...(body as object) }) },
     get("/api/v1/system/library", sys.libraryPaths),
     { method: "GET", path: "/api/v1/system/library/check", respond: ({ url }) => sys.folderCheck(url.searchParams.get("path") ?? "") },
     get("/api/v1/logs", sys.logs),

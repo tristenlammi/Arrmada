@@ -16,9 +16,16 @@ func (a *api) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Plex-linked users also say whether their Plex account is blocked, so the page can
 	// offer Block or show that it's done.
+	// Each also carries their own request limits (-1: the global one).
 	type row struct {
 		auth.User
-		PlexBlocked bool `json:"plex_blocked,omitempty"`
+		PlexBlocked bool           `json:"plex_blocked,omitempty"`
+		Quota       auth.UserQuota `json:"quota"`
+	}
+	quotas, err := a.deps.Auth.Quotas(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not list users")
+		return
 	}
 	blocked := map[string]bool{}
 	for _, b := range a.plexBlocks(r.Context()) {
@@ -26,7 +33,10 @@ func (a *api) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]row, 0, len(users))
 	for _, u := range users {
-		rw := row{User: u}
+		rw := row{User: u, Quota: auth.DefaultQuota}
+		if q, ok := quotas[u.ID]; ok {
+			rw.Quota = q
+		}
 		if u.PlexLinked && len(blocked) > 0 {
 			rw.PlexBlocked = blocked[a.deps.Auth.PlexIDForUser(r.Context(), u.ID)]
 		}
@@ -43,7 +53,8 @@ func (a *api) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Email       string `json:"email"`
 		Password    string `json:"password"`
 		Role        string `json:"role"`
-		AutoApprove bool   `json:"auto_approve"`
+		AutoApprove bool   `json:"auto_approve"` // legacy: every type
+		autoApprovalFields
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -59,7 +70,8 @@ func (a *api) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// CreateUser lowercases the email and refuses one that differs from an existing account
 	// only by case; the client just trims, so the two can't disagree.
-	u, err := a.deps.Auth.CreateUser(r.Context(), email, req.Password, role, req.AutoApprove)
+	aa := req.autoApprovalFields.apply(auth.AllTypes(req.AutoApprove))
+	u, err := a.deps.Auth.CreateUser(r.Context(), email, req.Password, role, aa.All())
 	if errors.Is(err, auth.ErrUserExists) {
 		a.writeError(w, http.StatusConflict, "an account with that email already exists")
 		return
@@ -71,6 +83,14 @@ func (a *api) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if aa != auth.AllTypes(aa.All()) {
+		// Some types but not all: CreateUser takes the all-or-nothing flag.
+		if err := a.deps.Auth.UpdateUser(r.Context(), u.ID, u.Role, aa); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not set auto-approve")
+			return
+		}
+		u.AutoApprove, u.AutoApproveMovie, u.AutoApproveSeries, u.AutoApproveBook = aa.All(), aa.Movie, aa.Series, aa.Book
 	}
 	a.writeJSON(w, http.StatusCreated, u)
 }
@@ -96,9 +116,12 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Role        *string `json:"role"`
-		AutoApprove *bool   `json:"auto_approve"`
+		AutoApprove *bool   `json:"auto_approve"` // legacy: every type
 		Password    *string `json:"password"`
-		Disabled    *bool   `json:"disabled"`
+		autoApprovalFields
+		Disabled *bool `json:"disabled"`
+		// Quota is their own request limits: -1 the global limit, 0 unlimited, n per window.
+		Quota *auth.UserQuota `json:"quota"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -154,13 +177,20 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	autoApprove := cur.AutoApprove
+	autoApprove := cur.AutoApproval()
 	if req.AutoApprove != nil {
-		autoApprove = *req.AutoApprove
+		autoApprove = auth.AllTypes(*req.AutoApprove)
 	}
+	autoApprove = req.autoApprovalFields.apply(autoApprove)
 	if err := a.deps.Auth.UpdateUser(r.Context(), id, role, autoApprove); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not update user")
 		return
+	}
+	if req.Quota != nil {
+		if err := a.deps.Auth.SetQuota(r.Context(), id, *req.Quota); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not set their request limits")
+			return
+		}
 	}
 	if disabled != cur.Disabled {
 		if err := a.deps.Auth.SetDisabled(r.Context(), id, disabled); err != nil {
@@ -179,7 +209,10 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"id": id, "role": role, "auto_approve": autoApprove, "disabled": disabled})
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"id": id, "role": role, "disabled": disabled, "auto_approve": autoApprove.All(),
+		"auto_approve_movie": autoApprove.Movie, "auto_approve_series": autoApprove.Series, "auto_approve_book": autoApprove.Book,
+	})
 }
 
 // handleUserImpact reports, as counts only, what deleting a user would take with them.

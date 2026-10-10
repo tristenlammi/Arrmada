@@ -1,5 +1,5 @@
 import type {
-  AppSettings, Attention, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  AppSettings, Attention, AuthUser, MyQuota, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
   TaskStatus,
 } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
@@ -93,6 +93,11 @@ export const settings: AppSettings = {
   music_enabled: true,
   plex_login_enabled: false,
   plex_login_auto_approve: false,
+  plex_login_auto_approve_types: "movie",
+  request_quota_days: 7,
+  request_quota_movies: 0,
+  request_quota_seasons: 0,
+  request_quota_books: 0,
   tmdb_region: "US",
   recycle_max_gb: "50",
   recycle_retention_days: "30",
@@ -141,3 +146,23 @@ export const logs: { entries: LogEntry[] } = {
     { time_ms: NOW - 30_000, level: "WARN", msg: "indexer slow to answer", attrs: "indexer=Fixture" },
   ],
 };
+
+// Settings → Users: the owner, and a Plex sign-in from before per-type auto-approve who
+// still auto-approves every type (shows included).
+export const users: { users: AuthUser[] } = {
+  users: [
+    { id: 1, username: "owner@example.com", role: "admin", auto_approve: false, created_at: "2026-01-01 10:00:00" },
+    {
+      id: 5, username: "Grandad", role: "requester", plex_linked: true, created_at: "2026-02-01 10:00:00",
+      auto_approve: true, auto_approve_movie: true, auto_approve_series: true, auto_approve_book: true,
+    },
+  ],
+};
+
+// GET /me/quota: a requester may ask for three movies a week and has asked for one;
+// seasons and books are unlimited. Staff are never limited.
+export function quota(p: PersonaInfo): MyQuota {
+  const none = { limit: 0, used: 0 };
+  if (p.user.role !== "requester") return { days: 7, movie: none, season: none, book: none };
+  return { days: 7, movie: { limit: 3, used: 1, resets_at: "2026-10-14T09:00:00Z" }, season: none, book: none };
+}

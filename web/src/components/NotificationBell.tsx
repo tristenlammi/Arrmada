@@ -52,8 +52,9 @@ export function NotificationBell() {
       setError((e as Error).message);
     }
   };
-  // Mark read (badge only drops when the server call succeeds), then jump to Discover
-  // with the title prefilled in search.
+  // Mark read (badge only drops when the server call succeeds), then jump: a staff "New
+  // request" (ref request:<id>:…) opens that request; anything else goes to Discover with
+  // the title prefilled in search.
   const clickItem = async (n: UserNotification) => {
     if (!n.read) {
       try {
@@ -64,10 +65,11 @@ export function NotificationBell() {
         console.warn("mark notification read failed", e);
       }
     }
+    const req = /^request:(\d+)/.exec(n.ref)?.[1];
     const title = searchTitleOf(n);
-    if (title) {
+    if (req || title) {
       setOpen(false);
-      navigate(n.media_type === "book" ? `/discover?tab=books&q=${encodeURIComponent(title)}` : `/discover?q=${encodeURIComponent(title)}`);
+      navigate(req ? `/requests?id=${req}` : n.media_type === "book" ? `/discover?tab=books&q=${encodeURIComponent(title)}` : `/discover?q=${encodeURIComponent(title)}`);
     }
   };
 
@@ -108,7 +110,7 @@ export function NotificationBell() {
                 <span className="mt-1 h-2 w-2 flex-none rounded-full" style={{ background: n.read ? "transparent" : "var(--accent)" }} />
                 <span className="min-w-0">
                   <span className="block text-[12.5px] font-semibold">{n.title}</span>
-                  <span className="block text-[11.5px] text-ink-dim">{n.body}</span>
+                  <span className="block whitespace-pre-line text-[11.5px] text-ink-dim">{n.body}</span>
                 </span>
               </button>
             ))}

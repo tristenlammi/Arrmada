@@ -24,6 +24,20 @@ test.describe("admin", () => {
     expect(errors).toEqual([]);
   });
 
+  // REQ-08: a row's Decline opens the request on its reason box; the reason goes with it.
+  test("declining from a row asks for a reason and sends it", async ({ page, api }) => {
+    await page.goto("/requests?tab=needs");
+    await page.getByRole("button", { name: "Decline", exact: true }).click();
+    const sheet = page.getByRole("dialog");
+    await expect(sheet.getByText(/They’ll be told\./)).toBeVisible();
+    await sheet.getByRole("button", { name: "Already available elsewhere" }).click();
+    await sheet.getByRole("button", { name: "Decline and tell them" }).click();
+    await expect(page.getByText(/^Declined “/)).toBeVisible();
+    const calls = api.callsTo("POST", "/api/v1/requests/1/decline");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ reason: "Already available elsewhere" });
+  });
+
   test("a type filter and an open request survive a reload", async ({ page, api }) => {
     await page.goto("/requests?tab=active&type=movie&id=2");
     await expect(page.getByRole("dialog", { name: "Driftwood" })).toBeVisible();
