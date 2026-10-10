@@ -1,24 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { requesterNav } from "../../lib/nav";
 import { andList, managerExceptions, requesterPages } from "./roles";
-
-describe("requesterNav", () => {
-  const labels = (external: boolean, booksEnabled: boolean) => requesterNav({ external, booksEnabled }).map((n) => n.label);
-
-  it("is the requester top bar at home and from outside", () => {
-    expect(labels(false, true)).toEqual(["Discover", "Requests", "Calendar", "Books", "Audiobooks"]);
-    expect(labels(true, true)).toEqual(["Discover", "Requests", "Books", "Audiobooks"]);
-  });
-
-  it("drops Books while the module is off", () => {
-    expect(labels(false, false)).toEqual(["Discover", "Requests", "Calendar", "Audiobooks"]);
-    expect(labels(true, false)).toEqual(["Discover", "Requests", "Audiobooks"]);
-  });
-});
 
 describe("role legend", () => {
   it("lists a requester's pages, marking the at-home-only one", () => {
-    expect(requesterPages(true)).toBe("Discover, Requests, Calendar (at home only), Books, Audiobooks");
+    expect(requesterPages(true)).toBe("Discover, Requests, Calendar (at home only), My shelf, Audiobooks");
     expect(requesterPages(false)).toBe("Discover, Requests, Calendar (at home only), Audiobooks");
   });
 

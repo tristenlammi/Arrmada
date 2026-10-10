@@ -1,4 +1,5 @@
-import { NAV, requesterNav } from "../../lib/nav";
+import { NAV } from "../../lib/nav";
+import { requesterNav } from "../../lib/requesterNav";
 import { SECTIONS } from "./sections";
 
 // What each role gets, worded for Settings → Users, built from the same lists the app is
@@ -10,10 +11,11 @@ export function andList(xs: string[]): string {
 }
 
 // requesterPages is a requester's top bar at home, with any page they lose from outside
-// the network marked as such: "Discover, Calendar (at home only), Books, Audiobooks".
+// the network marked as such: "Discover, Calendar (at home only), My shelf, Audiobooks".
 export function requesterPages(booksEnabled: boolean): string {
   const outside = new Set(requesterNav({ external: true, booksEnabled }).map((n) => n.to));
   return requesterNav({ external: false, booksEnabled })
+    .filter((n) => n.header)
     .map((n) => (outside.has(n.to) ? n.label : `${n.label} (at home only)`))
     .join(", ");
 }

@@ -44,6 +44,7 @@ const Insights = lazyPage(() => import("../pages/Insights"), "Insights");
 const Audiobooks = lazyPage(() => import("../pages/Audiobooks"), "Audiobooks");
 const Calendar = lazyPage(() => import("../pages/Calendar"), "Calendar");
 const Logs = lazyPage(() => import("../pages/Logs"), "Logs");
+const Me = lazyPage(() => import("../pages/Me"), "Me");
 const NotFound = lazyPage(() => import("../pages/NotFound"), "NotFound");
 
 // Three shells, one table each. Staff get the whole console; requesters and outside
@@ -76,8 +77,12 @@ function requesterRoutes(shell: "external" | "requester"): RouteObject[] {
     page("/requests", "Requests", <Requests chrome={false} />),
     // Outside sessions get no Calendar: the API isn't allowlisted for them.
     ...(shell === "requester" ? [page("/calendar", "Calendar", <Calendar chrome={false} />)] : []),
-    page("/books", "Books", <ModuleGate module="books" home={home}><MyBooks /></ModuleGate>),
+    // "My shelf": the books they can download. /books was its old address, kept so
+    // installed shortcuts and bookmarks still land; Discover's Books tab is the catalogue.
+    page("/shelf", "My shelf", <ModuleGate module="books" home={home}><MyBooks /></ModuleGate>),
+    redirect("/books", "/shelf"),
     page("/audiobooks", "Audiobooks", <Audiobooks chrome={false} />),
+    page("/me", "Me", <Me />),
     redirect("*", home),
   ];
 }
@@ -111,6 +116,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/convert", "Convert", <Convert />),
     page("/insights", "Insights", <Insights />),
     page("/audiobooks", "Audiobooks", <Audiobooks />),
+    page("/me", "Me", <Me chrome />),
     page("/indexers", "Indexers", <Indexers />),
     page("/downloadclients", "Download clients", <DownloadClients />),
     // Alerts moved out of Insights into Settings; both old addresses land there.

@@ -1,7 +1,6 @@
 import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { NotificationBell } from "../components/NotificationBell";
 import { MetadataMissing } from "../components/MetadataMissing";
 import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
@@ -100,15 +99,17 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
             first in the DOM as well, so focus order matches what a phone shows; sm:order-last
             puts it back after the tabs on wider screens. */}
         <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
-          <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
-            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-            {tab !== "books" && (metadataReady ? (
-              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={commitSearch} ctx={ctx} />
-            ) : (
-              <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-            ))}
-            <NotificationBell />
-          </div>
+          {/* Books have their own search inside BooksDiscover — hide the movie/TV one there.
+              The bell lives in the layout's top bar, on every page. */}
+          {tab !== "books" && (
+            <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
+              {metadataReady ? (
+                <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={commitSearch} ctx={ctx} />
+              ) : (
+                <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+              )}
+            </div>
+          )}
           {/* No tab is current while search results are showing. */}
           <Tabs tabs={TABS} value={search ? null : tab} onChange={setTab} idPrefix="discover" label="Discover sections" className="-mb-px" />
         </div>

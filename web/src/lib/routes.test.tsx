@@ -28,8 +28,19 @@ describe("shellFor", () => {
 describe("buildRoutes", () => {
   it("gives outside sessions no calendar", () => {
     const p = paths(buildRoutes({ role: "requester", external: true }));
-    expect(p).toEqual(expect.arrayContaining(["/discover", "/books", "/audiobooks", "*"]));
+    expect(p).toEqual(expect.arrayContaining(["/discover", "/shelf", "/books", "/audiobooks", "/me", "*"]));
     expect(p).not.toContain("/calendar");
+  });
+
+  // The shelf's old address keeps working for requesters; staff /books is the library.
+  it("sends a requester's /books to /shelf and leaves staff /books alone", () => {
+    for (const external of [false, true]) {
+      const r = routes(buildRoutes({ role: "requester", external })).find((x) => x.path === "/books");
+      expect((r?.element as { props?: { to?: string } })?.props?.to).toBe("/shelf");
+    }
+    const staff = routes(buildRoutes({ role: "admin", external: false })).find((x) => x.path === "/books");
+    expect((staff?.element as { type?: unknown })?.type).not.toBe(Navigate);
+    expect(paths(buildRoutes({ role: "admin", external: false }))).toContain("/me");
   });
 
   it("keeps the console out of the requester shell", () => {
