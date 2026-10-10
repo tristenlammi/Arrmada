@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
@@ -39,6 +40,13 @@ type Tracking struct {
 	// (RFC3339, UTC). The page formats it in the viewer's own locale; the server never
 	// writes a date into the copy.
 	NextCheckAt string `json:"next_check_at,omitempty"`
+	// While it's searching: when it was last checked (RFC3339, UTC — the later of the
+	// sweep's own stamp and the newest stored search), how many searches in a row have
+	// found nothing suitable, and for a book, whether the ladder has slowed to a monthly
+	// check. Times and counts only: a requester never sees indexers, releases or reasons.
+	LastSearchAt  string `json:"last_search_at,omitempty"`
+	Misses        int    `json:"misses,omitempty"`
+	SearchStopped bool   `json:"search_stopped,omitempty"`
 }
 
 // seriesComplete is the one rule for "this series request is done": something is on disk
@@ -88,6 +96,67 @@ func (s *Service) Track(ctx context.Context, reqs []Request, queue []download.It
 			reqs[i].DownloadProgress = t.Progress
 		}
 	}
+	s.lastChecked(ctx, reqs)
+}
+
+// lastChecked fills in when each searching request was last looked for: the sweep's own
+// stamp, or a stored search (a manual one, or a request's first) if that's newer — one
+// query per media type for the lot.
+func (s *Service) lastChecked(ctx context.Context, reqs []Request) {
+	ids := map[string][]int64{}
+	for i := range reqs {
+		rq := &reqs[i]
+		t := rq.Tracking
+		if t == nil || t.Stage != StageSearching || !rq.released || rq.libID <= 0 {
+			continue
+		}
+		t.Misses = rq.searchMisses
+		t.LastSearchAt = rfc3339(parseSearchStamp(rq.lastSearchAt))
+		// Slowed to monthly, but still on the ladder (an unmonitored book isn't searched
+		// again at all, and says only "Not found yet").
+		t.SearchStopped = rq.MediaType == "book" && rq.searchMisses > books.MonthlyAfter && rq.nextCheckAt != ""
+		ids[rq.MediaType] = append(ids[rq.MediaType], rq.libID)
+	}
+	if s.coord == nil {
+		return
+	}
+	for kind, list := range ids {
+		times, err := s.coord.LastSearchedAt(ctx, kind, list)
+		if err != nil {
+			continue // the sweep's stamp stands
+		}
+		for i := range reqs {
+			rq := &reqs[i]
+			t := rq.Tracking
+			if t == nil || t.Stage != StageSearching || rq.MediaType != kind {
+				continue
+			}
+			ms, ok := times[rq.libID]
+			if !ok || ms <= 0 {
+				continue
+			}
+			at := time.UnixMilli(ms)
+			if last := parseSearchStamp(rq.lastSearchAt); at.After(last) {
+				t.LastSearchAt = rfc3339(at)
+			}
+		}
+	}
+}
+
+// parseSearchStamp reads a last_search_at as stored: SQLite's datetime('now') for movies
+// and series, RFC 3339 once the books repo has read it.
+func parseSearchStamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	return parseSQLiteTime(s)
+}
+
+func rfc3339(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // NeedsQueue reports whether any of reqs could have a download in flight, so a caller

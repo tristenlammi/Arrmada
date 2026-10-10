@@ -6,6 +6,7 @@ import { posterThumb } from "../lib/img";
 import { formatSeasons, libraryPath, mediaLabel, requestAge, requestStage } from "../lib/requestStage";
 import { Button, Modal, StatusChip, useConfirm, useToast } from "../ui";
 import { BookFormatBadge } from "./BookFormats";
+import { refreshAttention } from "../lib/useAttention";
 
 // RequestSheet is one request, opened from the Discover strip, a row on the Requests page
 // or a notification's ?id= link: who asked and when, their note, where it has got to, and
@@ -87,6 +88,8 @@ export function RequestSheet({ requestId, initial, onChanged, onClose }: {
       await fn();
       flash(ok);
       onChanged();
+      // A staff Needs-you count may have moved; nothing is asked where nobody shows it.
+      refreshAttention();
       if (close) { onClose(); return; }
       const r = await api.getRequest(rq.id).catch(() => null);
       if (r) { setRq(r.request); setQueueKnown(r.client_health?.ok ?? true); }

@@ -90,6 +90,8 @@ func (c *Coordinator) RemoveDownload(ctx context.Context, hash, name string, mod
 		`UPDATE import_reviews SET status = 'resolved', resolution = ?, resolved_at = CURRENT_TIMESTAMP
 		  WHERE lower(hash) = lower(?) AND status = 'pending'`, ResolutionRemoved, hash); err != nil {
 		c.log.Warn("downloads: couldn't settle the review for a removed download", "hash", hash, "err", err)
+	} else {
+		c.reviewsChanged()
 	}
 	what := "files kept"
 	if deleteFiles {

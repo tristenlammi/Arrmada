@@ -29,7 +29,7 @@ export default defineConfig({
   projects: [
     {
       name: "desktop",
-      testMatch: /(admin-smoke|wanted|movies-list|requests)\.spec\.ts/,
+      testMatch: /(admin-smoke|wanted|movies-list|requests|needs-you)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } },
     },
     {

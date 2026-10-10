@@ -1,5 +1,6 @@
 import type { MediaRequest } from "./api";
-import { formatAgo, formatEta, notFoundYet } from "./format";
+import { formatAgo, formatEta } from "./format";
+import { searchingDetail } from "./requestSearch";
 import type { Tone } from "../ui";
 
 // One vocabulary for where a request has got to, shared by the Discover strip, the
@@ -60,9 +61,8 @@ export function requestStage(rq: MediaRequest, queueKnown = true): RequestStage 
     case "failed":
       return { badge: "Retrying", tone: "avoid", detail: tr.note || "The download failed" };
     case "searching":
-      // A book the searches keep missing: "Not found yet · next check Tue 14 Oct".
-      if (tr.next_check_at) return { badge: "Searching", tone: "accent", detail: notFoundYet(tr.next_check_at) };
-      return { badge: "Searching", tone: "accent", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
+      // When it was last checked and whether anything has turned up — times only.
+      return { badge: "Searching", tone: "accent", detail: searchingDetail(tr, eps) };
     case "declined":
       return { badge: "Declined", tone: "reject", detail: "Declined" };
     case "pending":

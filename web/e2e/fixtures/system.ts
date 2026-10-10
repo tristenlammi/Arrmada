@@ -1,5 +1,5 @@
 import type {
-  AppSettings, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  AppSettings, Attention, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
   TaskStatus,
 } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
@@ -20,6 +20,30 @@ export function status(p: PersonaInfo): Status {
 export const health: Health = { status: "ok", version: "e2e", commit: "e2e0000", uptime_seconds: 14400, checks: { db: "ok" } };
 
 export const systemHealth: SystemHealth = { status: "ok", warnings: [], disk: { free_gb: "812.4", path: "/media" } };
+
+// The Needs-you feed: two requests waiting, a held import, a stalled download, stuck
+// searches and one health warning — enough for every badge and card row to render.
+const ago = (min: number) => NOW - min * 60_000;
+export const attention: Attention = {
+  at: new Date(NOW - 10_000).toISOString(),
+  stale: false,
+  counts: { requests: 2, reviews: 1, downloads: 1, imports: 0, searches: 3, health: 1, health_errors: 0, total: 8 },
+  groups: [
+    { kind: "health", level: "warning", count: 1, title: "1 health problem", link: "/settings/status", link_key: "status" },
+    { kind: "request", level: "warning", count: 2, title: "2 requests are waiting for approval", link: "/requests?tab=needs", link_key: "requestsWaiting", sample: ["deckhand requested Dune (2021)", "deckhand requested Severance (2022)"] },
+    { kind: "review", level: "warning", count: 1, title: "1 import needs review", link: "/review", link_key: "review", sample: ["Alien is held: it looks like a different title"] },
+    { kind: "stalled", level: "warning", count: 1, title: "1 download has stalled", link: "/downloads?show=problems", link_key: "downloadProblems", sample: ["Old.Film.1080p has stalled"] },
+    { kind: "search", level: "warning", count: 3, title: "3 titles still haven't found a release", link: "/downloads?tab=searching", link_key: "downloadsSearching" },
+  ],
+  items: [
+    { key: "health:backups.stale", kind: "health", level: "warning", title: "The last backup is 3 days old", link: "/settings/system#backups", link_key: "backups", link_label: "Backups", since: ago(600) },
+    { key: "request:11", kind: "request", level: "warning", title: "deckhand requested Dune (2021)", detail: "Movie", link: "/requests?tab=needs", link_key: "requestsWaiting", since: ago(90) },
+    { key: "request:12", kind: "request", level: "warning", title: "deckhand requested Severance (2022)", detail: "Series", link: "/requests?tab=needs", link_key: "requestsWaiting", since: ago(30) },
+    { key: "review:4", kind: "review", level: "warning", title: "Alien is held: it looks like a different title", link: "/review", link_key: "review", since: ago(240) },
+    { key: "stalled:abc123", kind: "stalled", level: "warning", title: "Old.Film.1080p has stalled", detail: "Nobody has sent it any data for 2h", link: "/downloads?show=problems", link_key: "downloadProblems", since: ago(120) },
+    { key: "search:stuck", kind: "search", level: "warning", title: "3 titles still haven't found a release", link: "/downloads?tab=searching", link_key: "downloadsSearching", since: ago(2000), count: 3 },
+  ],
+};
 
 const paths: LibraryPaths = { movies: "/media/movies", tv: "/media/tv", ebooks: "/media/ebooks", audiobooks: "/media/audiobooks", music: "/media/music", downloads: "/media/downloads" };
 

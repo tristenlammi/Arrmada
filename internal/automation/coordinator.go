@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/audiobook"
@@ -135,6 +136,12 @@ type Coordinator struct {
 	// Subtitles for the episodes that landed, the requester's "ready", the audiobook
 	// catalogue). nil means nothing is wired (tests).
 	outbox outbox.Enqueuer
+
+	// attentionKick asks the Needs-you feed to refresh (attentionkick.go); nil = nothing.
+	attentionKick atomic.Pointer[func()]
+	// importNotes is what the series import sweep found that the feed reports: packs
+	// whose files keep failing to place, and misfiled TV downloads (importattention.go).
+	importNotes importNotes
 }
 
 // SetOutbox installs where series and book imports queue their side effects.
@@ -1700,6 +1707,8 @@ func (c *Coordinator) BlockResolved(ctx context.Context, hash string, t BlockTar
 		`UPDATE import_reviews SET status = 'resolved', resolution = ?, resolved_at = CURRENT_TIMESTAMP
 		  WHERE lower(hash) = lower(?) AND status = 'pending'`, ResolutionRejected, hash); err != nil {
 		c.log.Warn("downloads: block — couldn't settle the review", "hash", hash, "err", err)
+	} else {
+		c.reviewsChanged()
 	}
 	what := &grab{MediaType: t.Kind, MovieID: t.ID}
 	var err error

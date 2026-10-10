@@ -327,7 +327,7 @@ func (s *Service) notifyBookReady(ctx context.Context, req Request, b books.Book
 	complete := bookReady(req.Formats, b)
 	if complete && err == nil {
 		// Every format asked for is here and everyone was told about each.
-		if merr := s.repo.MarkReady(ctx, req.ID, time.Now().Unix()); merr != nil {
+		if merr := s.markReady(ctx, req.ID); merr != nil {
 			s.log.Warn("request-ready: could not record that the requester was told", "request", req.ID, "err", merr)
 		}
 	}
@@ -358,7 +358,7 @@ func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	if err == nil {
 		// Only once everyone has been told: a failure leaves it unstamped, and the retry
 		// (an outbox row, the ready sweep) finishes the job.
-		if merr := s.repo.MarkReady(ctx, req.ID, time.Now().Unix()); merr != nil {
+		if merr := s.markReady(ctx, req.ID); merr != nil {
 			s.log.Warn("request-ready: could not record that the requester was told", "request", req.ID, "err", merr)
 		}
 	}
@@ -500,7 +500,15 @@ func (s *Service) MarkReadyIfAvailable(ctx context.Context, id int64) error {
 	if err != nil || !lk.ready(ctx, s, req) {
 		return err
 	}
-	return s.repo.MarkReady(ctx, req.ID, time.Now().Unix())
+	return s.markReady(ctx, req.ID)
+}
+
+// markReady stamps a request's ready_at (first time only) and lets the Needs-you feed
+// know a request moved.
+func (s *Service) markReady(ctx context.Context, id int64) error {
+	err := s.repo.MarkReady(ctx, id, time.Now().Unix())
+	s.kickAttention()
+	return err
 }
 
 // readyLookup is the library state a batch of requests is judged ready against, read with

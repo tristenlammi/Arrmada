@@ -5,14 +5,15 @@ import {
   api,
   type Status,
   type Health,
-  type SystemHealth,
   type DashboardData,
   type StorageVolume,
   type ActivityEvent,
   type InsightsStream,
   type NowListening,
 } from "../lib/api";
-import { fixLink, LINKS } from "../lib/links";
+import { LINKS } from "../lib/links";
+import { needsYouRows } from "../lib/needsYou";
+import { useAttention } from "../lib/useAttention";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
 
@@ -24,7 +25,6 @@ const REFRESH_MS = 10_000;
 export function Dashboard() {
   const [status, setStatus] = useState<Status | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
-  const [system, setSystem] = useState<SystemHealth | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { connected } = useLive();
@@ -39,19 +39,12 @@ export function Dashboard() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // The page is left open, so the warnings are re-read too (every third tick, ~30 s): a
-  // problem that appears or clears no longer needs a reload to show. A hidden tab doesn't
-  // poll, and coming back to it refreshes at once.
+  // Health problems are part of the Needs-you card, which the staff layout keeps fresh; this
+  // poll is only the dashboard's own data. A hidden tab doesn't poll, and coming back to it
+  // refreshes at once.
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  const ticks = useRef(0);
-  usePoll(() => {
-    const tick = ticks.current++;
-    return Promise.all([
-      api.dashboard().then((d) => alive.current && setData(d)).catch(() => {}),
-      tick % 3 === 0 ? api.systemHealth().then((s) => alive.current && setSystem(s)).catch(() => {}) : null,
-    ]);
-  }, REFRESH_MS);
+  usePoll(() => api.dashboard().then((d) => alive.current && setData(d)).catch(() => {}), REFRESH_MS);
 
   const dbOK = health?.checks?.database === "ok";
   const streams = data?.streams?.streams ?? [];
@@ -62,35 +55,9 @@ export function Dashboard() {
     <>
       <PageHeader title="Dashboard" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
-        {system && system.warnings.length > 0 && (
-          <div className="mb-5 flex flex-col gap-2">
-            {system.warnings.map((wrn, i) => {
-              const style = {
-                background: wrn.level === "error" ? "var(--reject-soft)" : "var(--avoid-soft)",
-                border: `1px solid ${wrn.level === "error" ? "var(--reject)" : "var(--avoid)"}`,
-                color: wrn.level === "error" ? "var(--reject)" : "var(--ink-dim)",
-              };
-              const row = "flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-[12.5px]";
-              const body = (
-                <>
-                  <span className="flex-none">{wrn.level === "error" ? "⛔" : "⚠️"}</span>
-                  <span className="min-w-0 flex-1 break-words">{wrn.message}</span>
-                </>
-              );
-              // A warning that names where it's fixed is one link, so the whole row is the
-              // target; it ends in "Fix →" in the accent colour.
-              const to = fixLink(wrn);
-              return to ? (
-                <Link key={wrn.key ?? i} to={to} title={wrn.link_label} className={`${row} no-underline`} style={style}>
-                  {body}
-                  <span className="flex-none whitespace-nowrap font-semibold" style={{ color: "var(--accent)" }}>Fix →</span>
-                </Link>
-              ) : (
-                <div key={wrn.key ?? i} className={row} style={style}>{body}</div>
-              );
-            })}
-          </div>
-        )}
+        {/* What's waiting on a person comes first: requests, held imports, download
+            problems, stuck searches and health problems, one line each. */}
+        <NeedsYou />
 
         {error && (
           <div
@@ -249,6 +216,60 @@ export function Dashboard() {
         </Card>
       </div>
     </>
+  );
+}
+
+// NeedsYou is the first card: everything waiting on a person, one line per kind of
+// problem (health problems and failing imports one per line, each with its own fix).
+// It reads the staff layout's Needs-you poll, so it costs this page nothing.
+function NeedsYou() {
+  const attention = useAttention();
+  const rows = needsYouRows(attention);
+  return (
+    <section aria-labelledby="needs-you" className="mb-1">
+      <div id="needs-you" className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint">
+        Needs you{attention && attention.counts.total > 0 ? ` · ${attention.counts.total}` : ""}
+      </div>
+      <Card>
+        {!attention ? (
+          <p className="m-0 text-[12.5px] text-ink-faint">Checking…</p>
+        ) : rows.length === 0 ? (
+          <p className="m-0 text-[12.5px] text-ink-faint">
+            {attention.at ? "All clear — nothing needs you." : "Checking what needs you…"}
+          </p>
+        ) : (
+          <ul className="m-0 flex list-none flex-col p-0">
+            {rows.map((r, i) => (
+              <li
+                key={r.key}
+                className="flex items-center gap-2.5 py-2 text-[12.5px]"
+                style={i > 0 ? { borderTop: "1px solid var(--line)" } : undefined}
+                title={r.sample && r.sample.length > 0 ? r.sample.join("\n") : undefined}
+              >
+                <span
+                  className="h-2 w-2 flex-none rounded-full"
+                  style={{ background: r.level === "error" ? "var(--reject)" : "var(--avoid)" }}
+                  aria-label={r.level === "error" ? "Error" : "Warning"}
+                  role="img"
+                />
+                <span className="min-w-0 flex-1 break-words">
+                  {r.text}
+                  {r.detail && <span className="block text-[11.5px] text-ink-faint">{r.detail}</span>}
+                </span>
+                {r.to && (
+                  <Link to={r.to} className="flex-none whitespace-nowrap font-semibold no-underline" style={{ color: "var(--accent)" }}>
+                    {r.action} →
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {attention?.stale && attention.at && (
+          <p className="m-0 mt-2 text-[11px] text-ink-faint">This list hasn&apos;t been updated for a few minutes.</p>
+        )}
+      </Card>
+    </section>
   );
 }
 

@@ -9,9 +9,11 @@ import "strconv"
 //   - request.updated is staff-only, with ids and status (no titles).
 //   - each requester (and subscriber) hears about their own request on
 //     user.<id>.request.updated, with the request's id, status and media type only.
+//   - attention.changed is staff-only, with the Needs-you counts and nothing else.
 const (
-	TopicQueueProgress  = "queue.progress"
-	TopicRequestUpdated = "request.updated"
+	TopicQueueProgress    = "queue.progress"
+	TopicRequestUpdated   = "request.updated"
+	TopicAttentionChanged = "attention.changed"
 )
 
 // UserTopic is the per-user form of an event, delivered to that user alone.

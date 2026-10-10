@@ -1055,23 +1055,20 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	}
 	matchRelease := c.series.ReleaseMatcher(all)
 	grabbedFor := c.grabIndex(ctx, "series")
+	// A completed TV download that matches a library series but isn't in the TV category
+	// won't import: logged (once an hour each) and kept for Needs you, so it's not a
+	// silent no-op.
+	c.noteWrongCategory(wrongCategory(completed, matchRelease))
 	for _, it := range completed {
 		if it.Category != seriesCategory {
-			// Diagnostic: a completed TV download that matches a library series but isn't
-			// in the TV category won't import — flag it so it's not a silent no-op.
-			if p := parser.Parse(it.Name); p.IsTV() {
-				if _, ok, cands := matchRelease(p); ok || len(cands) > 0 {
-					c.log.Warn("series import: a completed TV download is in the wrong category — it won't import; re-grab via Arrmada or set its qBittorrent category to "+seriesCategory,
-						"release", it.Name, "category", it.Category)
-				}
-			}
 			continue
 		}
 		if it.ContentPath == "" {
 			continue
 		}
 		if c.hasReview(ctx, it.Hash) {
-			continue // already held for review (or resolved) — don't re-flag or import
+			c.clearSeriesImportFail(it.Hash) // Review has it now; it isn't failing on its own
+			continue                         // already held for review (or resolved) — don't re-flag or import
 		}
 		parsed := parser.Parse(it.Name)
 		// Which show this is. A download grabbed for a show goes to that show whenever its
@@ -1196,7 +1193,11 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			// unimported after a transient error.
 			c.log.Warn("series import: some files failed to place — will retry next sweep",
 				"series", s.Title, "release", it.Name, "failed", importFailed, "placed", imported)
-		} else if matched > 0 {
+			c.noteSeriesImportFail(it.Hash, it.Name, importFailed)
+			continue
+		}
+		c.clearSeriesImportFail(it.Hash)
+		if matched > 0 {
 			// Every file mapped to a known episode (some newly placed, some already
 			// present) — the download is handled, so drop it from the downloads view
 			// and stop re-scanning it.
@@ -1270,13 +1271,16 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	// Forget unmatched counters for downloads that are gone from the completed list,
 	// so the map only ever tracks what's actually in the client.
 	active := make(map[string]bool, len(completed))
+	activeLower := make(map[string]bool, len(completed))
 	activePaths := make(map[string]bool, len(completed))
 	for _, it := range completed {
 		active[it.Hash] = true
+		activeLower[strings.ToLower(it.Hash)] = true
 		activePaths[it.ContentPath] = true
 	}
 	c.pruneUnmatched(active)
 	c.pruneMetadataRetries(activePaths)
+	c.pruneSeriesImportFails(activeLower)
 }
 
 // incompleteSeasonReason explains why a re-processed release added nothing, given how many

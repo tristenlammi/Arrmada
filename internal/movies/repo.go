@@ -340,6 +340,33 @@ func (r *Repo) SearchStates(ctx context.Context) (map[int64]SearchStamp, error) 
 	return out, rows.Err()
 }
 
+// SearchStatesFor is SearchStates for these ids only.
+func (r *Repo) SearchStatesFor(ctx context.Context, ids []int64) (map[int64]SearchStamp, error) {
+	out := map[int64]SearchStamp{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := r.q().QueryContext(ctx,
+		`SELECT id, last_search_at, search_misses FROM movies WHERE id IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var st SearchStamp
+		if err := rows.Scan(&id, &st.LastAt, &st.Misses); err != nil {
+			return nil, err
+		}
+		out[id] = st
+	}
+	return out, rows.Err()
+}
+
 // RecordSearchMiss stamps the sweep time and increments the miss counter.
 func (r *Repo) RecordSearchMiss(ctx context.Context, movieID int64) {
 	_, _ = r.q().ExecContext(ctx,

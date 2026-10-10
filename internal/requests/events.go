@@ -38,6 +38,7 @@ func (s *Service) parties(ctx context.Context, req Request) []int64 {
 // Ids and status only — no titles — and a requester never hears about anyone else's
 // request (the realtime policy delivers a user topic to that user alone).
 func (s *Service) publishUpdated(req Request, status string, users []int64) {
+	s.kickAttention()
 	if s.bus == nil {
 		return
 	}

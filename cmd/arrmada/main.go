@@ -25,6 +25,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
+	"github.com/tristenlammi/arrmada/internal/attention"
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -805,6 +806,41 @@ func main() {
 	// registers the checks built from its deps.
 	healthReg := health.NewRegistry(bus, log)
 
+	// The Needs-you feed: one snapshot of everything waiting on a person, refreshed every
+	// 30 seconds and a second after anything it reports on changes. The sidebar badges and
+	// the Dashboard card read it from memory, however many tabs are open.
+	needsYou := attention.New(attention.QueueFrame(downloads.Snapshot, coordinator.LiveByHash), bus, log,
+		attention.Requests(requestsSvc),
+		attention.Reviews(coordinator),
+		attention.Downloads(),
+		attention.Imports(func() []library.FailureInfo {
+			return append(imports.Failures(), coordinator.SeriesImportFailures()...)
+		}, coordinator),
+		attention.WrongCategory(coordinator.WrongCategoryDownloads),
+		attention.Health(healthReg),
+		attention.Searches(
+			func(ctx context.Context) (int, error) {
+				return movieSvc.CountSearchStuck(ctx, attention.SearchStuckAfter)
+			},
+			func(ctx context.Context) (int, error) {
+				return seriesSvc.CountSearchStuck(ctx, attention.SearchStuckAfter)
+			},
+			func(ctx context.Context) (int, error) {
+				if !settingsSvc.GetBool(ctx, settings.KeyModuleBooks, true) {
+					return 0, nil
+				}
+				return booksSvc.CountSearchGivenUp(ctx)
+			},
+		),
+	)
+	healthReg.SetOnChange(needsYou.Kick)
+	coordinator.SetAttentionKick(needsYou.Kick)
+	requestsSvc.SetAttentionKick(needsYou.Kick)
+	grp.Loop("attention: refresh on change", needsYou.Run)
+	sched.Register("attention-refresh", 30*time.Second, true, needsYou.Refresh,
+		scheduler.Label("Update the Needs-you list"),
+		scheduler.Description("Gathers pending requests, held imports, download problems, stuck searches and health problems for the Dashboard and the sidebar badges."))
+
 	// Everything that acts on an import is an outbox consumer. Registered here, once every
 	// consumer exists and before the scheduler starts the import sweeps (and before the
 	// HTTP server takes manual imports): Enqueue writes rows only for the consumers
@@ -889,6 +925,7 @@ func main() {
 		Health:    healthReg,
 		Scheduler: sched,
 		Jobs:      jobRunner,
+		Attention: needsYou,
 		// Everything else reads the folders live; the bundled qBittorrent's default save
 		// path is the one thing that has to be told. Same retries as at boot — the client
 		// may be restarting — and each try reads the folder afresh, so of two quick saves

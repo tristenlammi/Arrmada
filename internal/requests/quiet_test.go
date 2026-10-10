@@ -90,6 +90,10 @@ func (f *fakeMovies) SetMonitored(_ context.Context, id int64, monitored bool) e
 
 func (f *fakeMovies) AddEvent(context.Context, int64, string, string) {}
 
+func (f *fakeMovies) SearchStatesFor(context.Context, []int64) (map[int64]movies.SearchStamp, error) {
+	return map[int64]movies.SearchStamp{}, nil
+}
+
 func (f *fakeMovies) ByTMDBIDs(_ context.Context, ids []int) ([]movies.Movie, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -138,6 +138,16 @@ type Registry struct {
 	since     map[string]time.Time
 	lastSig   string
 	refreshAt time.Time
+	onChange  func() // called after the set of problems changes (SetOnChange)
+}
+
+// SetOnChange installs a function called (outside the lock) whenever the set of problems
+// changes, besides the counts-only event: the Needs-you feed refreshes on it. A direct
+// call rather than a bus subscription, which may drop events.
+func (r *Registry) SetOnChange(fn func()) {
+	r.mu.Lock()
+	r.onChange = fn
+	r.mu.Unlock()
 }
 
 // NewRegistry builds an empty registry. pub may be nil (no change events).
@@ -369,10 +379,14 @@ func (r *Registry) settle() {
 	sig := strings.Join(parts, "\x01")
 	changed := sig != r.lastSig
 	r.lastSig = sig
+	onChange := r.onChange
 	r.mu.Unlock()
 
 	if changed && r.pub != nil {
 		r.pub.Publish(TopicChanged, map[string]any{"status": status(errs, warns), "errors": errs, "warnings": warns})
+	}
+	if changed && onChange != nil {
+		onChange()
 	}
 }
 

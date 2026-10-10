@@ -11,7 +11,10 @@ export interface NavItem {
   adminOnly?: boolean;
   /** Belongs to a module an admin can switch off; hidden while it's off. */
   module?: "books" | "music";
-  /** A live count shown beside the label (FE-28 fills these in). */
+  /**
+   * A live count beside the label, from the Needs-you feed (lib/useAttention.ts badgeFor):
+   * requests waiting, downloads that need a look, held imports, health problems.
+   */
   badge?: "requests" | "activity" | "review" | "issues";
   /** A status dot beside the label: the audiobook server's running state. */
   status?: "audiobook-server";
@@ -49,15 +52,16 @@ export const NAV: NavGroup[] = [
     items: [
       { to: "/", label: "Dashboard", icon: "dashboard", end: true },
       { to: "/discover", label: "Discover", icon: "discover" },
+      // Pending requests are decided on the Requests page; its pill counts them.
       { to: "/requests", label: "Requests", icon: "requests", badge: "requests" },
     ],
   },
   {
     group: "Activity",
     items: [
-      { to: "/downloads", label: "Downloads", icon: "downloads" },
+      { to: "/downloads", label: "Downloads", icon: "downloads", badge: "activity" },
       { to: "/history", label: "History", icon: "history" },
-      { to: "/review", label: "Review", icon: "review" },
+      { to: "/review", label: "Review", icon: "review", badge: "review" },
       { to: "/blocklist", label: "Blocklist", icon: "blocklist" },
     ],
   },
@@ -90,7 +94,8 @@ export const NAV: NavGroup[] = [
       { to: "/downloadclients", label: "Download clients", icon: "downloadClients" },
       { to: "/quality", label: "Quality profiles", icon: "quality" },
       { to: "/logs", label: "Logs", icon: "logs", adminOnly: true },
-      { to: "/settings", label: "Settings", icon: "settings" },
+      // Health problems are listed on Settings → Status.
+      { to: "/settings", label: "Settings", icon: "settings", badge: "issues" },
     ],
   },
 ];

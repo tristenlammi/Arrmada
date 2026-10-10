@@ -652,6 +652,48 @@ export interface SystemHealth {
   disk?: { free_gb: string; path: string };
 }
 
+// The Needs-you feed (GET /api/v1/attention, staff only): what's waiting on a person.
+export type AttentionKind =
+  | "request" | "review" | "download" | "stalled" | "import" | "wrongcat" | "search" | "health";
+export interface AttentionCounts {
+  requests: number;
+  reviews: number;
+  downloads: number; // errored + stalled
+  imports: number; // failing imports + wrong-category downloads
+  searches: number; // titles whose searches keep coming up empty
+  health: number;
+  health_errors: number;
+  total: number;
+}
+export interface AttentionItem {
+  key: string; // "<kind>:<id>", stable while the problem lasts
+  kind: AttentionKind;
+  level: "warning" | "error";
+  title: string;
+  detail?: string;
+  link?: string;
+  link_key?: string;
+  link_label?: string;
+  since: number; // unix ms
+  count?: number; // an aggregate's size (search:stuck)
+}
+export interface AttentionGroup {
+  kind: AttentionKind;
+  level: "warning" | "error";
+  count: number;
+  title: string; // "3 requests are waiting for approval"
+  link?: string;
+  link_key?: string;
+  sample?: string[];
+}
+export interface Attention {
+  at: string | null;
+  stale: boolean;
+  counts: AttentionCounts;
+  groups: AttentionGroup[];
+  items: AttentionItem[];
+}
+
 export interface StorageVolume {
   roots: string[];
   path: string;
@@ -1136,6 +1178,11 @@ export interface RequestTracking {
   note?: string;
   /** Books not found yet: when the next search is due (RFC3339; format in the viewer's locale). */
   next_check_at?: string;
+  /** While searching: when it was last looked for (RFC3339), and how many looks in a row found nothing. */
+  last_search_at?: string;
+  misses?: number;
+  /** A book the searches have slowed to a monthly check. */
+  search_stopped?: boolean;
 }
 
 // MyBook is one library book as a requester sees it: an ebook to download, an
@@ -2050,6 +2097,7 @@ export const api = {
   systemHealth: (refresh = false) =>
     req<SystemHealth>(`/api/v1/health/system${refresh ? "?refresh=1" : ""}`),
   dashboard: () => req<DashboardData>("/api/v1/dashboard"),
+  attention: () => req<Attention>("/api/v1/attention"),
   diskGuard: () => req<DiskGuardStatus>("/api/v1/downloads/disk-guard"),
   fileInfo: (path: string) => req<FileDetails>(`/api/v1/files/info?path=${encodeURIComponent(path)}`),
   seriesAliases: (id: number) => req<SeriesAlias[]>(`/api/v1/series/${id}/aliases`),

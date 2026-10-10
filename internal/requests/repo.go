@@ -77,8 +77,10 @@ type Request struct {
 	// notApproved is the sentence naming the seasons staff trimmed off on approve
 	// ("Season 3 wasn't approved."), for the "approved" notice. Never stored.
 	notApproved string
-	// Books: searches in a row that found nothing, and when the next one is due (RFC3339).
+	// Searches in a row that found nothing and when the sweep last looked (as stored);
+	// books also say when the next one is due (RFC3339).
 	searchMisses int
+	lastSearchAt string
 	nextCheckAt  string
 	// Books: for a "both" request with one format here, which one and what's coming.
 	partNote string

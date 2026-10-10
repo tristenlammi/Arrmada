@@ -9,6 +9,7 @@ import { usePoll } from "../lib/usePoll";
 import { pickTab } from "../lib/useTabParam";
 import { formatSeasons, mediaLabel, MOVING_STAGES, requestAge, requestStage } from "../lib/requestStage";
 import { BookFormatBadge } from "../components/BookFormats";
+import { refreshAttention } from "../lib/useAttention";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { Button, EmptyState, ErrorState, StatusChip, useConfirm, useToast } from "../ui";
 
@@ -119,6 +120,7 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       if (action === "approve") await api.approveRequest(rq.id);
       else await api.declineRequest(rq.id);
       flash(action === "approve" ? `Approved “${rq.title}” — searching now` : `Declined “${rq.title}”`);
+      refreshAttention(); // the sidebar's waiting count follows at once
       await load();
     } catch (e) {
       setRowErrors((errs) => ({ ...errs, [rq.id]: (e as Error).message }));
@@ -144,6 +146,7 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       setRowErrors(failed);
       setSelected(new Set(Object.keys(failed).map(Number)));
       flash(`${action === "approve" ? "Approved" : "Declined"} ${ok} of ${ids.length}`, Object.keys(failed).length ? { tone: "error" } : undefined);
+      refreshAttention();
       await load();
     } catch (e) {
       flash((e as Error).message, { tone: "error" });

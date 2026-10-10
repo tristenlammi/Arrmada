@@ -25,6 +25,8 @@ type movieLib interface {
 	GetByTMDB(ctx context.Context, tmdbID int) (movies.Movie, error)
 	SetMonitored(ctx context.Context, id int64, monitored bool) error
 	AddEvent(ctx context.Context, id int64, event, detail string)
+	// SearchStatesFor is the missing-sweep's backoff for these films (a page's "last checked").
+	SearchStatesFor(ctx context.Context, ids []int64) (map[int64]movies.SearchStamp, error)
 }
 
 // seriesLib is the Series module, narrowed.
@@ -38,6 +40,8 @@ type seriesLib interface {
 	SeasonProgress(ctx context.Context, seriesID int64) (map[int]series.SeasonProgress, error)
 	// EnsureMonitored wants the seasons a request for a show already held asks for.
 	EnsureMonitored(ctx context.Context, id int64, seasons []int, requestedBy string) error
+	// SearchStatesFor is the missing-sweep's backoff for these shows.
+	SearchStatesFor(ctx context.Context, ids []int64) (map[int64]series.SearchStamp, error)
 }
 
 // bookLib is the Books module, narrowed.
@@ -69,6 +73,8 @@ type searcher interface {
 	EnqueueMovieSearch(ctx context.Context, sub jobs.Submitter, id int64, spec jobs.Spec) (automation.MovieQueued, error)
 	// ActiveByItem is the acquisition record's in-flight grabs of one media type, by item.
 	ActiveByItem(ctx context.Context, mediaType string) (map[int64][]automation.Acquisition, error)
+	// LastSearchedAt is the newest stored search of each of ids (unix ms), one grouped MAX.
+	LastSearchedAt(ctx context.Context, kind string, ids []int64) (map[int64]int64, error)
 }
 
 // The concrete services are what main wires in.

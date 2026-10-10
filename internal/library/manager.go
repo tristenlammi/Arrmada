@@ -54,9 +54,35 @@ const (
 )
 
 type importFailure struct {
+	name     string
 	attempts int
+	since    time.Time // the first failure of this run of them
 	next     time.Time
 	lastErr  string
+}
+
+// FailureInfo is one download whose import keeps failing, as the Needs-you feed reports
+// it: how many tries, the last error, when the next one is, and since when.
+type FailureInfo struct {
+	Hash      string
+	Name      string
+	Attempts  int
+	Since     time.Time
+	NextRetry time.Time
+	LastErr   string
+}
+
+// Failures is every download whose import has failed and not yet succeeded, a copy taken
+// under the lock. Kept in memory: a restart retries from scratch, so the count starting
+// over then is the truth.
+func (m *Manager) Failures() []FailureInfo {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	out := make([]FailureInfo, 0, len(m.failures))
+	for h, f := range m.failures {
+		out = append(out, FailureInfo{Hash: h, Name: f.name, Attempts: f.attempts, Since: f.since, NextRetry: f.next, LastErr: f.lastErr})
+	}
+	return out
 }
 
 // AttachOutcome is how attaching a recorded import to its movie went.
@@ -134,7 +160,7 @@ func (m *Manager) retryDue(hash string) bool {
 // noteFailure records a failed attempt and schedules the next one. It reports the
 // attempt count and whether this failure is worth a warning: the first one, or one
 // with a different error than last time — the rest are the same news repeated.
-func (m *Manager) noteFailure(hash string, err error) (attempts int, worthWarning bool) {
+func (m *Manager) noteFailure(hash, name string, err error) (attempts int, worthWarning bool) {
 	m.failMu.Lock()
 	defer m.failMu.Unlock()
 	if m.failures == nil {
@@ -142,9 +168,10 @@ func (m *Manager) noteFailure(hash string, err error) (attempts int, worthWarnin
 	}
 	f := m.failures[hash]
 	if f == nil {
-		f = &importFailure{}
+		f = &importFailure{since: time.Now()}
 		m.failures[hash] = f
 	}
+	f.name = name
 	f.attempts++
 	wait := importRetryMin << uint(f.attempts-1)
 	if wait > importRetryMax || wait <= 0 {
@@ -242,7 +269,7 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 
 		res, err := m.importOne(ctx, c)
 		if err != nil {
-			attempts, warn := m.noteFailure(c.Hash, err)
+			attempts, warn := m.noteFailure(c.Hash, c.Name, err)
 			if warn {
 				m.log.Warn("import failed", "name", c.Name, "err", err, "attempt", attempts)
 			} else {

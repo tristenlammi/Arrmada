@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -42,6 +43,8 @@ type Service struct {
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
 	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
+	// attentionKick asks the Needs-you feed to refresh after a request changes (pending.go).
+	attentionKick atomic.Pointer[func()]
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -345,7 +348,12 @@ func (s *Service) Create(ctx context.Context, in Request, opts CreateOptions) (c
 // again. Today it tells open pages about a pending one; an approved one was announced by
 // Approve. A staff alert for new requests belongs here and nowhere else.
 func (s *Service) announceCreated(ctx context.Context, req Request, opts CreateOptions) {
-	if opts.Silent || req.Status != StatusPending {
+	if opts.Silent {
+		// Nobody is told, but the staff Needs-you count still moves (an import's pending rows).
+		s.kickAttention()
+		return
+	}
+	if req.Status != StatusPending {
 		return
 	}
 	s.publishUpdated(req, StatusPending, s.parties(ctx, req))
@@ -740,6 +748,8 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 		}
 		s.notifyDecision(ctx, req, true, skip)
 		s.publishUpdated(req, StatusApproved, s.parties(ctx, req))
+	} else {
+		s.kickAttention() // publishUpdated kicks otherwise
 	}
 	return s.repo.Get(ctx, id)
 }
@@ -940,7 +950,8 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		have            bool
 		epHave, epTotal int
 		released        bool
-		misses          int    // books: searches in a row that found nothing
+		misses          int    // searches in a row that found nothing
+		lastSearch      string // when the sweep last looked, as stored
 		nextCheck       string // books: when the ladder looks again (RFC3339)
 	}
 	// Only these requests' media: a query per media type (per few hundred requests), not
@@ -971,8 +982,12 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 			s.log.Warn("requests: couldn't look up the requested movies", "err", err)
 			break
 		}
+		// The sweep's backoff for just these films; a failure only loses "last checked".
+		stamps, _ := s.movies.SearchStatesFor(ctx, movieLibIDs(ms))
 		for _, m := range ms {
-			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released"}
+			st := stamps[m.ID]
+			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released",
+				misses: st.Misses, lastSearch: st.LastAt}
 		}
 	}
 	serHave := map[int]lib{}
@@ -985,8 +1000,10 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 			s.log.Warn("requests: couldn't look up the requested shows", "err", err)
 			break
 		}
+		stamps, _ := s.series.SearchStatesFor(ctx, seriesLibIDs(ss))
 		for _, sr := range ss {
-			l := lib{id: sr.ID, released: true}
+			st := stamps[sr.ID]
+			l := lib{id: sr.ID, released: true, misses: st.Misses, lastSearch: st.LastAt}
 			if sr.Stats != nil {
 				l.have, l.epHave, l.epTotal = sr.Stats.HaveFiles > 0, sr.Stats.HaveFiles, sr.Stats.Episodes
 			}
@@ -1051,7 +1068,7 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 				b, ok = bookByKey[reqs[i].OLKey]
 			}
 			if ok {
-				l = lib{id: b.ID, have: bookReady(reqs[i].Formats, b), released: true, misses: b.SearchMisses}
+				l = lib{id: b.ID, have: bookReady(reqs[i].Formats, b), released: true, misses: b.SearchMisses, lastSearch: b.LastSearchAt}
 				// Only a monitored book has a next check: the sweep never looks at the others.
 				if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); b.Monitored && !next.IsZero() {
 					l.nextCheck = next.UTC().Format(time.RFC3339)
@@ -1061,11 +1078,28 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		}
 		reqs[i].Available = l.have
 		reqs[i].libID, reqs[i].epHave, reqs[i].epTotal, reqs[i].released = l.id, l.epHave, l.epTotal, l.released
-		reqs[i].searchMisses, reqs[i].nextCheckAt = l.misses, l.nextCheck
+		reqs[i].searchMisses, reqs[i].lastSearchAt, reqs[i].nextCheckAt = l.misses, l.lastSearch, l.nextCheck
 		if reqs[i].MediaType == "series" && len(reqs[i].Seasons) > 0 && l.id > 0 {
 			s.enrichSeasons(ctx, &reqs[i], l.id, progBySeries)
 		}
 	}
+}
+
+// movieLibIDs and seriesLibIDs are the library ids of a lookup's rows.
+func movieLibIDs(ms []movies.Movie) []int64 {
+	out := make([]int64, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+func seriesLibIDs(ss []series.Series) []int64 {
+	out := make([]int64, 0, len(ss))
+	for _, sr := range ss {
+		out = append(out, sr.ID)
+	}
+	return out
 }
 
 // enrichSeasons fills a season-scoped series request's numbers from its own seasons:
