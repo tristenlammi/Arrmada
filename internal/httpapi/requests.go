@@ -29,6 +29,7 @@ const (
 //
 //	GET /api/v1/requests?section=needs_approval|in_progress|ready|declined|all|strip
 //	                    &limit=&offset=&media_type=movie|series|book&q=&status=
+//	                    &ready_within_days=&mine=1
 //
 // It answers {requests, counts, total, auto_approve, client_health}. With no section and
 // no limit it is the old list: everything, newest first, unpaged. section=strip is the
@@ -43,8 +44,14 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	section := q.Get("section")
 	f := requests.ListFilter{Status: q.Get("status"), MediaType: q.Get("media_type"), Query: q.Get("q")}
-	if !staff {
+	// mine=1 narrows staff to their own and followed requests too (Discover's "Ready for
+	// you"); everyone else is always narrowed.
+	if !staff || q.Get("mine") == "1" {
 		f.UserID, f.IncludeJoined = u.ID, true
+	}
+	// ready_within_days keeps only ready requests stamped in the last N days.
+	if n, perr := strconv.Atoi(q.Get("ready_within_days")); perr == nil && n > 0 {
+		f.ReadyWithinDays = min(n, 365)
 	}
 	switch f.MediaType {
 	case "", "movie", "series", "book":

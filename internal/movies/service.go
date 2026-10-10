@@ -220,6 +220,11 @@ func (s *Service) Collection(ctx context.Context, collectionID int) (string, []C
 // List returns the library.
 func (s *Service) List(ctx context.Context) ([]Movie, error) { return s.repo.List(ctx) }
 
+// RecentlyImported is the movies imported in the last `days` days, newest first.
+func (s *Service) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	return s.repo.RecentlyImported(ctx, days, limit)
+}
+
 // ListSummaries is the library list: every movie as a slim MovieSummary, newest first.
 func (s *Service) ListSummaries(ctx context.Context) ([]MovieSummary, error) {
 	return s.repo.ListSummaries(ctx)

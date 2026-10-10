@@ -58,7 +58,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 
     // Discover (requester and staff)
-    get("/api/v1/requests", discover.requests),
+    { method: "GET", path: "/api/v1/requests", respond: ({ url }) => discover.requestList(url) },
     // Answered (not left unmocked) so a spec can assert on it: the tap spec checks
     // this is never called.
     { method: "POST", path: "/api/v1/requests", respond: ({ body }) => discover.created(p, body) },
@@ -70,14 +70,20 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/discover/popular", discover.items),
     get("/api/v1/discover/upcoming", discover.items),
     get("/api/v1/discover/recommended", discover.items),
-    get("/api/v1/discover/collections", discover.items),
+    get("/api/v1/discover/collections", discover.collectionRows),
+    get(`/api/v1/discover/collection/${discover.collection.id}`, discover.collection),
+    get("/api/v1/discover/recently-added", discover.recentlyAdded),
     get("/api/v1/discover/provider", discover.items),
     get("/api/v1/discover", discover.items),
     get(/^\/api\/v1\/discover\/rows\/[a-z_]+$/, discover.items),
     get("/api/v1/discover/because", discover.because),
     get("/api/v1/discover/genres", discover.genres),
     get("/api/v1/discover/providers", discover.providers),
-    get("/api/v1/discover/search", discover.items),
+    { method: "GET", path: "/api/v1/discover/search", respond: ({ url }) => discover.gridPage(url) },
+    { method: "GET", path: "/api/v1/discover/browse", respond: ({ url }) => discover.gridPage(url) },
+    get(`/api/v1/discover/person/${discover.person.id}`, discover.person),
+    // Anyone else: not found (TMDB doesn't know them, or the adult filter keeps them out).
+    { method: "GET", path: /^\/api\/v1\/discover\/person\/\d+$/, status: 404, body: { message: "That person isn't available." } },
     { method: "GET", path: `/api/v1/media/movie/${discover.hiddenTitleID}`, status: 404, body: { message: "That title isn't available." } },
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
     { method: "GET", path: /^\/api\/v1\/media\/series\/(\d+)\/seasons$/, respond: ({ params }) => discover.seriesSeasons(Number(params[0])) },

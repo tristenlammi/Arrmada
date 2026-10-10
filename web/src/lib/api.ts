@@ -1369,6 +1369,21 @@ export interface DiscoverCard {
 }
 export interface WatchProvider { id: number; name: string; logo_url?: string }
 export interface DiscoverRow { title: string; seed: string; items: DiscoverCard[] }
+/** One page of a paged Discover grid (browse, search). Search pages carry the people on them. */
+export interface DiscoverPage { items: DiscoverCard[]; page: number; total_pages: number; people?: PersonResult[] }
+/** A person in Discover search. */
+export interface PersonResult { id: number; name: string; profile_url?: string; known_for_department?: string; known_for?: string[] }
+/** A person's page: who they are and their credits as cards. */
+export interface PersonDetail {
+  id: number;
+  name: string;
+  biography?: string;
+  profile_url?: string;
+  birthday?: string;
+  place_of_birth?: string;
+  known_for_department?: string;
+  credits: DiscoverCard[];
+}
 
 export interface Genre {
   id: number;
@@ -1432,6 +1447,7 @@ export interface UserImpact {
 }
 
 export interface CrewMember {
+  id?: number; // TMDB person id: opens their page on Discover (absent on old records)
   name: string;
   job: string;
   profile_url?: string;
@@ -1457,7 +1473,7 @@ export interface MediaDetail {
   genres?: string[];
   certification?: string;
   studios?: string[];
-  cast?: { name: string; character?: string; profile_url?: string }[];
+  cast?: { id?: number; name: string; character?: string; profile_url?: string }[];
   crew?: CrewMember[];
   ratings: DetailRatings;
   // Enrichment added by the metadata worker — render defensively (only when present).
@@ -1467,6 +1483,20 @@ export interface MediaDetail {
   /** The title as a Discover card with this viewer's badge state, for a sheet opened cold from its address. */
   card?: DiscoverCard;
   plex_url?: string; // app.plex.tv page for the title, when the owner's Plex has it
+  collection?: { id: number; name: string }; // a movie's franchise, for "Part of the … collection"
+}
+/** One "Complete the <name>" row on Discover. */
+export interface CollectionRow { collection_id: number; title: string; items: DiscoverCard[] }
+/** A movie collection's page: every member as a card, and how much of what's out is here. */
+export interface CollectionDetail {
+  id: number;
+  name: string;
+  overview?: string;
+  poster_url?: string;
+  backdrop_url?: string;
+  items: DiscoverCard[];
+  owned: number;
+  total: number;
 }
 
 export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }
@@ -2558,7 +2588,9 @@ export const api = {
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   // Without a section: every request the viewer may see, newest first. With one: a page
   // of that section (default 50), plus counts for every section.
-  requests: (opts: { section?: RequestSection; limit?: number; offset?: number; media_type?: string; q?: string; status?: string } = {}) => {
+  // ready_within_days keeps ready requests stamped in the last N days; mine=1 narrows staff
+  // to their own and followed requests too (everyone else always is).
+  requests: (opts: { section?: RequestSection; limit?: number; offset?: number; media_type?: string; q?: string; status?: string; ready_within_days?: number; mine?: 1 } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== "") qs.set(k, String(v));
     const s = qs.toString();
@@ -2619,7 +2651,11 @@ export const api = {
   discoverProviderNew: (media: string, id: number) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/provider?media=${media}&id=${id}`).then((r) => r.items),
   discoverBecause: () => req<{ rows: DiscoverRow[] }>(`/api/v1/discover/because`).then((r) => r.rows),
-  discoverCollections: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/collections`).then((r) => r.items),
+  // "Complete the <name>" rows: one per collection the library has started.
+  discoverCollections: () => req<{ rows: CollectionRow[] }>(`/api/v1/discover/collections`).then((r) => r.rows),
+  discoverCollection: (id: number) => req<CollectionDetail>(`/api/v1/discover/collection/${id}`),
+  // What just arrived in the library (Arrmada's imports, plus Plex's when it's set up).
+  discoverRecentlyAdded: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/recently-added`).then((r) => r.items),
   discoverByGenre: (media: string, genre: number) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover?media=${media}&genre=${genre}`).then((r) => r.items),
   discoverGenres: (media: string) =>
@@ -2629,8 +2665,16 @@ export const api = {
   /** Which seasons of a show exist and, for each, what asking for it would mean. */
   seriesSeasons: (tmdbId: number) =>
     req<{ seasons: SeriesSeason[] }>(`/api/v1/media/series/${tmdbId}/seasons`).then((r) => r.seasons),
+  // The search dropdown: the first page's titles and people.
   discoverSearch: (q: string) =>
-    req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
+    req<{ items: DiscoverCard[]; people?: PersonResult[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`),
+  discoverPerson: (id: number) => req<PersonDetail>(`/api/v1/discover/person/${id}`),
+  // One page of a search, for the results grid that keeps loading as it scrolls.
+  discoverSearchPage: (q: string, page: number) =>
+    req<DiscoverPage>(`/api/v1/discover/search?q=${encodeURIComponent(q)}&page=${page}`),
+  // One page of a browse grid; query is the grid's filters (list, media, genre, …) as a query string.
+  discoverBrowse: (query: string, page: number) =>
+    req<DiscoverPage>(`/api/v1/discover/browse?${query}${query ? "&" : ""}page=${page}`),
 
   seriesManualImportList: (id: number) =>
     req<ManualImportList<SeriesImportCandidate>>(`/api/v1/series/${id}/manualimport`),
@@ -2973,6 +3017,7 @@ export interface MovieVersion {
 }
 
 export interface CastMember {
+  id?: number;
   name: string;
   character?: string;
   profile_url?: string;

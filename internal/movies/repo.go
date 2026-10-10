@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -753,6 +754,45 @@ func (r *Repo) Events(ctx context.Context, movieID int64, limit int) ([]Event, e
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// RecentImport is a title that arrived recently, as Discover's "Recently added" row
+// shows it. At is when its newest import landed (unix seconds).
+type RecentImport struct {
+	TMDBID    int
+	Title     string
+	Year      int
+	Overview  string
+	PosterURL string
+	At        int64
+}
+
+// RecentlyImported lists movies imported in the last `days` days that still have a file,
+// newest import first, one row per movie. It reads the activity timeline, so a library
+// scan's finds count too: they are new to the library all the same.
+func (r *Repo) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	rows, err := r.q().QueryContext(ctx, `
+SELECT m.tmdb_id, m.title, m.year, m.overview, m.poster_url,
+       CAST(strftime('%s', MAX(e.created_at)) AS INTEGER) AS at
+  FROM movie_events e JOIN movies m ON m.id = e.movie_id
+ WHERE e.event = 'imported' AND m.has_file = 1 AND m.tmdb_id > 0
+   AND julianday(e.created_at) >= julianday('now', ?)
+ GROUP BY m.id
+ ORDER BY at DESC, m.id DESC
+ LIMIT ?`, "-"+strconv.Itoa(days)+" days", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecentImport
+	for rows.Next() {
+		var ri RecentImport
+		if err := rows.Scan(&ri.TMDBID, &ri.Title, &ri.Year, &ri.Overview, &ri.PosterURL, &ri.At); err != nil {
+			return nil, err
+		}
+		out = append(out, ri)
 	}
 	return out, rows.Err()
 }
