@@ -54,14 +54,14 @@ test.describe("audiobook player at 375px", () => {
     await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/sync").length).toBeGreaterThanOrEqual(2);
     const syncs = api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/sync");
     const sync = syncs[syncs.length - 1].body as { current_time: number; time_listened: number };
-    expect(sync.current_time).toBeGreaterThan(3);
+    expect(sync.current_time).toBeGreaterThanOrEqual(3); // into file 2
     expect(sync.time_listened).toBeGreaterThan(0);
 
     // Pause closes the session where it got to.
     await mini.getByRole("button", { name: "Pause", exact: true }).tap();
     await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/close").length).toBe(1);
     const closed = api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/close")[0].body as { current_time: number };
-    expect(closed.current_time).toBeGreaterThan(3);
+    expect(closed.current_time).toBeGreaterThanOrEqual(3);
     await expect(mini.getByRole("button", { name: "Play", exact: true })).toBeVisible();
   });
 

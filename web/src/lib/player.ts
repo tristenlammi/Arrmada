@@ -431,9 +431,12 @@ export function resume(): void {
     return;
   }
   if (!state.key) return;
-  if (!sid) {
-    // The session was lost (stopped by an error, forgotten by the server): start a new
-    // one at the saved place.
+  const atEnd = state.duration > 0 && here() >= state.duration - 1;
+  if (!sid || atEnd) {
+    // The session was lost (stopped by an error, forgotten by the server), or the book
+    // just ended: start a new session at the saved place — for a finished book that's
+    // "Listen again" from 0:00.
+    sid = null;
     open(state.key, { meta: state.meta ?? undefined });
     return;
   }

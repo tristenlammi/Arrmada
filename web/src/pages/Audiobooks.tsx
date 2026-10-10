@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { appsFor, devicePlatform, newDevice, type AudioApp, type DevicePlatform } from "../lib/audioApps";
 import { usePoll } from "../lib/usePoll";
@@ -89,6 +89,12 @@ function ListenView() {
   // one this page opened steps back over its entry, so Back afterwards leaves the page
   // rather than opening the sheet again.
   const openBook = (key: string) => setParams((p) => { const n = new URLSearchParams(p); n.set("book", key); return n; }, { state: { bookSheet: true } });
+  // A sheet closing (its button or Back): whatever was just played moves up the shelves.
+  const hadBook = useRef(book);
+  useEffect(() => {
+    if (hadBook.current && !book) void loadShelves();
+    hadBook.current = book;
+  }, [book, loadShelves]);
   const closeBook = () => {
     if ((location.state as { bookSheet?: boolean } | null)?.bookSheet) navigate(-1);
     else setParams((p) => { const n = new URLSearchParams(p); n.delete("book"); return n; }, { replace: true });
