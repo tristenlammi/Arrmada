@@ -566,7 +566,11 @@ export interface UserNotification {
   plex_url?: string;
 }
 
-export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
+export interface CalendarItem {
+  date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean;
+  // The title's TMDB id and kind open its Discover page (APP-16); the episode's numbers and name.
+  tmdb_id?: number; media_type?: "movie" | "series"; year?: number; season?: number; episode?: number; episode_title?: string;
+}
 
 export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }
 // Audiobook server (listening apps like Lissen).
@@ -2248,7 +2252,7 @@ export const api = {
   pushStatus: (endpoint: string) =>
     req<{ subscribed: boolean }>("/api/v1/me/push/status", { method: "POST", body: JSON.stringify({ endpoint }) }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
-  calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
+  calendar: (start: string, end: string, signal?: AbortSignal) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`, { signal }),
   // The saved URL never comes back: a hint stands in, and blocked_reason says why pushes
   // to it are being skipped (e.g. it points at the local network).
   myApprise: () => req<MyApprise>("/api/v1/me/apprise"),

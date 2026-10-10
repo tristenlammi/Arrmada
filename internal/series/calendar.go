@@ -6,6 +6,7 @@ import "context"
 type UpcomingEpisode struct {
 	AirDate     string `json:"air_date"`
 	SeriesID    int64  `json:"series_id"`
+	TMDBID      int    `json:"tmdb_id"`
 	SeriesTitle string `json:"series_title"`
 	PosterURL   string `json:"poster_url"`
 	Season      int    `json:"season"`
@@ -19,7 +20,7 @@ type UpcomingEpisode struct {
 // excluding specials. Series monitored flag rides along so the UI can dim unmonitored ones.
 func (s *Service) UpcomingEpisodes(ctx context.Context, from, to string) ([]UpcomingEpisode, error) {
 	rows, err := s.repo.db.QueryContext(ctx, `
-		SELECT e.air_date, s.id, s.title, s.poster_url, e.season_number, e.episode_number,
+		SELECT e.air_date, s.id, s.tmdb_id, s.title, s.poster_url, e.season_number, e.episode_number,
 		       e.title, e.has_file, s.monitored
 		FROM episodes e JOIN series s ON s.id = e.series_id
 		WHERE e.season_number > 0 AND e.air_date <> ''
@@ -33,7 +34,7 @@ func (s *Service) UpcomingEpisodes(ctx context.Context, from, to string) ([]Upco
 	for rows.Next() {
 		var e UpcomingEpisode
 		var hasFile, mon int
-		if err := rows.Scan(&e.AirDate, &e.SeriesID, &e.SeriesTitle, &e.PosterURL, &e.Season, &e.Episode,
+		if err := rows.Scan(&e.AirDate, &e.SeriesID, &e.TMDBID, &e.SeriesTitle, &e.PosterURL, &e.Season, &e.Episode,
 			&e.EpisodeName, &hasFile, &mon); err != nil {
 			return nil, err
 		}

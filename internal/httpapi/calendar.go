@@ -11,11 +11,19 @@ type CalendarItem struct {
 	Date      string `json:"date"` // YYYY-MM-DD
 	Type      string `json:"type"` // "episode" | "movie"
 	Title     string `json:"title"`
-	Subtitle  string `json:"subtitle"`
+	Subtitle  string `json:"subtitle"` // kept for older clients; new ones build their own line from the fields below
 	PosterURL string `json:"poster_url,omitempty"`
 	RefID     int64  `json:"ref_id"` // series id or movie id (for linking)
 	HasFile   bool   `json:"has_file"`
 	Monitored bool   `json:"monitored"`
+	// TMDBID and MediaType open the title's Discover page, the only title page a
+	// requester can reach (staff link to ref_id instead).
+	TMDBID       int    `json:"tmdb_id"`
+	MediaType    string `json:"media_type"` // "movie" | "series"
+	Year         int    `json:"year,omitempty"`
+	Season       int    `json:"season,omitempty"`
+	Episode      int    `json:"episode,omitempty"`
+	EpisodeTitle string `json:"episode_title,omitempty"`
 }
 
 // handleCalendar returns upcoming episodes + movie releases in a date window. Defaults to a
@@ -33,13 +41,25 @@ func (a *api) handleCalendar(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
+	items := a.calendarItems(ctx, start, end)
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "start": start, "end": end})
+}
+
+// calendarItems is every library episode and movie release dated within [start, end]
+// (inclusive, YYYY-MM-DD). A source that fails is left out rather than failing the whole
+// calendar: half a schedule beats an error page.
+func (a *api) calendarItems(ctx context.Context, start, end string) []CalendarItem {
 	items := []CalendarItem{}
+	if a.deps.Series == nil || a.deps.Movies == nil {
+		return items // only in tests that build a server without the libraries
+	}
 	if eps, err := a.deps.Series.UpcomingEpisodes(ctx, start, end); err == nil {
 		for _, e := range eps {
 			items = append(items, CalendarItem{
 				Date: dateOnly(e.AirDate), Type: "episode", Title: e.SeriesTitle,
 				Subtitle:  episodeSubtitle(e.Season, e.Episode, e.EpisodeName),
 				PosterURL: e.PosterURL, RefID: e.SeriesID, HasFile: e.HasFile, Monitored: e.Monitored,
+				TMDBID: e.TMDBID, MediaType: "series", Season: e.Season, Episode: e.Episode, EpisodeTitle: e.EpisodeName,
 			})
 		}
 	}
@@ -52,11 +72,11 @@ func (a *api) handleCalendar(w http.ResponseWriter, r *http.Request) {
 			items = append(items, CalendarItem{
 				Date: m.ReleaseDate, Type: "movie", Title: m.Title, Subtitle: sub,
 				PosterURL: m.PosterURL, RefID: m.ID, HasFile: m.HasFile, Monitored: m.Monitored,
+				TMDBID: m.TMDBID, MediaType: "movie", Year: m.Year,
 			})
 		}
 	}
-
-	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "start": start, "end": end})
+	return items
 }
 
 func validDate(s string) bool {
