@@ -34,6 +34,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/audio", sys.myAudio(p)),
     get("/api/v1/me/audio/listening", sys.myListening),
     get("/api/v1/me/notifications", discover.notifications),
+    get("/api/v1/me/quota", sys.quota(p)),
 
     // Discover (requester and staff)
     get("/api/v1/requests", discover.requests),

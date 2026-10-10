@@ -14,9 +14,19 @@ import (
 // never both cover the same season. A new row (or a declined one asked for again) is
 // announced like any new ask; following an existing request isn't one.
 func (s *Service) createSeries(ctx context.Context, in Request, opts CreateOptions) (Request, bool, error) {
+	q, err := s.quotaFor(ctx, in, opts)
+	if err != nil {
+		return Request{}, false, err
+	}
+	if q != nil {
+		s.quotaMu.Lock() // before seriesMu, always
+	}
 	s.seriesMu.Lock()
-	created, subscribed, inserted, err := s.createSeriesLocked(ctx, in, opts)
+	created, subscribed, inserted, err := s.createSeriesLocked(ctx, in, opts, q)
 	s.seriesMu.Unlock()
+	if q != nil {
+		s.quotaMu.Unlock()
+	}
 	if err != nil {
 		return Request{}, false, err
 	}
@@ -48,7 +58,10 @@ func (s *Service) createSeries(ctx context.Context, in Request, opts CreateOptio
 // Asking again for seasons a declined request asked for is a re-request, whether it
 // re-opens that row or makes a new one: it needs a note (nothing is written without one)
 // and is flagged with the earlier decline's reason.
-func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts CreateOptions) (out Request, subscribed, inserted bool, err error) {
+//
+// A limited requester's new row counts its seasons (a whole-show ask, every known regular
+// season); following rows that cover what they asked for is free.
+func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts CreateOptions, q *quotaCharge) (out Request, subscribed, inserted bool, err error) {
 	existing, err := s.repo.ListByMedia(ctx, "series", in.TMDBID)
 	if err != nil {
 		return Request{}, false, false, err
@@ -101,6 +114,18 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts Creat
 			}
 		}
 	}
+	units := 0
+	if plan.insert {
+		asked := plan.seasons
+		if plan.reopen > 0 {
+			asked = byID[plan.reopen].Seasons
+		}
+		units = seasonUnits(asked, known)
+		// Nothing is written — not even the follows — when the new seasons don't fit.
+		if err := s.checkQuota(ctx, q, QuotaSeason, units); err != nil {
+			return Request{}, false, false, err
+		}
+	}
 
 	// Follow the rows that cover what the caller asked for and the new row doesn't.
 	for _, id := range plan.follow {
@@ -130,6 +155,7 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts Creat
 		}
 		inserted = true
 	}
+	s.chargeQuota(ctx, q, out.ID, QuotaSeason, units)
 	// Whoever asked for these seasons before and was turned down hears how it goes now.
 	for _, uid := range plan.declinedBy {
 		if uid == in.RequestedBy || uid == out.RequestedBy {

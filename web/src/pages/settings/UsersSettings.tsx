@@ -28,8 +28,43 @@ export function UsersSettings() {
           <p className="m-0 text-[11px] text-ink-faint">Ticked types download straight away for someone who signs in with Plex for the first time; the rest wait for you. A series request can pull every season of a long show, so it starts with movies only. Existing accounts keep their own settings — change them under Users above.</p>
         </div>
       </Section>
+      <Section id="request-limits" title="Request limits" subtitle="Optional: how much one person can ask for in a stretch of days. Following someone else's request is free, a withdrawn or declined request gives its share back, and admins and managers are never limited. 0 means no limit.">
+        <div className="flex flex-wrap items-end gap-3">
+          <QuotaField label="Movies" value={s.request_quota_movies ?? 0} onChange={(v) => patch({ request_quota_movies: v })} />
+          <QuotaField label="Seasons" value={s.request_quota_seasons ?? 0} onChange={(v) => patch({ request_quota_seasons: v })} />
+          {booksEnabled && <QuotaField label="Books" value={s.request_quota_books ?? 0} onChange={(v) => patch({ request_quota_books: v })} />}
+          <QuotaField label="Every … days" value={s.request_quota_days ?? 7} min={1} max={365} onChange={(v) => patch({ request_quota_days: v })} />
+          <button
+            type="button"
+            onClick={() => patch({ request_quota_movies: 10, request_quota_seasons: 5, request_quota_books: 10, request_quota_days: 7 })}
+            className="min-h-[36px] rounded-lg px-3 text-[12px] font-semibold"
+            style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+          >
+            Typical household
+          </button>
+        </div>
+        <p className="m-0 text-[11px] text-ink-faint">Typical household: 10 movies, 5 seasons and 10 books a week. A season request counts each season; asking for a whole show counts all of its seasons. Set a different limit for one person by editing them under Users.</p>
+      </Section>
       <SaveBar />
     </div>
+  );
+}
+
+// QuotaField is one number in the request limits card.
+function QuotaField({ label, value, onChange, min = 0, max = 1000 }: { label: string; value: number; onChange: (v: number) => void; min?: number; max?: number }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => { const n = Math.round(Number(e.target.value)); if (Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n))); }}
+        className="w-[96px] rounded-lg px-3 py-2 text-[12.5px]"
+        style={inputStyle}
+      />
+    </label>
   );
 }
 
@@ -59,6 +94,14 @@ function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes
     </div>
   );
 }
+
+// A user's own limit as typed: "" follows the global limit (-1), otherwise a number
+// (0 = unlimited).
+const limitText = (n: number) => (n < 0 ? "" : String(n));
+const limitValue = (s: string) => {
+  const n = Math.round(Number(s));
+  return s.trim() === "" || !Number.isFinite(n) || n < 0 ? -1 : Math.min(n, 1000);
+};
 
 // autoChip names the types a user auto-approves, for the list ("Auto-approve: Movies,
 // Series"); "" when none.
@@ -263,6 +306,9 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
   const [role, setRole] = useState(user.role);
   const [autoApprove, setAutoApprove] = useState<AutoTypes>(typesOf(user));
   const { booksEnabled } = useMe();
+  // Their own request limits, as typed: blank follows the global limit, 0 is unlimited.
+  const own = user.quota ?? { movies: -1, seasons: -1, books: -1 };
+  const [quota, setQuota] = useState({ movies: limitText(own.movies), seasons: limitText(own.seasons), books: limitText(own.books) });
   const [canSignIn, setCanSignIn] = useState(!user.disabled);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -273,7 +319,8 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
     setBusy(true); setErr(null);
     try {
       const signIn = canSignIn === !user.disabled ? {} : { disabled: !canSignIn };
-      await api.updateUser(user.id, { role, ...typeFlags(autoApprove), ...signIn, ...(password ? { password } : {}) });
+      const limits = { movies: limitValue(quota.movies), seasons: limitValue(quota.seasons), books: limitValue(quota.books) };
+      await api.updateUser(user.id, { role, ...typeFlags(autoApprove), quota: limits, ...signIn, ...(password ? { password } : {}) });
       onSaved();
     } catch (e) { setErr((e as Error).message); setBusy(false); }
   };
@@ -304,6 +351,29 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
           <div className="mb-1 font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Auto-approve</div>
           <AutoApproveChecks value={autoApprove} onChange={setAutoApprove} books={booksEnabled} label="Auto-approve requests for" />
           <p className="m-0 mt-1 text-[11px] text-ink-faint">Ticked types download straight away, skipping the approval queue. A series request can pull many seasons.</p>
+        </div>
+
+        <div className="mb-3">
+          <div className="mb-1 font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Their request limits</div>
+          <div className="flex flex-wrap gap-2">
+            {([["movies", "Movies"], ["seasons", "Seasons"], ...(booksEnabled ? [["books", "Books"]] : [])] as ["movies" | "seasons" | "books", string][]).map(([k, label]) => (
+              <label key={k} className="flex flex-col gap-1 text-[11px] text-ink-dim">
+                {label}
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  value={quota[k]}
+                  placeholder="Default"
+                  aria-label={`${label} limit`}
+                  onChange={(e) => setQuota((q) => ({ ...q, [k]: e.target.value }))}
+                  className="w-[88px] rounded-lg px-2.5 py-1.5 text-[12.5px]"
+                  style={inputStyle}
+                />
+              </label>
+            ))}
+          </div>
+          <p className="m-0 mt-1 text-[11px] text-ink-faint">Blank uses the limits under Request limits; 0 means no limit for them.</p>
         </div>
 
         {!isMe && (

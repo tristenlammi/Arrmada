@@ -667,6 +667,16 @@ func main() {
 		Staff:          authSvc.StaffIDs,
 		PushedByAlerts: notifySvc.PushUsersFor,
 	})
+	// Request limits: a person's own (Settings → Users → edit), else the global ones
+	// (Settings → Users → Request limits). Unlimited until the owner sets one.
+	requestsSvc.SetQuotaLimits(func(ctx context.Context, uid int64) (requests.Limits, error) {
+		own, err := authSvc.Quota(ctx, uid)
+		if err != nil {
+			return requests.Limits{}, err
+		}
+		global := requests.GlobalLimits(func(key string) string { return settingsSvc.Get(ctx, key, "") })
+		return requests.LimitsFrom(global, own.Movies, own.Seasons, own.Books), nil
+	})
 	// Book requests made before they remembered their library row are linked to it by
 	// title and author, so the ones whose book was re-matched to a new catalogue key
 	// stop showing "Searching" and get their "ready".

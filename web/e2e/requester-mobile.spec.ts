@@ -95,6 +95,8 @@ test.describe("requester", () => {
 
     const dialog = page.getByRole("dialog", { name: requestableCard.title });
     await expect(dialog).toBeVisible();
+    // REQ-14: the sheet says what's left of the requester's movie limit.
+    await expect(dialog.getByText("2 movie requests left this week")).toBeVisible();
     await api.quiet();
     expect(api.callsTo("POST", "/api/v1/requests"), "a tap must never file a request").toEqual([]);
   });

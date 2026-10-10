@@ -11,6 +11,7 @@ import { formatSeasons, mediaLabel, MOVING_STAGES, requestAge, requestStage } fr
 import { BookFormatBadge } from "../components/BookFormats";
 import { DECLINE_REASON_MAX, ReRequestFlag, decisionLine } from "../components/DeclineReason";
 import { refreshAttention } from "../lib/useAttention";
+import { quotaLine, useQuota } from "../lib/quota";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { Button, EmptyState, ErrorState, StatusChip, useConfirm, useToast } from "../ui";
 
@@ -179,6 +180,7 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       {chrome && <PageHeader title="Requests" />}
       <div className="mx-auto w-full max-w-[1200px] px-4 py-5 sm:px-6">
         {!chrome && <h1 className="m-0 mb-3 text-[17px] font-bold">{staff ? "Requests" : "Your requests"}</h1>}
+        {!staff && <QuotaSummary />}
         <Tabs
           tabs={TABS.map((t) => ({ key: t, label: tabLabel[t], count: countOf[t] }))}
           value={tab}
@@ -343,6 +345,15 @@ function RequestRow({ rq, staff, own, queueKnown, selectable, selected, onSelect
       {error && <div className="mt-2 text-[11.5px] font-medium" style={{ color: "var(--reject)" }} role="alert">{error}</div>}
     </li>
   );
+}
+
+// QuotaSummary tells a requester what's left of their request limits, one line per kind
+// that has a limit; nothing when there are none.
+function QuotaSummary() {
+  const q = useQuota();
+  const lines = (["movie", "season", "book"] as const).map((k) => quotaLine(q, k)).filter(Boolean);
+  if (lines.length === 0) return null;
+  return <p className="m-0 mb-3 text-[12px] text-ink-dim" data-testid="quota-summary">{lines.join(" · ")}</p>;
 }
 
 function emptyTitle(tab: Tab, staff: boolean, filtered: boolean): string {

@@ -52,6 +52,10 @@ type Service struct {
 	staffAlerts StaffAlerts
 	// now is the clock decisions are stamped with (time.Now when nil; tests move it).
 	now func() time.Time
+	// quotaLimits says a requester's limits (quota.go); quotaMu makes checking and
+	// recording a limited requester's ask one step. Taken before seriesMu, never after.
+	quotaLimits func(ctx context.Context, userID int64) (Limits, error)
+	quotaMu     sync.Mutex
 }
 
 func (s *Service) clock() time.Time {
@@ -284,6 +288,9 @@ type CreateOptions struct {
 	// scheduled sweeps, so an import of hundreds spreads its searches out instead of
 	// queuing them all at once.
 	DeferSearch bool
+	// QuotaExempt skips the request limits (quota.go): staff. Silent imports are exempt
+	// too.
+	QuotaExempt bool
 }
 
 // Create records a new request. With AutoApprove it's approved (and added) immediately.
@@ -327,21 +334,20 @@ func (s *Service) Create(ctx context.Context, in Request, opts CreateOptions) (c
 		return s.createSeries(ctx, in, opts)
 	}
 	in.Seasons = nil
-	if existing, ok := s.lookupExisting(ctx, in); ok {
-		return s.attachAndPublish(ctx, existing, in, opts)
-	}
-	in.Status = StatusPending
-	created, err = s.repo.Create(ctx, in)
-	if errors.Is(err, ErrExists) {
-		// Lost a create race: someone inserted the same media between our existence
-		// check and the INSERT. Re-fetch and attach instead of failing.
-		if existing, ok := s.lookupExisting(ctx, in); ok {
-			return s.attachAndPublish(ctx, existing, in, opts)
-		}
-		return Request{}, false, err
-	}
+	q, err := s.quotaFor(ctx, in, opts)
 	if err != nil {
 		return Request{}, false, err
+	}
+	if q != nil {
+		// Checking the limit and recording the use are one step for a limited requester.
+		s.quotaMu.Lock()
+	}
+	created, subscribed, inserted, err := s.createOne(ctx, in, opts, q)
+	if q != nil {
+		s.quotaMu.Unlock()
+	}
+	if err != nil || !inserted {
+		return created, subscribed, err
 	}
 	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", opts.AutoApprove)
 	if opts.AutoApprove {
@@ -355,6 +361,65 @@ func (s *Service) Create(ctx context.Context, in Request, opts CreateOptions) (c
 	}
 	s.announceCreated(ctx, created, opts)
 	return created, false, nil
+}
+
+// createOne stores a movie or book request: attached to the request already there for it
+// (followed, or a declined one re-opened, announced by attachCharged), or a new pending
+// row (inserted, for the caller to auto-approve and announce). A limited requester's ask
+// is checked against their quota first and charged once stored.
+func (s *Service) createOne(ctx context.Context, in Request, opts CreateOptions, q *quotaCharge) (Request, bool, bool, error) {
+	if existing, ok := s.lookupExisting(ctx, in); ok {
+		req, subscribed, err := s.attachCharged(ctx, existing, in, opts, q)
+		return req, subscribed, false, err
+	}
+	kind := quotaKind(in.MediaType)
+	if err := s.checkQuota(ctx, q, kind, 1); err != nil {
+		return Request{}, false, false, err
+	}
+	in.Status = StatusPending
+	created, err := s.repo.Create(ctx, in)
+	if errors.Is(err, ErrExists) {
+		// Lost a create race: someone inserted the same media between our existence
+		// check and the INSERT. Re-fetch and attach instead of failing.
+		if existing, ok := s.lookupExisting(ctx, in); ok {
+			req, subscribed, err := s.attachCharged(ctx, existing, in, opts, q)
+			return req, subscribed, false, err
+		}
+		return Request{}, false, false, err
+	}
+	if err != nil {
+		return Request{}, false, false, err
+	}
+	s.chargeQuota(ctx, q, created.ID, kind, 1)
+	return created, false, true, nil
+}
+
+// attachCharged is attachAndPublish for a movie or book, charging what counts against
+// the requester's quota: re-opening a declined request is a new ask; widening an approved
+// book request to the other format starts a download nobody approved, so it counts as a
+// book too; plain following is free.
+func (s *Service) attachCharged(ctx context.Context, existing, in Request, opts CreateOptions, q *quotaCharge) (Request, bool, error) {
+	units := 0
+	switch {
+	case existing.Status == StatusDeclined:
+		if err := needsNote(in, opts, existing); err != nil {
+			return Request{}, false, err // asked for its note before its quota
+		}
+		units = 1
+	case q != nil && existing.MediaType == "book" && existing.Status == StatusApproved && in.Formats != "":
+		if had := s.requestedFormats(ctx, existing); unionFormats(had, in.Formats) != had {
+			units = 1
+		}
+	}
+	kind := quotaKind(existing.MediaType)
+	if err := s.checkQuota(ctx, q, kind, units); err != nil {
+		return Request{}, false, err
+	}
+	req, subscribed, err := s.attachAndPublish(ctx, existing, in, opts)
+	if err == nil {
+		s.chargeQuota(ctx, q, req.ID, kind, units)
+	}
+	return req, subscribed, err
 }
 
 // announceCreated is where every new ask passes once it's stored: a fresh request
@@ -779,6 +844,10 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return Request{}, err
 		}
+		// The seasons not approved are given back to the requester's limit.
+		if err := s.repo.trimQuota(ctx, id, len(req.Seasons)); err != nil {
+			s.log.Warn("request: couldn't give back trimmed seasons' quota", "request", id, "err", err)
+		}
 		s.log.Info("request trimmed on approve", "title", req.Title, "seasons", series.SeasonsLabel(req.Seasons), "not_approved", req.notApproved)
 	}
 	// Who approved it, for staff — nobody for the requester's own auto-approve. The time
@@ -931,6 +1000,10 @@ func (s *Service) Decline(ctx context.Context, id int64, o DeclineOptions) error
 	}
 	req.Status, req.DecidedBy, req.DecidedByName, req.DecidedAt, req.DeclineReason = StatusDeclined, d.By, d.ByName, d.At, d.Reason
 	s.log.Info("request declined", "media", req.MediaType, "title", req.Title, "by", d.ByName)
+	// A declined ask doesn't count against anyone's limit.
+	if err := s.repo.refundQuota(ctx, id); err != nil {
+		s.log.Warn("request: couldn't give back the request's quota", "request", id, "err", err)
+	}
 	if !already {
 		s.notifyDecision(ctx, req, false, map[int64]bool{o.DecidedBy: true})
 	}
@@ -995,6 +1068,10 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	}
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
+	}
+	// Withdrawn (or deleted by staff): whatever it counted is given back.
+	if err := s.repo.refundQuota(ctx, id); err != nil {
+		s.log.Warn("request: couldn't give back the request's quota", "request", id, "err", err)
 	}
 	if getErr == nil {
 		s.publishUpdated(req, eventDeleted, users)

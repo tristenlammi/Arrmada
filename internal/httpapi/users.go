@@ -16,9 +16,16 @@ func (a *api) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Plex-linked users also say whether their Plex account is blocked, so the page can
 	// offer Block or show that it's done.
+	// Each also carries their own request limits (-1: the global one).
 	type row struct {
 		auth.User
-		PlexBlocked bool `json:"plex_blocked,omitempty"`
+		PlexBlocked bool           `json:"plex_blocked,omitempty"`
+		Quota       auth.UserQuota `json:"quota"`
+	}
+	quotas, err := a.deps.Auth.Quotas(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not list users")
+		return
 	}
 	blocked := map[string]bool{}
 	for _, b := range a.plexBlocks(r.Context()) {
@@ -26,7 +33,10 @@ func (a *api) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]row, 0, len(users))
 	for _, u := range users {
-		rw := row{User: u}
+		rw := row{User: u, Quota: auth.DefaultQuota}
+		if q, ok := quotas[u.ID]; ok {
+			rw.Quota = q
+		}
 		if u.PlexLinked && len(blocked) > 0 {
 			rw.PlexBlocked = blocked[a.deps.Auth.PlexIDForUser(r.Context(), u.ID)]
 		}
@@ -110,6 +120,8 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Password    *string `json:"password"`
 		autoApprovalFields
 		Disabled *bool `json:"disabled"`
+		// Quota is their own request limits: -1 the global limit, 0 unlimited, n per window.
+		Quota *auth.UserQuota `json:"quota"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -173,6 +185,12 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if err := a.deps.Auth.UpdateUser(r.Context(), id, role, autoApprove); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not update user")
 		return
+	}
+	if req.Quota != nil {
+		if err := a.deps.Auth.SetQuota(r.Context(), id, *req.Quota); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not set their request limits")
+			return
+		}
 	}
 	if disabled != cur.Disabled {
 		if err := a.deps.Auth.SetDisabled(r.Context(), id, disabled); err != nil {

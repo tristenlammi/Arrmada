@@ -20,6 +20,8 @@ const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover")
 const RequestSheet = lazyPage(() => import("../components/RequestSheet"), "RequestSheet");
 // "Which seasons?" loads when someone first asks for a show.
 const SeasonPicker = lazyPage(() => import("../components/SeasonPicker"), "SeasonPicker");
+// "3 movie requests left this week": its own chunk, only fetched when a sheet opens.
+const QuotaHint = lazyPage(() => import("../components/QuotaHint"), "QuotaHint");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -1164,6 +1166,8 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const [note, setNote] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The requester has no movie requests left (QuotaHint says when the next frees up).
+  const [quotaOut, setQuotaOut] = useState(false);
   const [d, setD] = useState<MediaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1318,7 +1322,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                     <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>Declined</span>
                   )}
                   {!picking && (
-                    <Button variant="primary" onClick={ask} busy={busy} busyLabel="Requesting…">
+                    <Button variant="primary" onClick={ask} busy={busy} busyLabel="Requesting…" disabled={quotaOut && !isShow}>
                       {declined ? "Request again" : "＋ Request"}
                     </Button>
                   )}
@@ -1356,6 +1360,10 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                   ＋ Add a note for the admin (optional)
                 </button>
               )
+            )}
+            {/* A movie's request limit, when there is one (a show's is in the season picker). */}
+            {ctx.canRequest && !isShow && !(done && subscribed) && (!badge || declined) && (
+              <Suspense fallback={null}><QuotaHint kind="movie" onOut={setQuotaOut} /></Suspense>
             )}
             {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
           </div>

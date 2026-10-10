@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -304,7 +305,18 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
 	// only if their account is set to auto-approve.
-	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{AutoApprove: u.AutoApproves(in.MediaType)})
+	// Staff are never held to request limits.
+	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{
+		AutoApprove: u.AutoApproves(in.MediaType), QuotaExempt: u.Role.AtLeast(auth.RoleManager),
+	})
+	var over *requests.ErrQuotaExceeded
+	if errors.As(err, &over) {
+		a.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"status": "error", "message": quotaMessage(over), "code": "quota",
+			"kind": over.Kind, "limit": over.Limit, "used": over.Used, "resets_at": over.ResetsAt.UTC().Format(time.RFC3339),
+		})
+		return
+	}
 	if errors.Is(err, requests.ErrExists) {
 		// Only reachable when the duplicate row vanished between detection and
 		// re-fetch — vanishingly rare; the normal duplicate path subscribes instead.

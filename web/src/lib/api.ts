@@ -839,6 +839,11 @@ export interface AppSettings {
   plex_login_auto_approve: boolean;
   /** The types a new Plex sign-in auto-approves, "movie,series,book" (any subset). */
   plex_login_auto_approve_types: string;
+  /** Request limits per person per window of days (0 = unlimited). */
+  request_quota_days: number;
+  request_quota_movies: number;
+  request_quota_seasons: number;
+  request_quota_books: number;
   /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
   tmdb_region: string;
   // Recycle bin guard rails.
@@ -1289,11 +1294,20 @@ export interface AuthUser {
   auto_approve_movie?: boolean;
   auto_approve_series?: boolean;
   auto_approve_book?: boolean;
+  /** Users list only: their own request limits. */
+  quota?: UserQuota;
   created_at?: string;
   // Signs in with Plex; plex_blocked means that Plex account is on the block list.
   plex_linked?: boolean;
   plex_blocked?: boolean;
 }
+
+/** One kind of request limit: limit 0 is unlimited; resets_at is when the oldest use frees up. */
+export interface QuotaUse { limit: number; used: number; resets_at?: string }
+/** GET /me/quota: the caller's request limits per window of `days`. */
+export interface MyQuota { days: number; movie: QuotaUse; season: QuotaUse; book: QuotaUse }
+/** A user's own limits: -1 follows the global limit, 0 is unlimited. */
+export interface UserQuota { movies: number; seasons: number; books: number }
 
 /** Which media types a user's requests approve themselves for. */
 export interface AutoApproveFlags {
@@ -1990,7 +2004,7 @@ export const api = {
   createUser: (body: { email: string; password: string; role: string } & AutoApproveFlags) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean } & AutoApproveFlags) =>
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota } & AutoApproveFlags) =>
     req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.
@@ -2418,6 +2432,7 @@ export const api = {
       body: JSON.stringify({ quality_profile: b.quality_profile ?? "", ...(b.seasons?.length ? { seasons: b.seasons } : {}) }),
     });
   },
+  myQuota: () => req<MyQuota>("/api/v1/me/quota"),
   // reason (≤ 280 characters) is what the requester is told.
   declineRequest: (id: number, reason = "") =>
     req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST", body: JSON.stringify({ reason }) }),
