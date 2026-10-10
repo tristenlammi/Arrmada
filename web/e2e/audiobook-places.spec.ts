@@ -4,11 +4,13 @@ import type { MockRoute } from "./fixtures/routes";
 import { myAudio } from "./fixtures/system";
 import { personas } from "./fixtures/users";
 import { NOW } from "./fixtures/clock";
+import { mockAudio } from "./fixtures/audio";
 import type { AudioHistoryEntry, MyAudio } from "../src/lib/api";
 
-// The You page's place timeline at phone width (AUD-05): a later spot an app sent that
-// wasn't used is offered back, every timeline row says why in words and can be gone back
-// to, and a place an app removed shows under Recently removed with Restore.
+// The place timeline at phone width (AUD-05, on the Listen tab since APP-10): a book whose
+// place needs a look is listed, its sheet offers back a later spot an app sent that
+// wasn't used, every timeline row says why in words and can be gone back to, Back closes
+// the sheet, and a place an app removed shows under Recently removed with Restore.
 
 const t = (min: number) => NOW - min * 60_000;
 
@@ -66,30 +68,45 @@ test.describe("audiobook places at 375px", () => {
 
   test("offer, timeline reasons and Recently removed", async ({ page, api }) => {
     await override(page, api, routes);
+    await mockAudio(page, api);
     await page.goto("/audiobooks");
-    await expect(page.getByText("Your Pixel 8 uploaded a later spot")).toBeVisible();
-    await expect(page.getByText("4:02:11")).toBeVisible();
+    const check = page.locator("section", { has: page.getByRole("heading", { name: "Check your place" }) });
+    await expect(check.getByText("Dungeon Crawler Carl")).toBeVisible();
+    await expect(check.getByText("4:02:11")).toBeVisible();
 
     // Nothing pushes the page wider than the phone.
     const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, vp: document.documentElement.clientWidth }));
     expect(w.doc).toBeLessThanOrEqual(w.vp);
 
-    await page.getByRole("button", { name: "Use it" }).tap();
+    // The book's sheet has the offer and the place's history.
+    await check.getByRole("button", { name: /Dungeon Crawler Carl/ }).tap();
+    await expect(page).toHaveURL(/[?&]book=b12/);
+    const sheet = page.getByRole("dialog", { name: "Dungeon Crawler Carl" });
+    await expect(sheet.getByText("Your Pixel 8 uploaded a later spot")).toBeVisible();
+
+    await sheet.getByRole("button", { name: "Use it" }).tap();
     await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/restore").length).toBe(1);
     expect(api.callsTo("POST", "/api/v1/me/audio/restore")[0].body).toEqual({ item: "b12", history_id: 77 });
 
-    await page.getByRole("button", { name: "Dismiss" }).tap();
+    await sheet.getByRole("button", { name: "Dismiss" }).tap();
     await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/dismiss").length).toBe(1);
     expect(api.callsTo("POST", "/api/v1/me/audio/dismiss")[0].body).toEqual({ item: "b12", history_id: 77 });
 
-    await page.getByRole("button", { name: "Earlier places" }).tap();
+    await sheet.getByRole("button", { name: "Earlier places" }).tap();
     for (const words of [
       "played on iPad", "not used: older than your place", "not used: jump not proven",
       "place before a change", "held: jumped back", "discarded in Lissen",
     ]) {
-      await expect(page.getByText(words)).toBeVisible();
+      await expect(sheet.getByText(words)).toBeVisible();
     }
-    await expect(page.getByRole("button", { name: "Go back here" })).toHaveCount(history.length);
+    await expect(sheet.getByRole("button", { name: "Go back here" })).toHaveCount(history.length);
+    const open = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, vp: document.documentElement.clientWidth }));
+    expect(open.doc).toBeLessThanOrEqual(open.vp);
+
+    // Back closes the sheet.
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).not.toHaveURL(/book=/);
 
     const removed = page.locator("section", { has: page.getByRole("heading", { name: "Recently removed" }) });
     await expect(removed.getByText("Carl's Doomsday Scenario")).toBeVisible();

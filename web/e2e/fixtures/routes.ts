@@ -5,6 +5,7 @@ import * as media from "./media";
 import * as mod from "./modules";
 import * as sys from "./system";
 import * as alerts from "./alerts";
+import * as audio from "./audio";
 import { NOW } from "./clock";
 
 export interface MockRoute {
@@ -33,6 +34,11 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/system/pending-restart", sys.pendingRestart),
     get("/api/v1/me/audio", sys.myAudio(p)),
     get("/api/v1/me/audio/listening", sys.myListening),
+    // The Listen tab (the player specs answer the rest of the listening API).
+    get("/api/v1/me/audio/shelves", { shelves: audio.shelves }),
+    get("/api/v1/me/audio/library", { items: [audio.carl, audio.doomsday, audio.finished], total: 3, page: 0, limit: 60 }),
+    // Covers are images; the answer only has to exist (an empty one draws the blank cover).
+    { method: "GET", path: /^\/api\/v1\/me\/audio\/items\/[^/]+\/cover$/, status: 204 },
     get("/api/v1/me/notifications", discover.notifications),
     { method: "POST", path: /^\/api\/v1\/me\/notifications\/\d+\/read$/, status: 204 },
     get("/api/v1/me/quota", sys.quota(p)),

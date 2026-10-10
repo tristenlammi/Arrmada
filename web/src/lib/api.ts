@@ -1328,8 +1328,9 @@ export interface MyBook {
   ebook?: { format: string; size_bytes: number };
   audiobook: boolean;
   mine: boolean; // the signed-in user requested it
-  /** Downloadable audiobooks: the standard one (version_id 0) and any extra versions. */
-  audiobooks?: { version_id: number; label?: string; format: string; size_bytes: number; files: number }[];
+  /** Downloadable audiobooks: the standard one (version_id 0) and any extra versions.
+   *  item_key is the same audiobook in the listening API (what Listen plays). */
+  audiobooks?: { version_id: number; item_key?: string; label?: string; format: string; size_bytes: number; files: number }[];
 }
 
 // MyRequest is one of the signed-in user's book requests that hasn't produced a file.
@@ -2581,7 +2582,8 @@ export const api = {
   // background — the response only reports how many were queued.
   refreshAllSeries: () => req<{ queued: number } & JobRef>(`/api/v1/series/refresh`, { method: "POST" }),
   // Requests
-  myBooks: () => req<{ books: MyBook[]; requests: MyRequest[] }>("/api/v1/me/books"),
+  /** listen: this person may play audiobooks in Arrmada (the audiobook server is on and they're allowed). */
+  myBooks: () => req<{ books: MyBook[]; requests: MyRequest[]; listen?: boolean }>("/api/v1/me/books"),
   // A plain link, not a fetch: the browser saves the file with the server's filename.
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   // Without a section: every request the viewer may see, newest first. With one: a page

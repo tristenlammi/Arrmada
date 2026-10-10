@@ -117,7 +117,7 @@ body,
    sheets, toasts or page content:
    --tabbar-h   the requester's phone tab bar (UserLayout puts .has-tabbar on <html>;
                 the bar only shows below 640px),
-   --player-h   the coming audiobook mini-player (.has-player),
+   --player-h   the audiobook mini-player (.has-player, components/audiobooks/MiniPlayer),
    --bottom-chrome  everything pinned to the bottom, plus the iPhone home indicator.
    Pages pad by it (.pb-chrome) and toasts and sheets sit above it. */
 html {

@@ -36,7 +36,7 @@ export default defineConfig({
       // A phone: touch only, so (hover: hover) is false and hover-revealed controls
       // must not exist. Chromium on purpose (Pixel, not iPhone) to keep CI to one browser.
       name: "phone",
-      testMatch: /(requester-mobile|book-formats|seasons|insights-mobile|phone-shell|me-page|calendar|audiobook-places|discover-depth-mobile)\.spec\.ts/,
+      testMatch: /(requester-mobile|book-formats|seasons|insights-mobile|phone-shell|me-page|calendar|audiobook-places|discover-depth-mobile|audiobook-player)\.spec\.ts/,
       use: { ...devices["Pixel 7"], viewport: { width: 375, height: 812 } },
     },
   ],

@@ -46,12 +46,13 @@ export default {
         panel: "var(--shadow)",
       },
       // One stacking order for everything that floats, lowest to highest: the
-      // sticky page header, the requester bottom bar, the sidebar drawer (and
-      // dropdown menus), modals and sheets (src/ui/Modal), then toasts, which
-      // must stay readable over an open modal.
+      // sticky page header, the requester bottom bar, the audiobook mini-player
+      // just above it, the sidebar drawer (and dropdown menus), modals and sheets
+      // (src/ui/Modal), then toasts, which must stay readable over an open modal.
       zIndex: {
         header: "30",
         tabbar: "40",
+        player: "45",
         drawer: "50",
         modal: "60",
         toast: "70",

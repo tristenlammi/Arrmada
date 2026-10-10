@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 )
@@ -53,6 +54,31 @@ func TestEbookFilePicksTheBestFormatInAFolder(t *testing.T) {
 	empty := t.TempDir()
 	if _, err := ebookFile(empty); err == nil {
 		t.Error("a folder with no ebook must error")
+	}
+}
+
+// The shelf's Listen button plays an audiobook through the listening API, so each
+// audiobook's item_key must be the key that API (and the apps) use for it: the standard
+// one and an extra version alike. A version without a file isn't listed.
+func TestMyBooksAudiobookItemKey(t *testing.T) {
+	b := books.Book{ID: 12,
+		Audiobook: &books.BookFile{Path: "/a/std", Format: "m4b", FileCount: 1},
+		AudioVersions: []books.AudioVersion{
+			{ID: 3, Label: "Full cast", File: &books.BookFile{Path: "/a/cast", Format: "mp3", FileCount: 20}},
+			{ID: 4, Label: "Wanted", File: nil},
+		}}
+	got := myAudiobooks(b)
+	if len(got) != 2 {
+		t.Fatalf("got %d audiobooks, want 2: %+v", len(got), got)
+	}
+	if got[0].VersionID != 0 || got[0].ItemKey != audioserver.ItemKey(12, 0) {
+		t.Errorf("standard audiobook = %+v, want version 0 with key %q", got[0], audioserver.ItemKey(12, 0))
+	}
+	if got[1].VersionID != 3 || got[1].ItemKey != audioserver.ItemKey(12, 3) || got[1].Label != "Full cast" {
+		t.Errorf("extra version = %+v, want version 3 with key %q", got[1], audioserver.ItemKey(12, 3))
+	}
+	if only := myAudiobooks(books.Book{ID: 5, AudioVersions: b.AudioVersions[:1]}); len(only) != 1 || only[0].ItemKey != audioserver.ItemKey(5, 3) {
+		t.Errorf("a book with only an extra version = %+v", only)
 	}
 }
 
