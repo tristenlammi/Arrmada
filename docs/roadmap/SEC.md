@@ -586,7 +586,7 @@ _Family members stay signed in as long as they keep using the app. An expired or
   - **Risk:** Low. Sessions now live as long as they're used, and a password change remains the kill switch. FE: only to avoid two edits of req(); this doesn't block.
   - **Resolves:** backend-13, system-6
 <a id="sec-15"></a>
-- [ ] **SEC-15 · See and end your sessions: device list, sign out other devices, admin 'sign out everywhere'** — `P2` · `S` · Phase 7
+- [x] **SEC-15 · See and end your sessions: device list, sign out other devices, admin 'sign out everywhere'** — `P2` · `S` · Phase 7
   - **Problem:** Users can't see where they're signed in or revoke a lost device. An admin can't sign a user out except by changing their password. Nothing in the product calls auth.RevokeUserSessions (service.go:297).
   - **Approach:** 1. New migration, the next free number (0090+ at the time of writing): `ALTER TABLE sessions ADD COLUMN last_seen_at TIMESTAMP`, `ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''`, `ADD COLUMN ip TEXT NOT NULL DEFAULT ''`.
     2. auth.Service:

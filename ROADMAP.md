@@ -825,6 +825,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 7 — Plex loop, accounts and the requester phone app
 
+> **Status: shipped 2026-10-10** — all 30 tasks merged to main (full race suite, lint, frontend tests, typecheck, build within the size budget and Playwright e2e green; checked in a local instance incl. the requester phone shell at 375px). Built as 5 lanes plus a second wave (ready-in-Plex, Me page). Fixed in passing: requests now refuse adult titles; Plex sign-in PINs are bound to the browser and account that started them. Owner to check on real devices/Plex: Plex sign-in on iPhone Safari and the home-screen app, push action buttons, Plex accepting scans, HW badge vs Plex's (hw) marker, new home-screen icons (re-add the app).
+
 **Theme:** Insights numbers you can trust, partial scans after every change, Plex sign-in that works on iPhone, Watch on Plex, and a phone-native requester shell  
 **Goal:** Plex sees every change within a minute. PLEX-05's scans run as outbox consumers from BE-06, not lossy bus subscribers. 'Ready' means watchable in Plex, and every title has a link that Back, notifications and push respect. Requesters get a real phone frame with a single Me page; CFG-12 and SEC-15 extend APP-05's Me page rather than adding a second one. All Plex setup moves to one page in the Settings hub.  
 **Why now:** Requests 2.0 made 'ready' meaningful to requesters. This phase makes it true (the title is actually in Plex) and makes it reachable on the phones the family actually uses. The partial-scan engine and the TMDB→rating-key index unblock REQ-15/16, SUB-30 and CONV-25 later. The phone shell and title routes must exist before the Listen tab, the Discover depth pages and the account/device work.  

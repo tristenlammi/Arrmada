@@ -664,7 +664,7 @@ _Approving a title already in the library actually monitors and searches it. Req
 _'Ready' is sent only once Plex has the title, with a 30-minute fallback, and cards show 'Adding to Plex…' meanwhile. Notifications, ready cards and the title sheet open the item in Plex. Request views update live over the websocket instead of polling. M4 can run in parallel with M2 and M3 once PLEX's locator has landed._
 
 <a id="req-15"></a>
-- [ ] **REQ-15 · Send 'ready' only once Plex has the title, with an 'Adding to Plex…' stage and a grace-period fallback** — `P1` · `M` · Phase 7
+- [x] **REQ-15 · Send 'ready' only once Plex has the title, with an 'Adding to Plex…' stage and a grace-period fallback** — `P1` · `M` · Phase 7
   - **Problem:** A request counts as ready when the file is on disk (service.go:259-304; usernotify.go:262-296). notifyReady then immediately says '“X” is ready to watch.' (usernotify.go:184), on the import event (usernotify.go:115-148) or in the sweep. Nothing checks Plex. A family member opens Plex straight away and the title isn't there yet. The Plex client has only GET helpers and no lookup by GUID (client.go:65-165).
   - **Approach:** 1. Locator interface. Add requests.PlexLocator, nil-safe like PushSender:
        - Configured(ctx) bool
@@ -704,7 +704,7 @@ _'Ready' is sent only once Plex has the title, with a 30-minute fallback, and ca
   - **Risk:** GUID formats differ between Plex agents, so verify against the owner's libraries. If matching fails, every ready notice waits the full grace period; the Info logs and the 30-minute cap bound the damage. Without PLEX's partial scan, Plex's own watcher decides how long the wait is.
   - **Resolves:** insights-5, product-1, backend-14, movies-9
 <a id="req-16"></a>
-- [ ] **REQ-16 · Notifications and cards that take you there: deep links, Watch on Plex in push, inbox, ready cards and the title sheet** — `P2` · `M` · Phase 7
+- [x] **REQ-16 · Notifications and cards that take you there: deep links, Watch on Plex in push, inbox, ready cards and the title sheet** — `P2` · `M` · Phase 7
   - **Problem:** Every request push opens /discover (usernotify.go:243). Clicking an inbox item runs a Discover title search (NotificationBell.tsx:61-65). An owned title's sheet shows only '✓ In your library' (Discover.tsx:1311). A grep for app.plex.tv or 'Watch on Plex' finds only the OAuth URL. The moment a request becomes ready, no button anywhere takes anyone to it.
   - **Approach:** 1. Migration NNNN_notification_links.sql: user_notifications ADD url TEXT NOT NULL DEFAULT '' and plex_url TEXT NOT NULL DEFAULT ''. The UserNotification JSON exposes both.
     2. notifyParties takes a message struct {Title, Body, Ref, Kind, URL, PlexURL}.

@@ -507,7 +507,7 @@ Read-only can be chosen when editing a user but not when creating one (Settings.
   - **Risk:** Shell access means password reset; document it. The generated password appears in the terminal only, never in logs.
   - **Resolves:** system-6
 <a id="cfg-12"></a>
-- [ ] **CFG-12 · Account page for every role: change your own password, sign out other devices** — `P2` · `M` · Phase 7
+- [x] **CFG-12 · Account page for every role: change your own password, sign out other devices** — `P2` · `M` · Phase 7
   - **Problem:** There is no /me/password route. Requesters can't change their own password; their account menu offers only 'Audiobook password' (UserLayout.tsx:50). Nobody can sign out their other devices. An admin changing their own password in Edit user deletes every session, including the current one.
   - **Approach:** 1) New migration, next free number: `<NNNN>_users_password_set.sql` with `ALTER TABLE users ADD COLUMN password_set INTEGER NOT NULL DEFAULT 1; UPDATE users SET password_set=0 WHERE plex_id IS NOT NULL AND plex_id<>'';`. FindOrCreatePlexUser inserts 0, and SetPassword sets 1. Defaulting Plex-linked accounts to 'sign in with Plex' is the safe side of an inexact backfill.
     2) internal/auth/service.go:

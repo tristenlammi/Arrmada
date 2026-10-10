@@ -126,7 +126,7 @@ _Part of the [Arrmada roadmap](../../ROADMAP.md). 24 tasks. After each task: pri
 _History, Users and Graphs agree with each other. A Tautulli import no longer double-counts live periods, past double-counts can be removed, and an ./update.sh restart no longer splits plays or re-sends 'Now playing'._
 
 <a id="plex-01"></a>
-- [ ] **PLEX-01 · History 'Watched' column uses watchedSecs(), matching the Users and Stats totals** — `P1` · `S` · Phase 7
+- [x] **PLEX-01 · History 'Watched' column uses watchedSecs(), matching the Users and Stats totals** — `P1` · `S` · Phase 7
   - **Problem:** Service.History (internal/insights/activity.go:248-271) still computes `(StoppedAt-StartedAt) - PausedMS/1000` inline. The watchedSecs() helper (activity.go:216-235) is the Go twin of watchedExpr (stats.go:25) and exists because of migration 0072, but nothing calls it. Grouped or bad-stop-time imported Tautulli rows therefore show multi-hour 'Watched' values that contradict the Users and Stats totals, which are summed in SQL. Stats().Recent (stats.go:194-196) builds HistoryEntry without WatchedSecs at all. The comment in watched_test.go wrongly says History uses the helper.
   - **Approach:** 1. In activity.go, add `func (s *Service) toHistoryEntry(r HistoryRow) HistoryEntry`. It sets ThumbURL: proxyImage(r.Thumb), Geo: s.geo.Lookup(r.IPAddress), Subtitle: historySubtitle(r) and WatchedSecs: watchedSecs(r). It sets ProgressPct only when DurationMS > 0, clamped to 0..100.
     2. Use it in History() and in Stats() for the Recent list (stats.go:194-196), so the two paths can't drift apart again.
@@ -141,7 +141,7 @@ _History, Users and Graphs agree with each other. A Tautulli import no longer do
   - **Risk:** Very low. It changes one display field and touches no stored data.
   - **Resolves:** insights-1
 <a id="plex-02"></a>
-- [ ] **PLEX-02 · Tautulli import skips plays already recorded live; a repair tool removes past double-counts** — `P1` · `M` · Phase 7
+- [x] **PLEX-02 · Tautulli import skips plays already recorded live; a repair tool removes past double-counts** — `P1` · `M` · Phase 7
   - **Problem:** ImportHistory (internal/insights/import.go:79) treats a row as a duplicate only when sessionExists finds an exact (user_id, rating_key, started_at) match (repo.go:67-73). A live row's started_at is the first poll that saw the stream (poller.go:116), so it never equals Tautulli's own start time, and every play recorded both ways is inserted twice. Every COUNT and SUM in stats.go, graphs.go and repo.go then inflates plays and watch time for the overlap period. get_history is called without `grouping` (tautulli/client.go:118), so a grouped row can span several sessions. Failed inserts are dropped by a silent `continue` (import.go:105-107). The Settings copy (Settings.tsx:837) claims re-running is safe, and rows already imported may be doubled with no way to undo them.
   - **Approach:** 1. tautulli/client.go History(): always pass `grouping=0`, so each row is a single session.
     2. repo.go: add `overlapsLive(ctx, uid, ratingKey, title, gpTitle string, parentIdx, idx int, start, stop int64) bool`. It runs: `SELECT 1 FROM stream_sessions WHERE session_key <> '' AND user_id=? AND (rating_key=? OR (title=? AND grandparent_title=? AND parent_index=? AND media_index=?)) AND started_at < ? AND stopped_at > ? LIMIT 1`.
@@ -172,7 +172,7 @@ _History, Users and Graphs agree with each other. A Tautulli import no longer do
   - **Risk:** The repair deletes stats rows, so it shows the count first, requires confirmation, and deletes only imported rows. The title-identity branch could match two genuinely separate plays of the same episode only if they overlap in time for the same user, which is not a real case.
   - **Resolves:** insights-2
 <a id="plex-03"></a>
-- [ ] **PLEX-03 · Persist live sessions so restarts and crashes neither split plays nor re-send 'Now playing'** — `P1` · `M` · Phase 7
+- [x] **PLEX-03 · Persist live sessions so restarts and crashes neither split plays nor re-send 'Now playing'** — `P1` · `M` · Phase 7
   - **Problem:** Live sessions exist only in the in-memory `live` map (service.go:40). On shutdown, flushAll (poller.go:279-284) finalizes them. After boot, reconcile treats every running stream as new (started=now) and publishes plex.stream.started again (poller.go:115-120). Every ./update.sh therefore splits each in-progress stream into two plays and sends duplicate 'Now playing' alerts, and a crash skips flushAll, so those plays are lost.
   - **Approach:** 1. New migration (next free number ≥0090) `insights_live_sessions.sql`: insights_live_sessions(session_key TEXT PRIMARY KEY, rating_key TEXT, user_id TEXT, started_at INTEGER, last_seen_at INTEGER, paused_ms INTEGER, state TEXT, steady INTEGER, buffering INTEGER, spell_counted INTEGER, last_offset_ms INTEGER, buf_count INTEGER, buf_events TEXT /*JSON*/, snapshot TEXT /*JSON plex.Session*/).
     2. Make repo methods transaction-aware through a small `execer` interface (ExecContext/QueryRowContext) so insertSession and insertBufferEvent work on *sql.Tx. Add saveLive(ex, key, ls), deleteLive(ex, key) and loadLive(ctx) ([]persistedLive, error). Make bufEvent serializable through a DTO with exported fields.
@@ -198,7 +198,7 @@ _History, Users and Graphs agree with each other. A Tautulli import no longer do
 _Each import, upgrade, rename, delete and Convert swap triggers one debounced partial scan of the right Plex folder. The owner can see and correct the path mapping._
 
 <a id="plex-04"></a>
-- [ ] **PLEX-04 · Plex scan engine: section locations, path mapping, debounced partial refresh, settings and status UI** — `P1` · `M` · Phase 7
+- [x] **PLEX-04 · Plex scan engine: section locations, path mapping, debounced partial refresh, settings and status UI** — `P1` · `M` · Phase 7
   - **Problem:** internal/plex is read-only: Identity, Libraries, SectionTotal, RecentlyAdded, Image and Sessions (client.go:65-165, sessions.go:103). Nothing calls /library/sections/{id}/refresh, so Plex learns about new, renamed, deleted or converted files only when its own watcher or scheduled scan notices. That watcher is unreliable on Unraid /mnt/user FUSE shares. Arrmada's container paths (e.g. /movies/Title (2010)) usually differ from the Plex container's paths (e.g. /data/media/movies), so a mapping is needed and must be visible.
   - **Approach:** 1. internal/plex/client.go:
        - Library gains `Locations []string`, decoded from Directory[].Location[].path (keep the JSON tags of the existing fields).
@@ -240,7 +240,7 @@ _Each import, upgrade, rename, delete and Convert swap triggers one debounced pa
   - **Risk:** A wrong mapping makes Plex scan a path that doesn't exist, which is harmless but does nothing, so the resolution is shown in the UI. The full-section fallback is heavier on large libraries but correct. The refresh HTTP method and its behaviour must be checked against the owner's PMS once.
   - **Resolves:** insights-5, product-1, backend-14, movies-9, convert-11
 <a id="plex-05"></a>
-- [ ] **PLEX-05 · Trigger Plex scans from imports, upgrades, renames, deletes and Convert swaps through direct hooks** — `P1` · `M` · Phase 7
+- [x] **PLEX-05 · Trigger Plex scans from imports, upgrades, renames, deletes and Convert swaps through direct hooks** — `P1` · `M` · Phase 7
   - **Problem:** Even with a scan engine, nothing tells it what changed. The relevant events carry no paths: movie.downloaded is published at coordinator.go:1570 and httpapi/movies.go:667; movie.renamed at movies.go:702; movie.file_deleted at movies.go:418 and 511; series.imported at series.go:1075; series.renamed at series_interactive.go:628. Convert publishes nothing after a swap (process.go:625-655). Movie imports also reach Convert and Subtitles only through a lossy bus goroutine (main.go:523-541), and the eventbus drops events when a subscriber's buffer is full (eventbus.go:67-81).
   - **Approach:** 1. Movies, automatic import: add `Coordinator.SetMovieImportedHook(fn func(ctx, movieID int64, filePath string))`, mirroring SetSeriesImportedHook (coordinator.go:79-92). Call it right before the movie.downloaded publish at coordinator.go:1570; `target` is the final file path. Upgrades go through the same path.
     2. main.go: define one `onMovieImported(ctx, id, path)` that runs convertSvc.IndexMovie, subtitlesSvc.OnMovieImported and scanner.Request("movie", filepath.Dir(path)).
@@ -277,7 +277,7 @@ _Each import, upgrade, rename, delete and Convert swap triggers one debounced pa
 _Sign in with Plex works on iPhone and in the PWA, picks only an owned server, tests its URL and turns monitoring on. The badge, banners, Convert hint and HW badges report what is actually happening._
 
 <a id="plex-06"></a>
-- [ ] **PLEX-06 · Sign in with Plex works on iPhone: synchronous popup, closed or blocked detection, and a forwardUrl redirect fallback** — `P1` · `S` · Phase 7
+- [x] **PLEX-06 · Sign in with Plex works on iPhone: synchronous popup, closed or blocked detection, and a forwardUrl redirect fallback** — `P1` · `S` · Phase 7
   - **Problem:** Login.tsx:22-38 and the admin flow in Insights.tsx:941-969 call window.open(auth_url) only after `await api.plexLoginStart()` or `insightsPlexAuthStart()`, and Safari blocks popups that aren't opened directly in the click handler. Login never checks for a null or closed popup and keeps polling for about 3 minutes (90 tries). plex.AuthURL (oauth.go:95-101) never sets forwardUrl, so there is no full-page redirect fallback. Family members on iPhones and in the installed PWA tap the button and nothing happens.
   - **Approach:** 1. New hook web/src/lib/plexSignIn.ts: `usePlexPinSignIn({start, poll, onDone, onError})`.
        - In the click handler, synchronously call `const w = window.open('about:blank','plex-auth','width=620,height=720')`.
@@ -299,7 +299,7 @@ _Sign in with Plex works on iPhone and in the PWA, picks only an owned server, t
   - **Risk:** The forwardUrl host comes from the request's Host header. It only affects the requester's own redirect back to Arrmada and is not an open redirect, because Plex only redirects to what Arrmada built for that PIN.
   - **Resolves:** insights-8, system-11
 <a id="plex-07"></a>
-- [ ] **PLEX-07 · Sign in with Plex finishes setup: owned-server discovery, a tested URL, monitoring on, and the server name** — `P2` · `S` · Phase 7
+- [x] **PLEX-07 · Sign in with Plex finishes setup: owned-server discovery, a tested URL, monitoring on, and the server name** — `P2` · `S` · Phase 7
   - **Problem:** insights_enabled defaults to false (service.go:83). PollPlexAuth (service.go:159-177) saves the token but never turns monitoring on, so a fresh sign-in records no history. DiscoverServer (plex/oauth.go:107-155) returns the first local HTTP connection of ANY server resource without checking `owned`, so a friend's shared server can be picked. The URL is saved without calling Identity(), and discovery only runs when no URL is set yet.
   - **Approach:** 1. plex/oauth.go: make `plexTVBase` a package var so tests can point it at httptest. Replace DiscoverServer with `DiscoverServers(ctx, clientID, token) ([]ServerCandidate, error)`.
        - ServerCandidate is {Name, MachineID, Owned, Conns []Conn{URI, Address, Port, Local, Protocol, Relay}}.
@@ -321,7 +321,7 @@ _Sign in with Plex works on iPhone and in the PWA, picks only an owned server, t
   - **Risk:** The plex.tv resource fields (owned, connections) should be checked against one live reply. The owner's install already has monitoring on, so the main benefit is for re-setup and other installs.
   - **Resolves:** insights-3, insights-15
 <a id="plex-08"></a>
-- [ ] **PLEX-08 · Truthful monitoring status: four-state badge, 'monitoring is off' banner, and an honest Convert pause hint** — `P2` · `S` · Phase 7
+- [x] **PLEX-08 · Truthful monitoring status: four-state badge, 'monitoring is off' banner, and an honest Convert pause hint** — `P2` · `S` · Phase 7
   - **Problem:** The green 'Plex connected' badge only checks that a token and URL are set (Insights.tsx:26). Activity calls Plex directly, so it works even when nothing is being recorded, and History says it 'fills in as people watch' while monitoring is off. Convert's PlexWatching is `s.watching.Load() != nil` (convert/settings.go:64), which is always true after main.go:555. So the 'Pause while someone is watching Plex' hint (Convert.tsx:948) promises a pause that never happens when monitoring is off, because Watching() returns false when there are no polls.
   - **Approach:** 1. insights.Service: the poller records health in atomics: lastPollOK (unix), lastPollErr (atomic.Value string) and consecutiveFails. poll() updates them on success and failure.
     2. Config gains `status` (unconfigured | off | recording | unreachable, where unreachable means ≥3 consecutive failed polls), `last_poll_at` and `last_error`.
@@ -345,7 +345,7 @@ _Sign in with Plex works on iPhone and in the PWA, picks only an owned server, t
   - **Risk:** The SetWatching signature change touches convert tests. Otherwise low.
   - **Resolves:** insights-3
 <a id="plex-09"></a>
-- [ ] **PLEX-09 · HW transcode badge and buffer diagnosis based on what Plex actually uses (hwDecoding/hwEncoding)** — `P2` · `S` · Phase 7
+- [x] **PLEX-09 · HW transcode badge and buffer diagnosis based on what Plex actually uses (hwDecoding/hwEncoding)** — `P2` · `S` · Phase 7
   - **Problem:** plex/sessions.go:159 maps TranscodeHW from `transcodeHwRequested`, which is true whenever hardware transcoding is enabled, even if Plex silently fell back to CPU. BufferCause (sessions.go:69-89) picks 'hardware transcode falling behind' or 'CPU transcode … hardware not in use' from that flag. The HW badges (Insights.tsx:351, 382, 546; Dashboard.tsx:263) and the recorded hw_transcode column use it too, so on the owner's Arc a CPU fallback still shows 'HW' and blames the GPU.
   - **Approach:** 1. rawSession.TranscodeSession parses transcodeHwDecoding, transcodeHwDecodingTitle, transcodeHwEncoding, transcodeHwEncodingTitle and transcodeHwFullPipeline. A tolerant `flexStr` accepts a string or bool, since Plex returns 'qsv' or 'vaapi'. Keep transcodeHwRequested.
     2. Session gains HWRequested, HWDecode, HWEncode, HWFullPipeline and HWTitle. TranscodeHW = HWEncode || HWDecode.
@@ -371,7 +371,7 @@ _Sign in with Plex works on iPhone and in the PWA, picks only an owned server, t
 _In-library titles link straight to app.plex.tv on Discover, Requests, Movie and Series pages. Detail pages show who watched them, and new imports can use Plex-native {tmdb-…} folder names._
 
 <a id="plex-10"></a>
-- [ ] **PLEX-10 · Plex library index: map TMDB/TVDB/IMDb ids to rating keys and build app.plex.tv deep links** — `P1` · `M` · Phase 7
+- [x] **PLEX-10 · Plex library index: map TMDB/TVDB/IMDb ids to rating keys and build app.plex.tv deep links** — `P1` · `M` · Phase 7
   - **Problem:** Nothing in Arrmada can find a title in Plex. Identity() returns MachineIdentifier (client.go:59-76) and RecentlyAdded returns RatingKey (client.go:116-161), but there is no lookup from TMDB to ratingKey. Without one there can be no 'Watch on Plex' link, no 'is it in Plex yet' check for REQ, and no reliable Insights-to-Arrmada title mapping for the People and Library pages.
   - **Approach:** 1. plex/client.go: `SectionItems(ctx, key string, typ int) ([]Item, error)`, where typ is 1 (movie) or 2 (show). It pages `/library/sections/{key}/all?type=<typ>&includeGuids=1&X-Plex-Container-Start=N&X-Plex-Container-Size=500`.
        - Item is {RatingKey, Type, Title, Year, AddedAt, SectionKey, TMDB, TVDB int, IMDB string}.
@@ -401,7 +401,7 @@ _In-library titles link straight to app.plex.tv on Discover, Requests, Movie and
   - **Risk:** Large libraries mean several thousand items per rebuild, so keep it paged, in the background and single-flight. Requesters who sign in with a local password and have no Plex access will hit a Plex login wall, which is expected. Legacy-agent libraries may lack TMDB guids, so the IMDb and TVDB fallbacks matter.
   - **Resolves:** discover-5, product-1, movies-9
 <a id="plex-11"></a>
-- [ ] **PLEX-11 · 'Watch on Plex' buttons on Discover, Requests, Movie and Series pages** — `P1` · `S` · Phase 7
+- [x] **PLEX-11 · 'Watch on Plex' buttons on Discover, Requests, Movie and Series pages** — `P1` · `S` · Phase 7
   - **Problem:** Requesters reach '✓ In your library' on the Discover sheet (Discover.tsx:1311) and stop there. Available requests have no way into Plex. MovieDetail's ExternalLinks shows only IMDb and TMDB (MovieDetail.tsx:395-404), and SeriesDetail has no Plex link either.
   - **Approach:** 1. handleMediaDetail (httpapi/discover.go:253): when the title has a file, add `plex_url` from PlexLinker.WatchURL.
     2. handleListRequests (httpapi/requests.go:13): set `plex_url` on requests whose tracking stage is available, resolved in one pass and cheap because the index is in memory.
@@ -420,7 +420,7 @@ _In-library titles link straight to app.plex.tv on Discover, Requests, Movie and
   - **Risk:** Low. Local-account requesters without Plex access see a Plex login page, which is acceptable.
   - **Resolves:** discover-5, product-1, movies-9
 <a id="plex-12"></a>
-- [ ] **PLEX-12 · 'Watched by' line on Movie and Series detail pages** — `P2` · `S` · Phase 7
+- [x] **PLEX-12 · 'Watched by' line on Movie and Series detail pages** — `P2` · `S` · Phase 7
   - **Problem:** Insights already records plays (stream_sessions with rating_key, title, year and grandparent_title), but the owner can't see on a title's own page whether anyone has watched it. Questions like 'is it safe to delete this?' or 'did Mum watch this yet?' need a trip to History.
   - **Approach:** 1. insights/repo.go: `watchedBy(ctx, ratingKey string, fallback TitleMatch) ([]UserPlays, error)`.
        - Movies: `WHERE media_type='movie' AND (rating_key=? OR (title=? AND year=?))`.
@@ -468,7 +468,7 @@ _In-library titles link straight to app.plex.tv on Discover, Requests, Movie and
 _All Plex setup lives on one page. Local accounts, the admin included, can link Plex. The owner's Plex sign-in reaches their own account under an explicit staff policy, and Tautulli imports run as tracked jobs with retry and undo._
 
 <a id="plex-14"></a>
-- [ ] **PLEX-14 · Link a Plex account to an existing local account (and block silent staff sign-in through Plex)** — `P2` · `M` · Phase 7
+- [x] **PLEX-14 · Link a Plex account to an existing local account (and block silent staff sign-in through Plex)** — `P2` · `M` · Phase 7
   - **Problem:** FindOrCreatePlexUser (auth/service.go:112-149) matches only on plex_id and otherwise creates a requester. plex_id is written nowhere else, apart from the Overseerr import, and there is no link endpoint or UI. The local admin and manually created family accounts get no personalized 'Recommended for you' rows, because PlexIDForUser feeds discover_recommended.go:149-151 and discover_rows.go:128. Once linking exists, FindOrCreatePlexUser would also hand a linked admin row to anyone who signs in with that Plex account, silently creating a Plex-to-admin path.
   - **Approach:** 1. New migration (≥0090) adds users.plex_username TEXT NOT NULL DEFAULT ''.
     2. auth.Service:
@@ -496,7 +496,7 @@ _All Plex setup lives on one page. Local accounts, the admin included, can link 
   - **Risk:** Linking changes who personalised rows belong to, but grants no rights, because staff Plex sign-in is refused. The unique index already prevents double links.
   - **Resolves:** insights-14, system-11
 <a id="plex-15"></a>
-- [ ] **PLEX-15 · Owner and staff Plex sign-in policy, and merging a duplicate Plex requester into the linked account** — `P2` · `M` · Phase 7
+- [x] **PLEX-15 · Owner and staff Plex sign-in policy, and merging a duplicate Plex requester into the linked account** — `P2` · `M` · Phase 7
   - **Problem:** If the owner taps Sign in with Plex, they pass HasServerAccess and get a separate requester account with no admin rights. Their requests, inbox and push devices then split across two accounts. The Overseerr import also creates Plex-linked requester rows, so the owner's plex_id may already sit on a requester, which blocks PLEX-14's LinkPlex with a conflict. There is no way to choose whether staff may sign in through Plex.
   - **Approach:** 1. New setting `plex_signin_staff` (default false), shown on the Plex page with a clear warning: 'Anyone who controls this Plex account gets admin.'
        - When on, Plex sign-in into a linked staff account starts that session.
@@ -523,7 +523,7 @@ _All Plex setup lives on one page. Local accounts, the admin included, can link 
   - **Risk:** Auto-linking the owner to admin grants admin through Plex sign-in. It is gated on proof of server ownership, exactly one unlinked admin, and an opt-in setting that is off by default. The merge touches many tables, so it runs in one transaction with a preview.
   - **Resolves:** insights-14, system-11
 <a id="plex-16"></a>
-- [ ] **PLEX-16 · Tautulli import as a tracked job: progress bar, summary, retry and undo** — `P2` · `M` · Phase 7
+- [x] **PLEX-16 · Tautulli import as a tracked job: progress bar, summary, retry and undo** — `P2` · `M` · Phase 7
   - **Problem:** handleImportTautulli (httpapi/import_tautulli.go:42-75) returns 202 'started', then runs a goroutine with a 30-minute limit. The counts and any error go only to the server log. The UI only says 'importing … in the background', so the owner can't tell whether the import finished, how many plays came in, or whether it timed out, and there's no way to undo a bad run.
   - **Approach:** 1. New migration (≥0090):
        - insights_import_runs(id INTEGER PK, source TEXT, started_at, finished_at, status TEXT /*running|done|failed|timeout|interrupted*/, total, processed, imported, duplicates, overlaps, invalid, failed INTEGER, error TEXT, cutoff_at INTEGER)
@@ -585,7 +585,7 @@ _All Plex setup lives on one page. Local accounts, the admin included, can link 
 _Insights is a routed, phone-friendly Tautulli replacement. It has People pages, History with posters, filters, grouping and CSV, show posters and art, Graphs by plays or hours, and a Library tab with never-watched titles and transcode hot spots. Alerts lives on its own page._
 
 <a id="plex-18"></a>
-- [ ] **PLEX-18 · Insights tabs in the URL, a phone-friendly layout, and Alerts moved to its own page** — `P2` · `S` · Phase 7
+- [x] **PLEX-18 · Insights tabs in the URL, a phone-friendly layout, and Alerts moved to its own page** — `P2` · `S` · Phase 7
   - **Problem:** The active tab is local state (Insights.tsx:20), so a refresh or Back resets it and nothing can deep-link. The 7-tab bar (line 41) is a non-wrapping flex row about 650 px wide. The Activity grid uses minmax(360px,1fr) (line 177) inside a px-4 container, so on a 375 px phone the main pane scrolls sideways. Notifications (the admin Apprise alerts) sits as a tab inside Plex monitoring, although it is an app-wide feature.
   - **Approach:** 1. Routes: /insights/:tab? (default activity), with /insights/people/:id reserved for [PLEX-21](#plex-21). In App.tsx, map `/insights/*` and read the tab with useParams. Tab buttons use navigate(), and the Users tab is relabelled 'People'.
     2. Alerts split: move NotificationsView (Insights.tsx ~834) unchanged into web/src/pages/Alerts.tsx at /alerts, add an admin sidebar entry 'Alerts', and redirect /notifications and /insights/notifications to /alerts. OBS rebuilds the content later.
@@ -603,7 +603,7 @@ _Insights is a routed, phone-friendly Tautulli replacement. It has People pages,
   - **Risk:** Low. Route changes must keep the existing /notifications redirect working for bookmarked links.
   - **Resolves:** insights-12, insights-10
 <a id="plex-19"></a>
-- [ ] **PLEX-19 · Replace 'Coming soon' with real setup and empty states; never hide database tabs or stats behind Plex errors** — `P2` · `S` · Phase 7
+- [x] **PLEX-19 · Replace 'Coming soon' with real setup and empty states; never hide database tabs or stats behind Plex errors** — `P2` · `S` · Phase 7
   - **Problem:** ComingSoon (Insights.tsx:901-918) shows a 'Coming soon' pill for finished tabs when Plex isn't configured. History, Users, Graphs and Reliability return it when !connected, even though they read only the DB, so imported Tautulli history is invisible before Plex is configured. When the live Activity call fails, the whole tab, including the DB-backed HomeExtras stats, is replaced by the error (line 154). The header always says 'Connect your server in Settings to begin' (line 33). The comments at Insights.tsx:5-7 and service.go:1-4 are stale.
   - **Approach:** 1. Replace ComingSoon with `SetupState`. It keeps the NEXT description, has no pill, and shows a 'Connect your Plex server →' button (linking to the Plex settings route) only when status=unconfigured.
     2. History, Users, Graphs and Reliability always query. They show SetupState only when unconfigured AND the result is empty; otherwise they show the data, with [PLEX-08](#plex-08)'s banner when monitoring is off.

@@ -220,7 +220,7 @@ Discover's search also overflows:
   - **Risk:** Low. The header part is a stopgap that APP-05 replaces, so keep it to class changes only.
   - **Resolves:** discover-7, frontend-5, product-7
 <a id="app-03"></a>
-- [ ] **APP-03 · PNG app icons, maskable icon, notification badge and manifest fixes** — `P1` · `S` · Phase 7
+- [x] **APP-03 · PNG app icons, maskable icon, notification badge and manifest fixes** — `P1` · `S` · Phase 7
   - **Problem:** apple-touch-icon points at /icon.svg (web/index.html:10). iOS ignores SVG touch icons and falls back to a page screenshot.
 - The manifest ships only the SVG, reuses it as the maskable icon, and locks orientation to portrait.
 - sw.js uses icon.svg for both the push icon and the badge, but Android needs a monochrome PNG badge.
@@ -256,7 +256,7 @@ Discover's search also overflows:
   - **Risk:** The service worker cache bump forces one reload of cached assets for installed users, which is expected. iOS icon caching means existing installs keep the old icon until re-added.
   - **Resolves:** frontend-5, product-7
 <a id="app-04"></a>
-- [ ] **APP-04 · Sign in with Plex works when the popup is blocked, on iPhone and in the installed app** — `P1` · `S` · Phase 7
+- [x] **APP-04 · Sign in with Plex works when the popup is blocked, on iPhone and in the installed app** — `P1` · `S` · Phase 7
   - **Problem:** Login.tsx:25-26 opens the Plex popup only after `await api.plexLoginStart()`, outside the click gesture, which Safari and iOS commonly block. The popup is never null-checked, so the button sits on 'Waiting for Plex…' for up to 90×2s.
 
 The server also sends `Cross-Origin-Opener-Policy: same-origin` (middleware.go:55). That severs the opener's handle to a cross-origin popup, so:
@@ -306,7 +306,7 @@ _Requesters get a proper phone app frame:
 - a shared bottom sheet that Back closes_
 
 <a id="app-05"></a>
-- [ ] **APP-05 · Requester phone shell: bottom tab bar, safe areas, bell in every layout, 'My shelf' naming, basic Me page** — `P1` · `M` · Phase 7
+- [x] **APP-05 · Requester phone shell: bottom tab bar, safe areas, bell in every layout, 'My shelf' naming, basic Me page** — `P1` · `M` · Phase 7
   - **Problem:** The requester shell has no phone navigation.
 - NotificationBell is mounted only inside Discover.tsx:100, so Calendar, Books and Audiobooks have no inbox, and staff see it only on Discover.
 - index.html:5,13 sets viewport-fit=cover and black-translucent, but nothing uses env(safe-area-inset-*). The installed iOS app draws its header under the status bar and Dynamic Island, and the bottom-5 toasts sit on the home indicator.
@@ -361,7 +361,7 @@ _Requesters get a proper phone app frame:
   - **Risk:** A fixed bar can collide with sheets, toasts and the coming mini-player. The z scale and --bottom-chrome are defined once to prevent that, and every requester page needs checking. On iOS, a keyboard over a fixed bar is handled by hiding the bar while an input has focus. Any later tab renames should happen only in requesterNav.ts.
   - **Resolves:** discover-7, frontend-5, product-7
 <a id="app-06"></a>
-- [ ] **APP-06 · Shared bottom Sheet that Back closes (phones) and dialog a11y hook** — `P1` · `S` · Phase 7
+- [x] **APP-06 · Shared bottom Sheet that Back closes (phones) and dialog a11y hook** — `P1` · `S` · Phase 7
   - **Problem:** This epic needs about six new sheets: day lists, the push prompt, the audiobook BookSheet, the full player, the MyBooks detail and the Calendar subscribe dialog. The app has no sheet primitive; RequestDetailModal carries its own focus-trap, Esc and scroll-lock code inline (Discover.tsx:1192-1215). In the installed app, Android Back and the iOS swipe leave the page instead of closing whatever is open (discover-4).
   - **Approach:** 1. Extract web/src/lib/useDialogA11y.ts(ref, onClose) from RequestDetailModal. It handles:
        - Moving focus in and trapping Tab.
@@ -394,7 +394,7 @@ _Requesters get a proper phone app frame:
 _Each Discover title has its own URL. Back closes the sheet, links can be shared and opened cold, and bell and push notifications open the exact title, or the exact book on the Books tab._
 
 <a id="app-07"></a>
-- [ ] **APP-07 · Discover titles get real URLs: /discover/movie/:id and /discover/series/:id, tab and search in the URL** — `P1` · `M` · Phase 7
+- [x] **APP-07 · Discover titles get real URLs: /discover/movie/:id and /discover/series/:id, tab and search in the URL** — `P1` · `M` · Phase 7
   - **Problem:** Whether a detail sheet is open is local useState in MediaCard, Hero and SearchBox (Discover.tsx:1074/1139, 422/525, 177/305). Back leaves Discover, and titles can't be shared or opened cold.
 - ?q and &tab are read once and then wiped with setParams({}) (Discover.tsx:35-50).
 - handleMediaDetail (internal/httpapi/discover.go:253) returns no library or request state, so a cold link can't show the right badge.
@@ -437,7 +437,7 @@ _Each Discover title has its own URL. Back closes the sheet, links can be shared
   - **Risk:** Discover is mounted in three route trees, so missing the child routes in one sends deep links to the redirect. Keying Discover on location would reset rows and scroll. The detail endpoint is uncached, so deep links add TMDB load until Discover detail caching lands (draft discover.t23, another epic).
   - **Resolves:** discover-4, frontend-6
 <a id="app-08"></a>
-- [ ] **APP-08 · Notifications and Web Push open the exact title (ref-based links, BaseURL-aware)** — `P1` · `S` · Phase 7
+- [x] **APP-08 · Notifications and Web Push open the exact title (ref-based links, BaseURL-aware)** — `P1` · `S` · Phase 7
   - **Problem:** NotificationBell regex-parses a quoted title out of the body (NotificationBell.tsx:8-11) and navigates to a fuzzy search (line 64). Every row already carries a structured ref (usernotify.go:156-161, typed in api.ts:299), but it goes unused, so 'Dune' 2021 and 1984 are ambiguous.
 
 Web Push always opens '/discover' (usernotify.go:243) and ignores ARRMADA_BASE_URL. Decision refs carry suffixes such as 'movie:123:approved', and book keys can contain ':' (Hardcover keys are 'hc:<id>', metadata/hardcover.go:27).
@@ -657,7 +657,7 @@ Setup means copying three values into another app, with no confirmation that it 
 _There's one clear place to turn on device push, with plain answers for http, iPhone-not-installed and no-key cases. A gentle prompt appears after the first request. People choose which events push them, and Apprise moves under Advanced._
 
 <a id="app-13"></a>
-- [ ] **APP-13 · Me page as the notifications home: one 'Get notified' switch, Apprise under Advanced, bell 'Settings' link** — `P2` · `M` · Phase 7
+- [x] **APP-13 · Me page as the notifications home: one 'Get notified' switch, Apprise under Advanced, bell 'Settings' link** — `P2` · `M` · Phase 7
   - **Problem:** Behind a bare '⚙' (NotificationBell.tsx:85), the panel stacks PushSetting ('Push notifications', line 194) on top of AppriseSetting ('Push notifications (optional)', line 232), which has an 'ntfy://topic or discord://id/token' placeholder.
 
 When the server has no push key, PushSetting returns null (line 189), leaving only the admin-style Apprise box. Push also silently hides on http LAN addresses, which aren't a secure context, and on iPhones outside the installed app. Family members never find the one option that works for them.
@@ -694,7 +694,7 @@ When the server has no push key, PushSetting returns null (line 189), leaving on
   - **Risk:** iOS only allows the permission request from a user gesture inside the installed app, so enablePush must call requestPermission before any other await.
   - **Resolves:** discover-13, product-7
 <a id="app-14"></a>
-- [ ] **APP-14 · 'Get notified when it's ready?' prompt after someone's first request** — `P2` · `S` · Phase 7
+- [x] **APP-14 · 'Get notified when it's ready?' prompt after someone's first request** — `P2` · `S` · Phase 7
   - **Problem:** Push is the main way family members learn a request is ready, but nothing ever offers it to them. The switch is buried in settings, and on iPhone it only works from the installed app.
   - **Approach:** 1. New web/src/components/PushPrompt.tsx, mounted in UserLayout and AppLayout:
        - It listens for a window CustomEvent 'arrmada:requested'.
@@ -716,7 +716,7 @@ When the server has no push key, PushSetting returns null (line 189), leaving on
   - **Risk:** Prompt fatigue. Keep it to one prompt per device, only after a real success, and never on page load.
   - **Resolves:** product-7
 <a id="app-15"></a>
-- [ ] **APP-15 · Per-event notification preferences (approved, declined, ready, new request)** — `P2` · `M` · Phase 7
+- [x] **APP-15 · Per-event notification preferences (approved, declined, ready, new request)** — `P2` · `M` · Phase 7
   - **Problem:** There are no per-event preferences. Every approved, declined and ready event pushes to every device and every Apprise URL, so people who only want 'ready' alerts turn push off completely.
   - **Approach:** 1. Migration `internal/store/migrations/NNNN_user_notify_prefs.sql` (next free number, 0090 or later): `ALTER TABLE users ADD COLUMN notify_prefs TEXT NOT NULL DEFAULT ''`.
     2. New internal/requests/notifyprefs.go:
