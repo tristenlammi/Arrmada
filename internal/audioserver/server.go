@@ -50,6 +50,9 @@ type Server struct {
 	limiter  *loginLimiter
 	catalog  catalogCache
 	warming  atomic.Bool // stops overlapping Warm runs (the schedule, switching on, an import)
+
+	traceUntil atomic.Int64     // unix ms; see trace.go
+	now        func() time.Time // the clock (tests set it); nil means time.Now
 }
 
 // Options configure a Server.
@@ -74,6 +77,7 @@ func New(o Options) *Server {
 		limiter:  newLoginLimiter(),
 	}
 	s.Accounts = newAccounts(o.DB, o.Users, s.Allowed)
+	s.loadTrace(context.Background())
 	return s
 }
 
@@ -559,22 +563,28 @@ var signInPaths = map[string]bool{"/status": true, "/ping": true, "/login": true
 // and the names of the query parameters, never a book, author, series, search term or
 // token — admins see how much and when people listen, never what. The steady traffic of
 // playing (audio, covers, place syncs) is only logged when it fails, and a book nobody has
-// started having no place yet isn't worth a line.
+// started having no place yet isn't worth a line — unless an admin has switched tracing on
+// (trace.go), when those are logged too, the same way, tagged trace=true.
 func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == 0 {
 		status = http.StatusOK
 	}
 	p := r.URL.Path
-	if status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.HasSuffix(p, "/cover") ||
+	quiet := status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.HasSuffix(p, "/cover") ||
 		strings.HasSuffix(p, "/image") || strings.HasSuffix(p, "/sync") || strings.HasSuffix(p, "/download") ||
-		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet) {
-		return
-	}
+		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet)
 	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
-		return
+		quiet = true
 	}
-	s.log.Info("audiobook server: request", "route", applog.RouteLabel(r), "query_keys", applog.QueryKeys(r.URL.Query(), "token"),
-		"status", status, "bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent())
+	attrs := []any{"route", applog.RouteLabel(r), "query_keys", applog.QueryKeys(r.URL.Query(), "token"),
+		"status", status, "bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent()}
+	if quiet {
+		if !s.tracing() {
+			return
+		}
+		attrs = append(attrs, "trace", true)
+	}
+	s.log.Info("audiobook server: request", attrs...)
 }
 
 // setRefreshCookie hands the refresh token over as Audiobookshelf's refresh_token cookie.

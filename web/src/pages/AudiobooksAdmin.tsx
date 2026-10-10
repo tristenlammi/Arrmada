@@ -55,12 +55,34 @@ function ServerView() {
           <button onClick={saveURL} disabled={busy || url === null} className="flex-none rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50" style={primary}>Save</button>
         </div>
       </Card>
+      <TraceCard data={data} setData={setData} />
       <Card title="How places are kept">
         <p className="m-0 text-[12px] text-ink-dim">
           Play sessions are saved as they happen and survive restarts. Moving forward is saved straight away. A big jump backwards is held until playback carries on from there for 30 seconds, so a glitch can't reset anyone to the start — and the person can confirm it sooner on their Audiobooks page. Older offline listening never replaces a newer place, and everyone can put back an earlier place. A place an app sets without playing follows the same rules.
         </p>
       </Card>
     </div>
+  );
+}
+
+// TraceCard switches on a day of logging every request listening apps make — how a new
+// app that fails quietly gets debugged. Lines name the kind of call, never the book.
+function TraceCard({ data, setData }: { data: AudioServerAdmin; setData: (d: AudioServerAdmin) => void }) {
+  const [busy, setBusy] = useState(false);
+  const set = async (hours: number) => { setBusy(true); try { setData(await api.setAudioServer({ trace_hours: hours })); } finally { setBusy(false); } };
+  const on = data.trace_until > 0; // the server answers 0 once it has run out
+  const until = on ? new Date(data.trace_until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  return (
+    <Card title="Trace app requests">
+      <div className="flex items-center justify-between gap-3">
+        <p className="m-0 min-w-0 text-[12px] text-ink-dim">
+          {on
+            ? <>Tracing until {until} — every request an app makes is logged (routes only, never which book).</>
+            : "When an app connects but something doesn't work, switch this on and try again: for the next 24 hours every request apps make is logged on the Logs page (routes only, never which book). It switches itself off."}
+        </p>
+        <button onClick={() => set(on ? 0 : 24)} disabled={busy} className="flex-none rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-60" style={on ? ghost : primary}>{on ? "Stop" : "Trace for 24 hours"}</button>
+      </div>
+    </Card>
   );
 }
 
