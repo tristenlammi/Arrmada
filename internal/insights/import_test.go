@@ -54,9 +54,9 @@ func TestImportHistorySkipsBadDuration(t *testing.T) {
 		// stopped before started (clock skew) → skipped.
 		{UserID: 1, UserName: "Alice", RatingKey: "102", MediaType: "movie", Title: "Bad", StartedAt: 1_750_200_000, StoppedAt: 1_750_100_000},
 	}
-	imported, skipped := s.ImportHistory(ctx, rows)
-	if imported != 1 || skipped != 2 {
-		t.Fatalf("imported=%d skipped=%d, want imported=1 skipped=2", imported, skipped)
+	c := s.ImportHistory(ctx, rows, ImportOptions{})
+	if c.Imported != 1 || c.Invalid != 2 {
+		t.Fatalf("counts = %+v, want imported=1 invalid=2", c)
 	}
 
 	// The single recorded movie should report a non-negative, sane watch time.

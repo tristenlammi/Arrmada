@@ -33,6 +33,51 @@ type ImportedSession struct {
 	PausedMS         int64
 }
 
+// ImportOptions tunes one import pass.
+type ImportOptions struct {
+	// Before, when set (epoch seconds), skips plays that started at or after it — "only
+	// import plays from before Arrmada started recording". The overlap check already
+	// skips plays recorded live; this is for owners who'd rather not mix sources at all.
+	Before int64
+}
+
+// ImportCounts is what one import pass did with each row. Every row lands in exactly one
+// bucket, so the buckets add up to the rows offered.
+type ImportCounts struct {
+	Imported    int    `json:"imported"`
+	Duplicate   int    `json:"duplicates"`   // already imported (same user, item and start)
+	Overlap     int    `json:"overlaps"`     // the same play was recorded live
+	Invalid     int    `json:"invalid"`      // no start, or a stop at/before the start
+	AfterCutoff int    `json:"after_cutoff"` // started at or after ImportOptions.Before
+	Failed      int    `json:"failed"`       // the check or the insert errored
+	FirstError  string `json:"first_error,omitempty"`
+}
+
+// Add folds another pass's counts into c (the first error seen wins).
+func (c *ImportCounts) Add(o ImportCounts) {
+	c.Imported += o.Imported
+	c.Duplicate += o.Duplicate
+	c.Overlap += o.Overlap
+	c.Invalid += o.Invalid
+	c.AfterCutoff += o.AfterCutoff
+	c.Failed += o.Failed
+	if c.FirstError == "" {
+		c.FirstError = o.FirstError
+	}
+}
+
+// Processed is how many rows the counts cover.
+func (c ImportCounts) Processed() int {
+	return c.Imported + c.Duplicate + c.Overlap + c.Invalid + c.AfterCutoff + c.Failed
+}
+
+func (c *ImportCounts) fail(err error) {
+	c.Failed++
+	if c.FirstError == "" {
+		c.FirstError = err.Error()
+	}
+}
+
 // Imports must run one at a time: the sessionExists dedupe check is only reliable then. The
 // import is an insights.import-tautulli job, and the job runner's single-flight on it is what
 // turns a double-clicked import into "already running".
@@ -53,23 +98,28 @@ func normalizeDecision(d string) string {
 	}
 }
 
-// ImportHistory records historical sessions, skipping any already present (idempotent on
-// user + item + start). Returns how many were imported vs skipped.
-func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession) (imported, skipped int) {
+// ImportHistory records historical sessions. A row is skipped when it was imported before
+// (same user + item + start, so a re-run adds nothing) and when Arrmada already recorded the
+// same play live — Tautulli and the poller both watch the same server, so without that check
+// every play in the overlap period counted twice. A check that errors skips the row (counted
+// as failed): when unsure, never risk a double count.
+func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession, opts ImportOptions) ImportCounts {
+	var c ImportCounts
 	for _, r := range rows {
 		if ctx.Err() != nil {
 			break
 		}
 		if r.StartedAt == 0 {
+			c.Invalid++
+			continue
+		}
+		if opts.Before > 0 && r.StartedAt >= opts.Before {
+			c.AfterCutoff++
 			continue
 		}
 		uid := strconv.FormatInt(r.UserID, 10)
 		if r.UserID == 0 {
 			uid = ""
-		}
-		if s.repo.sessionExists(ctx, uid, r.RatingKey, r.StartedAt) {
-			skipped++
-			continue
 		}
 		stopped := r.StoppedAt
 		if stopped == 0 && r.WatchedMS > 0 {
@@ -82,7 +132,29 @@ func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession) (im
 		// clock-skewed rows): a row with stopped <= started poisons every SUM(watched) aggregate
 		// with a huge negative wall time. Skip it rather than record garbage.
 		if stopped <= r.StartedAt {
-			skipped++
+			c.Invalid++
+			continue
+		}
+		exists, err := s.repo.sessionExists(ctx, uid, r.RatingKey, r.StartedAt)
+		if err != nil {
+			c.fail(err)
+			continue
+		}
+		if exists {
+			c.Duplicate++
+			continue
+		}
+		live, err := s.repo.overlapsLive(ctx, playWindow{
+			UserID: uid, RatingKey: r.RatingKey, Title: r.Title, GrandparentTitle: r.GrandparentTitle,
+			ParentIndex: r.ParentIndex, MediaIndex: r.MediaIndex,
+			Start: r.StartedAt, End: importedEnd(r.StartedAt, stopped, r.WatchedMS, r.PausedMS),
+		})
+		if err != nil {
+			c.fail(err)
+			continue
+		}
+		if live {
+			c.Overlap++
 			continue
 		}
 		if _, err := s.repo.insertSession(ctx, sessionRecord{
@@ -94,12 +166,38 @@ func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession) (im
 			StartedAt: r.StartedAt, StoppedAt: stopped, DurationMS: r.DurationMS,
 			WatchedMS: r.WatchedMS, PausedMS: r.PausedMS,
 		}); err != nil {
+			c.fail(err)
 			continue
 		}
 		// Use the user avatar, never the media poster (r.Thumb), and don't overwrite a good
 		// avatar with an empty one — upsertUser keeps the existing thumb when the new one is blank.
-		s.repo.upsertUser(ctx, uid, r.UserName, r.UserThumb, stopped)
-		imported++
+		_ = s.repo.upsertUser(ctx, uid, r.UserName, r.UserThumb, stopped)
+		c.Imported++
 	}
-	return imported, skipped
+	return c
+}
+
+// FirstLiveStart is when Arrmada first recorded a play itself (epoch seconds, 0 = never) —
+// the natural cutoff for "only import plays from before Arrmada was watching".
+func (s *Service) FirstLiveStart(ctx context.Context) (int64, error) {
+	return s.repo.firstLiveStart(ctx)
+}
+
+// ImportOverlaps counts imported plays that duplicate a play Arrmada recorded live — the
+// double counts imports made before they learned to skip those. firstLive is when live
+// recording began, for the explanation next to the count.
+func (s *Service) ImportOverlaps(ctx context.Context) (count int, firstLive int64, err error) {
+	if count, err = s.repo.countImportOverlaps(ctx); err != nil {
+		return 0, 0, err
+	}
+	firstLive, err = s.repo.firstLiveStart(ctx)
+	return count, firstLive, err
+}
+
+// RemoveImportOverlaps deletes the imported plays ImportOverlaps counts, with their buffer
+// events, in one transaction. Live rows are never touched. expected is the count the owner
+// confirmed; if it no longer matches (an import ran since), nothing is deleted and
+// ErrOverlapsChanged says to look again. expected < 0 skips that check.
+func (s *Service) RemoveImportOverlaps(ctx context.Context, expected int) (int64, error) {
+	return s.repo.removeImportOverlaps(ctx, expected)
 }

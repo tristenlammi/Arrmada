@@ -870,7 +870,7 @@ export interface LogEntry {
   attrs?: string;
 }
 // Why a database backup was taken; part of its file name.
-export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded";
+export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded" | "pre-insights-repair";
 
 // One database backup file. Nothing from inside it is ever sent, beyond its schema version.
 export interface BackupFile {
@@ -920,6 +920,13 @@ export interface RestoreStaged {
 export interface JobRef {
   job_id?: number;
   existing?: boolean;
+}
+
+// GET /insights/import/overlaps: imported plays that repeat a live-recorded play, and
+// when live recording began (epoch seconds, 0 = never).
+export interface ImportOverlaps {
+  count: number;
+  first_live_at: number;
 }
 
 // A movie search goes through the movie search queue (two at a time): the answer says
@@ -2022,8 +2029,14 @@ export const api = {
     req<{ blocks: PlexBlock[] }>(`/api/v1/users/plex-blocks/${encodeURIComponent(plexID)}`, { method: "DELETE" }).then((r) => r.blocks),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number } & JobRef>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
-  importTautulli: (url: string, api_key: string) =>
-    req<{ status: string } & JobRef>("/api/v1/insights/import/tautulli", { method: "POST", body: JSON.stringify({ url, api_key }) }),
+  // before (epoch seconds) imports only plays that started earlier.
+  importTautulli: (url: string, api_key: string, before?: number) =>
+    req<{ status: string } & JobRef>("/api/v1/insights/import/tautulli", { method: "POST", body: JSON.stringify({ url, api_key, before }) }),
+  // Imported plays that double up plays Arrmada recorded live (admin), and removing them:
+  // a job that backs the database up first and deletes nothing unless `expected` still holds.
+  importOverlaps: () => req<ImportOverlaps>("/api/v1/insights/import/overlaps"),
+  removeImportOverlaps: (expected: number) =>
+    req<JobRef>("/api/v1/insights/import/overlaps/remove", { method: "POST", body: JSON.stringify({ expected }) }),
 
   indexers: () => req<{ indexers: Indexer[] }>("/api/v1/indexers").then((r) => r.indexers),
   createIndexer: (body: NewIndexer) =>

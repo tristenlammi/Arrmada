@@ -101,7 +101,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	var data struct {
 		Data []map[string]any `json:"data"`
 	}
-	return c.call(ctx, "get_history", url.Values{"length": {"1"}}, &data)
+	return c.call(ctx, "get_history", url.Values{"length": {"1"}, "grouping": {"0"}}, &data)
 }
 
 // History pages through the full watch history, invoking fn for each batch (so a large history can
@@ -115,7 +115,11 @@ func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
 		var data struct {
 			Data []map[string]any `json:"data"`
 		}
-		if err := c.call(ctx, "get_history", url.Values{"length": {strconv.Itoa(length)}, "start": {strconv.Itoa(start)}}, &data); err != nil {
+		// grouping=0: one row per real session. Tautulli's default groups a user's
+		// consecutive sittings of one item into a single row spanning all of them, which
+		// can't be matched against the plays Arrmada recorded live.
+		params := url.Values{"length": {strconv.Itoa(length)}, "start": {strconv.Itoa(start)}, "grouping": {"0"}}
+		if err := c.call(ctx, "get_history", params, &data); err != nil {
 			return err
 		}
 		batch := make([]Row, 0, len(data.Data))

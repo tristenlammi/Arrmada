@@ -16,6 +16,7 @@ const KIND: Record<BackupKind, { label: string; tone: string }> = {
   "pre-delete-user": { label: "Before user delete", tone: "var(--avoid)" },
   "pre-delete-empty-user": { label: "Before user delete", tone: "var(--avoid)" },
   uploaded: { label: "Uploaded", tone: "var(--accent)" },
+  "pre-insights-repair": { label: "Before Insights cleanup", tone: "var(--avoid)" },
 };
 
 const btn = "rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50";
