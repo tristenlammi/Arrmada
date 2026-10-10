@@ -29,14 +29,14 @@ export default defineConfig({
   projects: [
     {
       name: "desktop",
-      testMatch: /(admin-smoke|wanted|movies-list|requests|needs-you|alerts|seasons|users-autoapprove)\.spec\.ts/,
+      testMatch: /(admin-smoke|wanted|movies-list|requests|needs-you|alerts|seasons|users-autoapprove|insights)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } },
     },
     {
       // A phone: touch only, so (hover: hover) is false and hover-revealed controls
       // must not exist. Chromium on purpose (Pixel, not iPhone) to keep CI to one browser.
       name: "phone",
-      testMatch: /(requester-mobile|book-formats|seasons)\.spec\.ts/,
+      testMatch: /(requester-mobile|book-formats|seasons|insights-mobile)\.spec\.ts/,
       use: { ...devices["Pixel 7"], viewport: { width: 375, height: 812 } },
     },
   ],

@@ -1,0 +1,23 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "Metadata": [
+      {
+        "sessionKey": "43",
+        "ratingKey": "5122",
+        "type": "movie",
+        "title": "Sunshine",
+        "year": 2007,
+        "duration": 6420000,
+        "viewOffset": 100000,
+        "User": { "id": "1", "title": "Owner", "thumb": "" },
+        "Player": {
+          "address": "192.168.1.30", "device": "Shield", "platform": "Android",
+          "product": "Plex for Android (TV)", "title": "Shield", "state": "paused", "local": true
+        },
+        "Session": { "bandwidth": 21000, "location": "lan" },
+        "Media": [ { "videoResolution": "1080", "bitrate": 20000, "container": "mkv", "videoCodec": "h264", "audioCodec": "dts" } ]
+      }
+    ]
+  }
+}

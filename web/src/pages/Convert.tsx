@@ -1096,7 +1096,7 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
           </div>
         )}
         <Toggle on={d.pause_watching} set={(v) => set({ pause_watching: v })} label="Pause while someone is watching Plex"
-          hint={d.plex_watching_known ? "Nothing new starts, and a running conversion is frozen until the stream stops." : "Needs Plex connected in Insights — until then this does nothing."} />
+          hint={d.plex_watching_known ? "Nothing new starts, and a running conversion is frozen until the stream stops." : <>Needs Plex monitoring turned on (<Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>Plex settings</Link>) — until then this does nothing.</>} />
       </Section>
 
       <Section title="Format" desc="HEVC by default: the best quality, and it plays on most devices made since about 2016. Dolby Vision files are converted from their HDR10 or HLG base — the Dolby Vision layer is removed.">

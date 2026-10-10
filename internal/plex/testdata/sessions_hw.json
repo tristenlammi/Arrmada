@@ -1,0 +1,35 @@
+{
+  "MediaContainer": {
+    "size": 1,
+    "Metadata": [
+      {
+        "sessionKey": "41",
+        "ratingKey": "5120",
+        "type": "movie",
+        "title": "The Cartographer",
+        "year": 2024,
+        "thumb": "/library/metadata/5120/thumb/1700000000",
+        "duration": 6000000,
+        "viewOffset": "2400000",
+        "User": { "id": "7", "title": "Jesse", "thumb": "" },
+        "Player": {
+          "address": "192.168.1.20", "remotePublicAddress": "", "device": "LG TV", "platform": "webOS",
+          "product": "Plex for LG", "title": "Living Room TV", "state": "playing", "local": true
+        },
+        "Session": { "bandwidth": 12000, "location": "lan" },
+        "TranscodeSession": {
+          "key": "/transcode/sessions/abc", "throttled": false, "complete": false, "progress": 41.2, "speed": 3.1,
+          "videoDecision": "transcode", "audioDecision": "transcode", "subtitleDecision": "",
+          "protocol": "dash", "container": "mp4", "videoCodec": "h264", "audioCodec": "aac", "width": 1920, "height": 1080,
+          "transcodeHwRequested": true,
+          "transcodeHwDecoding": "qsv",
+          "transcodeHwDecodingTitle": "Intel (QuickSync)",
+          "transcodeHwEncoding": "qsv",
+          "transcodeHwEncodingTitle": "Intel (QuickSync)",
+          "transcodeHwFullPipeline": true
+        },
+        "Media": [ { "videoResolution": "4k", "bitrate": "42000", "container": "mkv", "videoCodec": "hevc", "audioCodec": "eac3" } ]
+      }
+    ]
+  }
+}

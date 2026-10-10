@@ -9,7 +9,7 @@ func TestBufferCause(t *testing.T) {
 		want string
 	}{
 		{"cpu transcode slow", Session{Transcoding: true, TranscodeSpeed: 0.6, TranscodeHW: false}, "transcode_cpu"},
-		{"hw transcode slow", Session{Transcoding: true, TranscodeSpeed: 0.8, TranscodeHW: true}, "transcode"},
+		{"hw transcode slow", Session{Transcoding: true, TranscodeSpeed: 0.8, TranscodeHW: true, HWEncode: true}, "transcode"},
 		{"healthy transcode local", Session{Transcoding: true, TranscodeSpeed: 1.4, Local: true}, "transcode"},
 		{"remote direct play, low bw", Session{Local: false, Bandwidth: 3000, SrcBitrate: 8000}, "bandwidth"},
 		{"remote generic", Session{Local: false}, "bandwidth"},

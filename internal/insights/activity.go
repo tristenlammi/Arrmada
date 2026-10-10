@@ -36,7 +36,11 @@ type Stream struct {
 	Video       Detail   `json:"video"`
 	Audio       Detail   `json:"audio"`
 	Container   Detail   `json:"container"`
-	HWTranscode bool     `json:"hw_transcode"`
+	HWTranscode bool     `json:"hw_transcode"` // the GPU is doing some of the work (decode or encode)
+	HWDecode    bool     `json:"hw_decode"`
+	HWEncode    bool     `json:"hw_encode"`
+	HWRequested bool     `json:"hw_requested"` // asked for; without HWEncode it means Plex fell back to CPU
+	HWTitle     string   `json:"hw_title,omitempty"`
 	Throttled   bool     `json:"throttled"`
 	Reasons     []string `json:"reasons"` // why it's transcoding (empty for direct play)
 }
@@ -93,7 +97,8 @@ func (s *Service) enrich(p plex.Session) Stream {
 		State: p.State, Player: p.PlayerName, Platform: p.Platform, Product: p.Product,
 		Decision: p.Decision(), Bandwidth: p.Bandwidth, Location: p.Location,
 		IP: ip, Geo: s.geo.Lookup(ip),
-		HWTranscode: p.TranscodeHW, Throttled: p.Throttled,
+		HWTranscode: p.TranscodeHW, HWDecode: p.HWDecode, HWEncode: p.HWEncode, HWRequested: p.HWRequested,
+		HWTitle: p.HWTitle, Throttled: p.Throttled,
 	}
 	if p.DurationMS > 0 {
 		st.ProgressPct = int(p.OffsetMS * 100 / p.DurationMS)

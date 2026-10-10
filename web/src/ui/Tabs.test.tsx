@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Tabs, TabPanel, rovingTarget } from "./Tabs";
+import { Tabs, TabPanel, rovingTarget, scrollDelta } from "./Tabs";
 
 describe("rovingTarget", () => {
   it("moves right and left, wrapping at the ends", () => {
@@ -53,5 +53,16 @@ describe("Tabs", () => {
   it("labels the panel by its tab", () => {
     const html = renderToStaticMarkup(<TabPanel idPrefix="t" value="b">body</TabPanel>);
     expect(html).toBe('<div role="tabpanel" id="t-panel-b" aria-labelledby="t-tab-b">body</div>');
+  });
+});
+
+describe("scrollDelta", () => {
+  const row = { left: 0, right: 375 };
+  it("leaves a tab that already shows alone", () => {
+    expect(scrollDelta(row, { left: 100, right: 180 })).toBe(0);
+  });
+  it("scrolls just far enough to reveal a tab off either edge", () => {
+    expect(scrollDelta(row, { left: 400, right: 480 })).toBe(105);
+    expect(scrollDelta(row, { left: -60, right: 20 })).toBe(-60);
   });
 });

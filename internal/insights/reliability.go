@@ -52,7 +52,7 @@ type BufferEvent struct {
 	Title      string `json:"title"`
 	Platform   string `json:"platform"`
 	Decision   string `json:"decision"`
-	Cause      string `json:"cause"`  // key: transcode | transcode_cpu | bandwidth | unknown
+	Cause      string `json:"cause"`  // key: transcode | transcode_cpu | transcode_fallback | bandwidth | unknown
 	Detail     string `json:"detail"` // human-readable "why"
 }
 
@@ -63,6 +63,8 @@ func causeLabel(cause string) string {
 		return "Transcode overloaded"
 	case "transcode_cpu":
 		return "CPU transcode (no HW)"
+	case "transcode_fallback":
+		return "Plex fell back to CPU"
 	case "bandwidth":
 		return "Bandwidth / network"
 	default:

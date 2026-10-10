@@ -237,3 +237,37 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	*f = flexInt(int64(ff))
 	return nil
 }
+
+// flexStr tolerates fields whose JSON type Plex doesn't pin down: a string, a bool, a number
+// or null all decode, as their text ("qsv", "true", "1"); false and null decode to "".
+type flexStr string
+
+func (f *flexStr) UnmarshalJSON(b []byte) error {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	switch x := v.(type) {
+	case string:
+		*f = flexStr(x)
+	case bool:
+		*f = ""
+		if x {
+			*f = "true"
+		}
+	case float64:
+		*f = flexStr(strconv.FormatFloat(x, 'f', -1, 64))
+	default: // null, or an object/array where a value was expected
+		*f = ""
+	}
+	return nil
+}
+
+// on reads the field as a flag: set and not an explicit "no".
+func (f flexStr) on() bool {
+	switch strings.ToLower(strings.TrimSpace(string(f))) {
+	case "", "0", "false", "none":
+		return false
+	}
+	return true
+}

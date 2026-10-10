@@ -46,6 +46,7 @@ type bufEvent struct {
 // Insights is disabled or unconfigured we flush any in-flight sessions immediately (capped at their
 // lastSeen) rather than stranding them until a later re-enable would backfill days of phantom time.
 func (s *Service) Run(ctx context.Context) {
+	s.markHWSince(ctx, time.Now())
 	wait := time.Duration(s.pollSeconds(ctx)) * time.Second
 	for {
 		select {
@@ -57,8 +58,7 @@ func (s *Service) Run(ctx context.Context) {
 		start := time.Now()
 		interval := time.Duration(s.pollSeconds(ctx)) * time.Second
 		enabled := s.settings.GetBool(ctx, keyEnabled, false)
-		configured := s.settings.Get(ctx, keyURL, "") != "" && s.settings.Get(ctx, keyToken, "") != ""
-		if enabled && configured {
+		if enabled && s.configured(ctx) {
 			s.poll(ctx)
 		} else {
 			// Disabled or unconfigured: finalize live sessions now (first cycle only; s.live is
@@ -241,7 +241,9 @@ func (ls *liveSession) record(now time.Time) sessionRecord {
 		StartedAt: ls.started.Unix(), StoppedAt: now.Unix(), PausedMS: ls.pausedMS,
 		ViewOffsetMS: p.OffsetMS, DurationMS: p.DurationMS,
 		VideoSrc: mediaLabel(p.SrcVideoCodec, p.SrcResolution), AudioSrc: strings.ToUpper(p.SrcAudioCodec),
-		ContainerSrc: strings.ToUpper(p.SrcContainer), HWTranscode: p.TranscodeHW, BufferCount: ls.bufCount,
+		// hw_transcode records a hardware encode Plex actually used. Rows written before
+		// PLEX-09 stored "hardware was requested" instead; the History view says so.
+		ContainerSrc: strings.ToUpper(p.SrcContainer), HWTranscode: p.HWEncode, BufferCount: ls.bufCount,
 	}
 	if p.Transcoding {
 		if p.VideoDecision == "transcode" {

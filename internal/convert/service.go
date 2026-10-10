@@ -125,8 +125,9 @@ type Service struct {
 	measured *measureStore // what test encodes measured, per file and format
 	history  *historyStore // the durable ledger of conversion outcomes
 
-	// watching reports whether someone is watching Plex right now (from Insights).
-	watching atomic.Pointer[func() bool]
+	// watching reports whether someone is watching Plex right now, and whether that answer
+	// means anything (Insights monitoring is on) — see SetWatching.
+	watching atomic.Pointer[plexWatch]
 	// binHeadroom reports the recycle bin's room under its cap (see SetBinHeadroom). binMu
 	// makes "does it fit" and the move into the bin one step, so two workers finishing
 	// together can't both fit into the same room.
@@ -258,18 +259,36 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 	return s
 }
 
-// SetWatching tells Convert how to ask whether someone is watching Plex, so it can pause.
-func (s *Service) SetWatching(fn func() bool) {
-	if fn == nil {
+// plexWatch is how Convert asks Insights about Plex: watching is whether someone is playing
+// something now, known whether that answer can be trusted (monitoring is on; when it is off
+// nothing polls Plex, so watching is always false and pausing never happens).
+type plexWatch struct {
+	watching func() bool
+	known    func() bool
+}
+
+// SetWatching tells Convert how to ask whether someone is watching Plex, so it can pause,
+// and how to ask whether that is being monitored at all, so the settings page can say when
+// the pause can't work. A nil watching clears both.
+func (s *Service) SetWatching(watching func() bool, known func() bool) {
+	if watching == nil {
 		s.watching.Store(nil)
 		return
 	}
-	s.watching.Store(&fn)
+	s.watching.Store(&plexWatch{watching: watching, known: known})
 }
 
 func (s *Service) isWatching() bool {
-	if fn := s.watching.Load(); fn != nil {
-		return (*fn)()
+	if w := s.watching.Load(); w != nil {
+		return w.watching()
+	}
+	return false
+}
+
+// watchingKnown reports whether "someone is watching Plex" can ever be true right now.
+func (s *Service) watchingKnown() bool {
+	if w := s.watching.Load(); w != nil && w.known != nil {
+		return w.known()
 	}
 	return false
 }
