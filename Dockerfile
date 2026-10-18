@@ -64,7 +64,7 @@ RUN --mount=type=cache,id=arrmada-build-lock,target=/run/build-lock,sharing=lock
     -o /out/arrmada ./cmd/arrmada'
 
 # --- Stage 3: HDR tooling (musl static binaries for HDR10+ / Dolby Vision metadata) ---
-FROM alpine:3.20 AS hdrtools
+FROM alpine:3.24 AS hdrtools
 # Pinned, and checked: dovi_tool carries Dolby Vision through Convert's "keep" choice and
 # hdr10plus_tool HDR10+ through every HEVC conversion, so a swapped release binary would
 # write the metadata of every converted film. The releases publish no checksums, so these
@@ -98,7 +98,7 @@ RUN apk add --no-cache wget tar && set -eux; \
 # Pinned and checked like the HDR tools: the release publishes no checksums, so these are
 # the SHA-256 of the two static Go binaries (kepubify-linux-64bit, kepubify-linux-arm64)
 # as published for that tag; a version bump updates them too. MIT licensed.
-FROM alpine:3.20 AS kepubify
+FROM alpine:3.24 AS kepubify
 ARG KEPUBIFY_VERSION=v4.0.4
 ARG KEPUBIFY_SHA256_AMD64=37d7628d26c5c906f607f24b36f781f306075e7073a6fe7820a751bb60431fc5
 ARG KEPUBIFY_SHA256_ARM64=5a15b8f6f6a96216c69330601bca29638cfee50f7bf48712795cff88ae2d03a3
@@ -434,7 +434,7 @@ LABEL org.arrmada.version="${VERSION}" org.arrmada.commit="${COMMIT}"
 # qBittorrent: the static qbittorrent-nox build (no Qt or Boost to install, one file),
 # the same 5.2.3 the Compose bundle pins, with libtorrent 2.0. Checked against the SHA-256
 # GitHub records for each release asset.
-FROM alpine:3.20 AS aio-qbittorrent
+FROM alpine:3.24 AS aio-qbittorrent
 ARG QBITTORRENT_RELEASE=release-5.2.3_v2.0.15
 ARG QBITTORRENT_SHA256_AMD64=eab445f0e7adfca8e33afcd5724cdfd76a09e610d914bec25e8788efbb4e55e2
 ARG QBITTORRENT_SHA256_ARM64=335fb2d8038f4b66a444f5645300a98abb2fcebaccf74baf5b30b48c8106082d
