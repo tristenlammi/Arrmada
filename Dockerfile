@@ -289,7 +289,7 @@ RUN --mount=type=cache,id=arrmada-build-lock,target=/run/build-lock,sharing=lock
 
 # amd64: the GPU stack (VAAPI/Quick Sync drivers, Vulkan, Level Zero) and both GPU whisper
 # builds.
-FROM ubuntu:24.04 AS runtime-amd64
+FROM ubuntu:25.10 AS runtime-amd64
 # gosu is the su-exec equivalent: the entrypoint drops from root to a configurable PUID/PGID.
 # apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
 # It and its dependencies are pinned with hashes (docker/apprise-requirements.txt).
@@ -353,7 +353,7 @@ RUN ln -s /opt/whisper/whisper-cli /usr/local/bin/whisper-cli && \
 # Convert encodes with the same x265 / SVT-AV1 on the CPU; Convert's start-up check finds
 # no Intel/AMD/NVIDIA encoder here and never offers one. libgomp1 is whisper-cli's OpenMP
 # runtime. No Vulkan, VAAPI or Level Zero packages: nothing in this image would use them.
-FROM ubuntu:24.04 AS runtime-arm64
+FROM ubuntu:25.10 AS runtime-arm64
 COPY docker/apprise-requirements.txt /tmp/apprise-requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg gosu python3 python3-pip libgomp1 && \
@@ -466,7 +466,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags "-s -w
 # revision, both checked by SHA-256. It sits at /app, where FlareSolverr's code looks for
 # the chromedriver and Chromium, as in its own image. Ubuntu 24.04 ships Chromium only as a
 # snap, which can't run in a container, hence the upstream build.
-FROM ubuntu:24.04 AS aio-flaresolverr
+FROM ubuntu:25.10 AS aio-flaresolverr
 ARG FLARESOLVERR_VERSION=v3.5.2
 ARG FLARESOLVERR_COMMIT=93125d6ea6956906c8dfa29e169b2dc67d993dc3
 ARG CHROMIUM_REVISION=1681097
