@@ -200,7 +200,7 @@ RUN --mount=type=cache,id=arrmada-build-lock,target=/run/build-lock,sharing=lock
 # after this build is set aside) goes to the Vulkan build and its best CPU backend.
 # GGML_NATIVE=OFF alone isn't enough: ggml then switches AVX/AVX2/FMA/F16C/BMI2 on, so
 # each is turned off by name.
-FROM intel/deep-learning-essentials:2025.3.3-0-devel-ubuntu24.04 AS whisper-sycl
+FROM intel/deep-learning-essentials:2026.1.4-devel-ubuntu24.04 AS whisper-sycl
 ARG WHISPER_VERSION=v1.9.3
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git cmake make ca-certificates && rm -rf /var/lib/apt/lists/*
