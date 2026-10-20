@@ -126,3 +126,23 @@ func TestPayloadIncludesWatchLink(t *testing.T) {
 		t.Errorf("a push without a link carries one: %s", plain)
 	}
 }
+
+// A 'ready' push for a movie or show carries its poster as the image; one without says
+// nothing about an image.
+func TestPayloadIncludesImage(t *testing.T) {
+	b, err := Message{Title: "Your request is ready", Body: "b", URL: "/discover/movie/603", Image: "https://image.tmdb.org/t/p/w500/a.jpg"}.payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["image"] != "https://image.tmdb.org/t/p/w500/a.jpg" || got["url"] != "/discover/movie/603" {
+		t.Fatalf("payload = %s", b)
+	}
+	plain, _ := Message{Title: "Request approved", Body: "b", URL: "/requests?id=4"}.payload()
+	if strings.Contains(string(plain), "image") {
+		t.Errorf("a push without a poster carries an image: %s", plain)
+	}
+}

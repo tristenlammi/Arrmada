@@ -183,6 +183,10 @@ type Payload struct {
 	// Jellyfin read plex_url instead.
 	WatchURL   string `json:"watch_url,omitempty"`
 	WatchLabel string `json:"watch_label,omitempty"`
+	// Image, on a 'ready' notice for a movie or show, is its poster: a public TMDB image
+	// URL the worker shows as the notification's large image where the platform draws one
+	// (Android, desktop Chrome). Never an authenticated Arrmada route.
+	Image string `json:"image,omitempty"`
 }
 
 // Message is one push: its words, the app address a tap opens, and (optionally) the
@@ -194,6 +198,7 @@ type Message struct {
 	PlexURL    string
 	WatchURL   string
 	WatchLabel string
+	Image      string
 }
 
 func (m Message) payload() ([]byte, error) {

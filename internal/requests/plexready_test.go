@@ -499,7 +499,7 @@ func TestReadyNoticeCarriesPlexLink(t *testing.T) {
 	s.push = pushes
 	var apprise []string
 	s.userApprise.resolver = fixedResolver{"push.example.com": "93.184.216.34"}
-	s.userApprise.send = func(_ context.Context, _, _, body string) error { apprise = append(apprise, body); return nil }
+	s.userApprise.send = func(_ context.Context, _, _, body, _ string) error { apprise = append(apprise, body); return nil }
 	if _, err := s.repo.db.ExecContext(ctx, `INSERT INTO users (id, username, role, password_hash, apprise_url) VALUES (7, 'kid', 'requester', 'x', 'gotify://push.example.com/token')`); err != nil {
 		t.Fatal(err)
 	}

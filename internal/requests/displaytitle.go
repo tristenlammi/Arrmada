@@ -3,8 +3,52 @@ package requests
 import (
 	"context"
 
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/notify"
 )
+
+// posterFor is the poster a movie or show's 'ready' notice carries: the library's stored
+// poster once the title is there, else the one the request was made with. It is the public
+// TMDB image URL, never an Arrmada route, so a push service or Apprise can fetch it without
+// a login. "" for a book, for a URL off the allowed image hosts (notify.AllowedAttachURL),
+// and for anything the adult filter hides, by the request's title or the library's.
+func (s *Service) posterFor(ctx context.Context, req Request) string {
+	if req.MediaType != "movie" && req.MediaType != "series" {
+		return ""
+	}
+	poster := req.PosterURL
+	if req.TMDBID > 0 {
+		switch req.MediaType {
+		case "movie":
+			if s.movies != nil {
+				if m, err := s.movies.GetByTMDB(ctx, req.TMDBID); err == nil {
+					if adultfilter.Matches(m.Title) {
+						return ""
+					}
+					if m.PosterURL != "" {
+						poster = m.PosterURL
+					}
+				}
+			}
+		case "series":
+			if s.series != nil {
+				if sr, err := s.series.GetByTMDB(ctx, req.TMDBID); err == nil {
+					if adultfilter.Matches(sr.Title) {
+						return ""
+					}
+					if sr.PosterURL != "" {
+						poster = sr.PosterURL
+					}
+				}
+			}
+		}
+	}
+	if adultfilter.Matches(req.Title) || !notify.AllowedAttachURL(poster) {
+		return ""
+	}
+	return poster
+}
 
 // A request keeps the title it was made under (TMDB's English title): it names the request
 // in the API and in a staff search. What people READ — the request list, and the notices

@@ -36,7 +36,7 @@ func TestNotifyPrefsGateDelivery(t *testing.T) {
 	s, push, _ := quietFixture(t)
 	var apprised []string
 	s.userApprise.resolver = fixedResolver{"push.example.com": "93.184.216.34"}
-	s.userApprise.send = func(_ context.Context, url, _, _ string) error { apprised = append(apprised, url); return nil }
+	s.userApprise.send = func(_ context.Context, url, _, _, _ string) error { apprised = append(apprised, url); return nil }
 	seedUser(t, s, 7, "quiet", `{"approved":false}`, "gotify://push.example.com/seven")
 	seedUser(t, s, 8, "loud", "", "gotify://push.example.com/eight")
 	ctx := context.Background()

@@ -114,7 +114,7 @@ func TestNotifyPartiesSkipsInternalApprise(t *testing.T) {
 	var sent []string
 	s := &Service{repo: NewRepo(st.DB()), log: slog.Default()}
 	s.userApprise.resolver = fixedResolver{"internal.lan": "192.168.1.5", "push.example.com": "93.184.216.34"}
-	s.userApprise.send = func(_ context.Context, url, _, _ string) error { sent = append(sent, url); return nil }
+	s.userApprise.send = func(_ context.Context, url, _, _, _ string) error { sent = append(sent, url); return nil }
 	s.SetStaffLookup(func(_ context.Context, uid int64) bool { return uid == 8 })
 	ctx := context.Background()
 

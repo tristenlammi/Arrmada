@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
 
 type Handler = (e: unknown) => void;
-interface Shown { title: string; opts: { data: { url: string; watch_url: string }; actions?: { action: string; title: string }[] } }
+interface Shown { title: string; opts: { image?: string; data: { url: string; watch_url: string }; actions?: { action: string; title: string }[] } }
 
 function loadWorker() {
   const handlers: Record<string, Handler> = {};
@@ -58,6 +58,21 @@ describe("service worker Watch links", () => {
     expect(n.opts.data.watch_url).toBe(jf);
     sw.click(n.opts.data);
     expect(sw.opened).toEqual([jf]);
+  });
+
+  it("shows a ready title's poster as the image, only from TMDB, and keeps the tap target", () => {
+    const sw = loadWorker();
+    const poster = "https://image.tmdb.org/t/p/w500/abc.jpg";
+    sw.push({ title: "Your request is ready", body: "b", url: "/discover/movie/7", image: poster });
+    expect(sw.shown[0].opts.image).toBe(poster);
+    expect(sw.shown[0].opts.data.url).toBe("/discover/movie/7");
+    for (const bad of ["http://image.tmdb.org/x.jpg", "https://evil.example.com/x.jpg", "https://192.168.1.5/x.jpg", "javascript:alert(1)", 42]) {
+      sw.push({ title: "t", body: String(bad), url: "/discover", image: bad });
+    }
+    expect(sw.shown.slice(1).every((n) => n.opts.image === undefined)).toBe(true);
+    // An older server sends no image at all.
+    sw.push({ title: "Old", body: "old", url: "/discover" });
+    expect(sw.shown[sw.shown.length - 1].opts.image).toBeUndefined();
   });
 
   it("falls back to plex_url from an older server, and never opens an unsafe link", () => {

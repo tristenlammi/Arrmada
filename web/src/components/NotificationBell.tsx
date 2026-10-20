@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type UserNotification } from "../lib/api";
+import { posterThumb } from "../lib/img";
 import { refToPath } from "../lib/refLink";
 import { useLiveRefresh } from "../lib/useLiveRefresh";
 import { REQUEST_TOPICS } from "../lib/useRequestsFeed";
@@ -10,11 +11,11 @@ import { SERVER_FILL, SERVER_INK, isMediaServer, safeWatchURL, watchLabel, watch
 // BellWatchLinks is a notice's Watch buttons, small enough for the bell: the first (the
 // reader's own server) in the accent, any other in its server's colours. Plain links,
 // http(s) only; marks are left out to keep the bell light.
-function BellWatchLinks({ links, onOpen }: { links: readonly WatchLink[]; onOpen: () => void }) {
+function BellWatchLinks({ links, onOpen, indent }: { links: readonly WatchLink[]; onOpen: () => void; indent: boolean }) {
   const usable = links.filter((l) => safeWatchURL(l.url));
   if (usable.length === 0) return null;
   return (
-    <div className="-mt-0.5 flex flex-wrap gap-2 pb-3.5 pl-8 pr-3.5">
+    <div className={`-mt-0.5 flex flex-wrap gap-2 pb-3.5 pr-3.5 ${indent ? "pl-[4.75rem]" : "pl-8"}`}>
       {usable.map((l, i) => {
         const known = isMediaServer(l.server) ? l.server : null;
         return (
@@ -46,6 +47,13 @@ const BELL_TOPICS = [...REQUEST_TOPICS, "user.*.inbox.updated"];
 function searchTitleOf(n: UserNotification): string {
   const m = n.body?.match(/[“"]([^”"]+)[”"]/) || n.title?.match(/[“"]([^”"]+)[”"]/);
   return m ? m[1] : "";
+}
+
+// posterOf is a notice's poster as a small thumbnail: only the public TMDB image the server
+// stored on a ready movie or show. Older notices carry none and show text alone.
+export function posterOf(n: Pick<UserNotification, "poster_url">): string | undefined {
+  const u = n.poster_url;
+  return u && u.startsWith("https://image.tmdb.org/") ? posterThumb(u) : undefined;
 }
 
 // NotificationBell is everyone's inbox: a bell with an unread badge that opens a dropdown
@@ -160,10 +168,13 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
             Nothing yet. When a request you made is ready, it’ll show up here.
             <div className="mt-1.5"><Link to={SETTINGS} onClick={() => setOpen(false)} style={{ color: "var(--accent-text)" }}>Turn on notifications in Settings</Link></div>
           </div>
-        ) : items.map((n) => (
+        ) : items.map((n) => {
+          const poster = posterOf(n);
+          return (
           <div key={n.id} style={{ borderTop: "1px solid var(--line-soft)", background: n.read ? "transparent" : "var(--accent-soft)" }}>
             <button onClick={() => clickItem(n)} className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left">
               <span className="mt-1 h-2 w-2 flex-none rounded-full" style={{ background: n.read ? "transparent" : "var(--accent)" }} />
+              {poster && <img src={poster} alt="" loading="lazy" className="h-[54px] w-9 flex-none rounded object-cover" style={{ background: "var(--panel-2)" }} onError={(e) => { e.currentTarget.style.display = "none"; }} />}
               <span className="min-w-0">
                 <span className="block text-base font-semibold">{n.title}</span>
                 <span className="block whitespace-pre-line text-sm text-ink-dim">{n.body}</span>
@@ -171,9 +182,10 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
             </button>
             {/* A ready title a media server has: straight to it there, one button per server,
                 the reader's own first (the row itself opens it here). */}
-            <BellWatchLinks links={watchLinksOf(n)} onOpen={() => { void markRead(n); }} />
+            <BellWatchLinks links={watchLinksOf(n)} onOpen={() => { void markRead(n); }} indent={!!poster} />
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

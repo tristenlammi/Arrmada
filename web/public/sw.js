@@ -70,7 +70,7 @@ self.addEventListener("fetch", (e) => {
 
 // --- Web Push -------------------------------------------------------------
 // The server sends an encrypted JSON payload: { title, body, url, plex_url?, watch_url?,
-// watch_label? }. On a 'ready' notice for a title a media server has, watch_url is its page
+// watch_label?, image? }. On a 'ready' notice for a title a media server has, watch_url is its page
 // on the reader's own server (Plex's app.plex.tv page, or Jellyfin's at the owner's public
 // address) and watch_label that server's name; plex_url is Plex's page alone, which a
 // server from before Jellyfin sends instead.
@@ -86,6 +86,9 @@ self.addEventListener("push", (e) => {
       icon: "/icon-192.png",
       badge: "/badge-96.png",
       data: { url: data.url, watch_url: watch ? watch.url : "" },
+      // A ready movie or show's poster, as the large image where the platform draws one
+      // (Android, desktop Chrome; iOS ignores it). Only TMDB's public image host.
+      ...(posterURL(data.image) ? { image: posterURL(data.image) } : {}),
       // Where the platform shows actions (Android, desktop Chrome): Watch on <server>, or
       // the request in Arrmada. Elsewhere a plain tap is all there is, and opens the server.
       ...(watch ? { actions: [{ action: "watch", title: "Watch on " + watch.label }, { action: "open", title: "Details" }] } : {}),
@@ -97,6 +100,17 @@ self.addEventListener("push", (e) => {
 // plexURL keeps a Watch on Plex link only when it really is an app.plex.tv page.
 function plexURL(u) {
   return typeof u === "string" && u.startsWith("https://app.plex.tv/") ? u : "";
+}
+
+// posterURL keeps a push's poster only when it is an https image from TMDB's image host.
+function posterURL(u) {
+  if (typeof u !== "string") return "";
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" && parsed.hostname === "image.tmdb.org" ? parsed.href : "";
+  } catch {
+    return "";
+  }
 }
 
 // watchURL keeps a Watch link only when it is a plain http(s) address: a Jellyfin server

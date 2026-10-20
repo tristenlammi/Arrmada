@@ -791,6 +791,8 @@ export interface UserNotification {
   plex_url?: string;
   /** A 'ready' notice's Watch buttons: one per media server that has the title, the reader's own first. */
   watch_links?: WatchLink[];
+  /** A 'ready' movie or show's public poster (TMDB). Absent on other notices and on ones sent before posters. */
+  poster_url?: string;
 }
 
 export interface CalendarItem {
