@@ -17,7 +17,6 @@ package connstatus
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -116,7 +115,7 @@ type bucket struct {
 // Every method is safe on a nil *Tracker: it records nothing and allows everything, so a
 // service built without one behaves as before.
 type Tracker struct {
-	db  *sql.DB
+	db  store.Pool
 	log *slog.Logger
 	now func() time.Time
 
@@ -132,7 +131,7 @@ type Tracker struct {
 
 // New builds a tracker over the database. Call Load before using it so a restart keeps
 // what was known.
-func New(db *sql.DB, log *slog.Logger) *Tracker {
+func New(db store.Pool, log *slog.Logger) *Tracker {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -351,7 +350,7 @@ func (t *Tracker) drop(ctx context.Context, kind, ref string, counts bool) error
 	}
 	hooks := t.onChange
 	t.mu.Unlock()
-	err := store.WithTx(ctx, t.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, t.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM integration_status WHERE kind = ? AND ref = ?`, kind, ref); err != nil {
 			return err
 		}
@@ -455,7 +454,7 @@ func (t *Tracker) Flush(ctx context.Context) error {
 	}
 	t.mu.Unlock()
 
-	err := store.WithTx(ctx, t.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, t.db, func(tx *store.Transaction) error {
 		for _, s := range states {
 			if err := upsertState(ctx, tx, s, now); err != nil {
 				return err
@@ -504,7 +503,7 @@ func (t *Tracker) writeNow(ctx context.Context, k key) error {
 	s := e.State
 	e.dirty = false
 	t.mu.Unlock()
-	err := store.WithTx(ctx, t.db, func(tx *sql.Tx) error { return upsertState(ctx, tx, s, t.now()) })
+	err := store.WithTx(ctx, t.db, func(tx *store.Transaction) error { return upsertState(ctx, tx, s, t.now()) })
 	if err != nil {
 		t.mu.Lock()
 		if e := t.states[k]; e != nil {
@@ -515,7 +514,7 @@ func (t *Tracker) writeNow(ctx context.Context, k key) error {
 	return err
 }
 
-func upsertState(ctx context.Context, tx *sql.Tx, s State, now time.Time) error {
+func upsertState(ctx context.Context, tx *store.Transaction, s State, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO integration_status
 		(kind, ref, last_ok_at, last_error_at, last_error, consecutive_failures, failing_since, backoff_until, avg_ms, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

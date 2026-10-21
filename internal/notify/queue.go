@@ -103,7 +103,7 @@ func (s *Service) dispatch(ctx context.Context, key, dedupe string, m Message, d
 		return payload, nil
 	}
 	queued := 0
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		queued = 0
 		rows, err := tx.QueryContext(ctx,
 			`SELECT n.id, n.kind, n.options, n.url, n.config FROM notifications n
@@ -148,8 +148,8 @@ func (s *Service) dispatch(ctx context.Context, key, dedupe string, m Message, d
 				hook = string(b)
 			}
 			res, err := tx.ExecContext(ctx,
-				`INSERT OR IGNORE INTO notification_deliveries (connection_id, event_key, title, body, link, attach, dedupe_key, created_at, next_attempt_at, payload)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+				`INSERT INTO notification_deliveries (connection_id, event_key, title, body, link, attach, dedupe_key, created_at, next_attempt_at, payload)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?) ON CONFLICT DO NOTHING`,
 				t.id, key, neutralize(m.Title), body, m.Link, m.Attach, dedupe, now.Unix(), hook)
 			if err != nil {
 				return err

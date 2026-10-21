@@ -219,17 +219,13 @@ func main() {
 	}
 	logEnvironment(log, cfg)
 
-	st, err := store.OpenWith(cfg.DataDir, store.Options{
-		Log:                   log,
-		SkipMigrationSnapshot: cfg.SkipMigrationSnapshot,
-		AllowNewerSchema:      cfg.AllowNewerSchema,
-	})
+	st, err := openConfiguredStore(cfg, log)
 	if err != nil {
 		log.Error("failed to open database", "err", err)
 		os.Exit(1)
 	}
 	defer func() { _ = st.Close() }()
-	log.Info("database ready", "data_dir", cfg.DataDir)
+	log.Info("database ready", "backend", st.Backend(), "data_dir", cfg.DataDir)
 	// Settings are read once, here, and served from memory from now on. Starting without
 	// them would mean running on defaults the owner never chose (the music library going
 	// to the env folder, a module switching itself back on), so an unreadable settings
@@ -1684,6 +1680,8 @@ func main() {
 		os.Exit(1)
 	case sig := <-stop:
 		log.Info("shutdown requested", "signal", sig.String())
+	case <-st.Done():
+		log.Error("PostgreSQL lifecycle ownership was lost; shutting down instead of reconnecting as a second instance")
 	case <-restartCh:
 		// Give the HTTP response a moment to reach the browser, then shut down; Docker's
 		// restart policy starts the container again with the new settings applied.

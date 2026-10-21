@@ -61,6 +61,16 @@ with a `replace` line in `go.mod`.
 - `github.com/bogem/id3v2/v2` — MIT
 - `github.com/abema/go-mp4` — MIT
 
+## PostgreSQL native clients (all container variants)
+
+`pg_dump`, `pg_restore` and libpq are unmodified PostgreSQL 18 client packages
+from the PostgreSQL Global Development Group's signed apt repository. They are
+separate executables/libraries, not linked into the Go binary. PostgreSQL uses
+the permissive PostgreSQL License: https://www.postgresql.org/about/licence/.
+Package copyright/licence notices remain under `/usr/share/doc/postgresql-client-18/`
+and `/usr/share/doc/libpq5/` in the image. Upstream source:
+https://www.postgresql.org/ftp/source/ (package versions are recorded by dpkg).
+
 ## The Unraid all-in-one image (`stable-aio`)
 
 The all-in-one image (the Dockerfile's `aio` target, which the Unraid template runs) carries

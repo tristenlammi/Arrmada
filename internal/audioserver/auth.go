@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Sign-in for listening apps. Each person sets an audiobook-server password in Arrmada;
@@ -61,7 +61,7 @@ type Tokens struct {
 
 // Accounts handles audiobook-server passwords and tokens.
 type Accounts struct {
-	db      *sql.DB
+	db      store.Pool
 	users   *auth.Service
 	allowed func(ctx context.Context, u *auth.User) bool
 	now     func() time.Time
@@ -90,7 +90,7 @@ const (
 	maxRemembered = 512
 )
 
-func newAccounts(db *sql.DB, users *auth.Service, allowed func(context.Context, *auth.User) bool) *Accounts {
+func newAccounts(db store.Pool, users *auth.Service, allowed func(context.Context, *auth.User) bool) *Accounts {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	return &Accounts{db: db, users: users, allowed: allowed, now: time.Now, touched: map[string]time.Time{},
@@ -428,7 +428,7 @@ func (a *Accounts) Devices(ctx context.Context, userID int64) ([]Device, error) 
 		q += ` AND t.user_id = ?`
 		args = append(args, userID)
 	}
-	q += ` GROUP BY t.family ORDER BY MAX(t.last_used_at) DESC`
+	q += ` GROUP BY t.family, t.user_id, u.username ORDER BY MAX(t.last_used_at) DESC`
 	rows, err := a.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

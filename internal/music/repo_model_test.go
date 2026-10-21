@@ -1,7 +1,6 @@
 package music
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -53,7 +52,7 @@ func TestTwoEditionAlbumAssembly(t *testing.T) {
 	}
 	// The deluxe: the same recordings plus a second disc, one track with a guest credit.
 	var guest int64
-	if err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	if err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var err error
 		guest, err = ensureCreditTx(ctx, tx, []CreditName{
 			{ArtistID: a.ID, ArtistMBID: "mb-rh", Name: "Radiohead", JoinPhrase: " feat. "},

@@ -2,12 +2,12 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"sync"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // DiskCache keeps catalogue answers in SQLite so they survive a restart, and serves a
@@ -16,7 +16,7 @@ import (
 // first one after a deploy, and an upstream that's slow or paced — Hardcover allows
 // one request a second — never sits between the user and the page.
 type DiskCache struct {
-	db *sql.DB
+	db store.Pool
 
 	mu       sync.Mutex
 	inflight map[string]bool // keys being refreshed in the background
@@ -27,7 +27,7 @@ type DiskCache struct {
 // refresh runs; older than this and the caller waits for a fresh answer.
 const diskStaleMax = 7 * 24 * time.Hour
 
-func NewDiskCache(db *sql.DB) *DiskCache {
+func NewDiskCache(db store.Pool) *DiskCache {
 	return &DiskCache{db: db, inflight: map[string]bool{}}
 }
 

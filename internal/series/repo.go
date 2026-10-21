@@ -22,10 +22,10 @@ var ErrNotFound = errors.New("series not found")
 var ErrExists = errors.New("series already in library")
 
 // Repo persists series, seasons, and episodes in SQLite.
-type Repo struct{ db *sql.DB }
+type Repo struct{ db store.Pool }
 
 // NewRepo builds a repository over the given pool.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
 	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source,
@@ -160,27 +160,30 @@ func (r *Repo) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Series, error) {
 //
 // Specials (season 0) are left out — an optional special isn't a gap. The total counts
 // files too, so an unmonitored episode you have still shows as had.
-const statsSQL = `
+func statsSQL(db store.Execer) string {
+	return `
 	SELECT e.series_id,
-	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR (` + wantedSQL + ` AND ` + statsAiredSQL + `) THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR (` + wantedSQL + ` AND ` + statsAiredSQL(db) + `) THEN 1 ELSE 0 END), 0),
 	  COALESCE(SUM(e.has_file), 0),
 	  COALESCE(SUM(e.size_bytes), 0),
-	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
-	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND NOT ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
-	  MIN(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND e.air_date <> '' AND date(e.air_date) > date('now') THEN e.air_date END)
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND ` + statsAiredSQL(db) + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND NOT ` + wantedSQL + ` AND ` + statsAiredSQL(db) + ` THEN 1 ELSE 0 END), 0),
+	  MIN(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND e.air_date <> '' AND ` + store.DateText(db, "e.air_date") + ` > ` + store.UTCDateText(db) + ` THEN e.air_date END)
 	FROM episodes e
 	LEFT JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
 	WHERE e.season_number > 0`
+}
 
-const (
-	wantedSQL     = `(e.monitored = 1 AND COALESCE(sn.monitored, 0) = 1)`
-	statsAiredSQL = `(e.air_date <> '' AND date(e.air_date) <= date('now'))`
-)
+const wantedSQL = `(e.monitored = 1 AND COALESCE(sn.monitored, 0) = 1)`
+
+func statsAiredSQL(db store.Execer) string {
+	return `(e.air_date <> '' AND ` + store.DateText(db, "e.air_date") + ` <= ` + store.UTCDateText(db) + `)`
+}
 
 // queryStats runs statsSQL, for every series or (ids given) just those.
 func (r *Repo) queryStats(ctx context.Context, ids ...int64) (map[int64]*Stats, error) {
 	out := map[int64]*Stats{}
-	q, args := statsSQL, []any{}
+	q, args := statsSQL(r.db), []any{}
 	sq, sargs := `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0`, []any{}
 	if len(ids) > 0 {
 		marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
@@ -271,19 +274,18 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 	if stype == "" {
 		stype = SeriesTypeStandard
 	}
-	res, err := r.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.db,
 		`INSERT INTO series (tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
 			monitored, quality_profile, extra_json, series_type, tvdb_id, monitor_new_seasons, library_folder_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.TMDBID, s.IMDBID, s.Title, s.Year, s.Overview, s.PosterURL, s.Status, s.Network,
 		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID, b2i(s.MonitorNewSeasons), s.LibraryFolderID)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+		if store.IsUniqueViolation(err) {
 			return Series{}, ErrExists
 		}
 		return Series{}, err
 	}
-	id, _ := res.LastInsertId()
 	return r.Get(ctx, id)
 }
 
@@ -291,15 +293,15 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Season) error {
 	for _, sn := range seasons {
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
+			 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 			seriesID, sn.SeasonNumber, sn.Name, sn.Overview, sn.PosterURL, b2i(sn.Monitored)); err != nil {
 			return err
 		}
 		for _, ep := range sn.Episodes {
 			if _, err := r.db.ExecContext(ctx,
-				`INSERT OR IGNORE INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored), ep.AbsoluteNumber); err != nil {
 				return err
 			}
@@ -341,15 +343,15 @@ func (r *Repo) InsertNewEpisodes(ctx context.Context, seriesID int64, seasons []
 	added := 0
 	for _, sn := range seasons {
 		if _, err := r.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
+			 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 			seriesID, sn.SeasonNumber, sn.Name, sn.Overview, sn.PosterURL, b2i(sn.Monitored)); err != nil {
 			return added, err
 		}
 		for _, ep := range sn.Episodes {
 			res, err := r.db.ExecContext(ctx,
-				`INSERT OR IGNORE INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+				`INSERT INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT DO NOTHING`,
 				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored))
 			if err != nil {
 				return added, err
@@ -368,7 +370,7 @@ func (r *Repo) InsertNewEpisodes(ctx context.Context, seriesID int64, seasons []
 // alone. Only for a listing numbered the same way as the stored rows: otherwise one
 // episode's title and date would land on another.
 func (r *Repo) RefreshEpisodeMetadata(ctx context.Context, seriesID int64, seasons []Season) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		for _, sn := range seasons {
 			for _, ep := range sn.Episodes {
 				if _, err := tx.ExecContext(ctx,
@@ -390,7 +392,7 @@ func (r *Repo) RefreshEpisodeMetadata(ctx context.Context, seriesID int64, seaso
 // shifts but nothing else does: each file stays on the (season, episode) it was on. It
 // never reads or touches a file.
 func (r *Repo) ReassignAbsolutes(ctx context.Context, seriesID int64, seasons []Season) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		for _, sn := range seasons {
 			for _, ep := range sn.Episodes {
 				if _, err := tx.ExecContext(ctx,
@@ -524,7 +526,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 //
 // Turning searching on also gives the show the paced-search mark (see markPacedTx).
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		if monitored {
 			if err := markPacedTx(ctx, tx, id); err != nil {
 				return err
@@ -670,7 +672,7 @@ func mergeExtra(stored, fresh *SeriesExtra) *SeriesExtra {
 // MarkRefreshed stamps a successful metadata pull, so the weekly re-check of ended shows
 // knows which are due.
 func (r *Repo) MarkRefreshed(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE series SET last_refreshed_at = datetime('now') WHERE id = ?`, id)
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET last_refreshed_at = `+store.UTCNowText(r.db, "")+` WHERE id = ?`, id)
 	return err
 }
 
@@ -860,7 +862,7 @@ func (r *Repo) SeasonExists(ctx context.Context, seriesID int64, season int) boo
 func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int) bool {
 	q := `SELECT 1 FROM episodes
 	      WHERE series_id = ? AND has_file = 0 AND season_number > 0
-	        AND air_date != '' AND air_date <= date('now')`
+	        AND air_date != '' AND air_date <= ` + store.UTCDateText(r.db)
 	args := []any{seriesID}
 	if season > 0 {
 		q += ` AND season_number = ?`
@@ -883,13 +885,13 @@ func (r *Repo) SearchState(ctx context.Context, seriesID int64) (lastSearchAt st
 // RecordSearchMiss stamps the sweep time and increments the miss counter.
 func (r *Repo) RecordSearchMiss(ctx context.Context, seriesID int64) {
 	_, _ = r.db.ExecContext(ctx,
-		`UPDATE series SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, seriesID)
+		`UPDATE series SET last_search_at = `+store.UTCNowText(r.db, "")+`, search_misses = search_misses + 1 WHERE id = ?`, seriesID)
 }
 
 // ResetSearchMisses clears the backoff after a successful grab.
 func (r *Repo) ResetSearchMisses(ctx context.Context, seriesID int64) {
 	_, _ = r.db.ExecContext(ctx,
-		`UPDATE series SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, seriesID)
+		`UPDATE series SET last_search_at = `+store.UTCNowText(r.db, "")+`, search_misses = 0 WHERE id = ?`, seriesID)
 }
 
 // SetSearchPaced marks (or unmarks) a show as added in bulk: the missing sweep searches
@@ -911,7 +913,7 @@ func (r *Repo) SetSearchPaced(ctx context.Context, seriesID int64, on bool) erro
 // once did (automation/paced.go). One show turned on alone loses nothing: the sweep lets
 // up to PacedSearchesPerSweep marked shows through each run. A show whose searching is
 // already on is left as it is.
-func markPacedTx(ctx context.Context, tx *sql.Tx, id int64) error {
+func markPacedTx(ctx context.Context, tx *store.Transaction, id int64) error {
 	_, err := tx.ExecContext(ctx, `UPDATE series SET search_paced = 1 WHERE id = ? AND monitored = 0`, id)
 	return err
 }
@@ -983,7 +985,7 @@ func (r *Repo) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {
 	err := r.db.QueryRowContext(ctx,
 		`SELECT 1 FROM episodes
 		 WHERE series_id = ? AND monitored = 1 AND has_file = 0 AND season_number > 0
-		   AND air_date != '' AND air_date <= date('now')
+		   AND air_date != '' AND air_date <= `+store.UTCDateText(r.db)+`
 		 LIMIT 1`, seriesID).Scan(&one)
 	return err == nil && one == 1
 }
@@ -1013,14 +1015,19 @@ type SeriesAcquisition struct {
 // episodes and the next upcoming episode, in one pass. Only series with something
 // outstanding in either bucket are worth returning; the caller filters.
 func (r *Repo) AcquisitionSummary(ctx context.Context) ([]SeriesAcquisition, error) {
+	seasons := `GROUP_CONCAT(DISTINCT CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
+		AND e.air_date != '' AND e.air_date <= ` + store.UTCDateText(r.db) + ` THEN e.season_number END)`
+	if store.DialectOf(r.db) == store.Postgres {
+		seasons = `string_agg(DISTINCT CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
+			AND e.air_date != '' AND e.air_date <= ` + store.UTCDateText(r.db) + ` THEN CAST(e.season_number AS text) END, ',')`
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT s.id, COALESCE(NULLIF(s.display_title, ''), s.title), s.year, s.poster_url, s.quality_profile, s.last_search_at, s.search_misses,
 		  SUM(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
-		           AND e.air_date != '' AND e.air_date <= date('now') THEN 1 ELSE 0 END) AS searching,
-		  MIN(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.air_date > date('now')
+		           AND e.air_date != '' AND e.air_date <= `+store.UTCDateText(r.db)+` THEN 1 ELSE 0 END) AS searching,
+		  MIN(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.air_date > `+store.UTCDateText(r.db)+`
 		           THEN e.air_date END) AS next_air,
-		  GROUP_CONCAT(DISTINCT CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
-		           AND e.air_date != '' AND e.air_date <= date('now') THEN e.season_number END) AS wanted_seasons
+		  `+seasons+` AS wanted_seasons
 		FROM series s
 		JOIN episodes e ON e.series_id = s.id
 		WHERE s.monitored = 1
@@ -1148,7 +1155,7 @@ func (r *Repo) NthEpisodeOfSeason(ctx context.Context, seriesID int64, season, n
 // SetSeasonMonitored toggles a whole season (and its episodes). A change makes the show's
 // monitoring Custom: no preset's rule describes it any more.
 func (r *Repo) SetSeasonMonitored(ctx context.Context, seriesID, seasonNumber int64, monitored bool) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		// Either write counts as a change: a season announced but with no episodes yet
 		// changes only its own flag, which decides whether its episodes are wanted when a
 		// refresh adds them.
@@ -1172,7 +1179,7 @@ func (r *Repo) SetSeasonMonitored(ctx context.Context, seriesID, seasonNumber in
 // episode in an unmonitored season used to do nothing. A change makes the show's
 // monitoring Custom.
 func (r *Repo) SetEpisodeMonitored(ctx context.Context, episodeID int64, monitored bool) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var seriesID int64
 		var season int
 		err := tx.QueryRowContext(ctx, `SELECT series_id, season_number FROM episodes WHERE id = ?`, episodeID).Scan(&seriesID, &season)
@@ -1220,7 +1227,7 @@ func (r *Repo) SetEpisodesMonitored(ctx context.Context, seriesID int64, ids []i
 	for _, id := range uniq {
 		args = append(args, id)
 	}
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var found int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM episodes WHERE series_id = ? AND id IN (`+marks+`)`, args...).Scan(&found); err != nil {
 			return err
@@ -1422,7 +1429,7 @@ func (r *Repo) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, e
 		`SELECT e.id, e.series_id, s.title, s.quality_profile, s.monitored, e.season_number, e.episode_number,
 		        e.monitored, e.file_path, e.size_bytes, e.source_release, e.runtime, e.upgrade_hold,
 		        e.converted_from_release, e.converted_from_size,
-		        COALESCE(CASE WHEN json_valid(s.extra_json) THEN json_extract(s.extra_json, '$.original_language') END, '')
+		        COALESCE(`+store.JSONScalar(r.db, "s.extra_json", "original_language")+`, '')
 		   FROM episodes e JOIN series s ON s.id = e.series_id
 		  WHERE e.has_file = 1
 		  ORDER BY s.title, e.season_number, e.episode_number`)
@@ -1466,7 +1473,7 @@ func (r *Repo) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, e
 // transaction, returning how many changed.
 func (r *Repo) HoldUpgrades(ctx context.Context, episodeIDs []int64) (int, error) {
 	n := 0
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		for ids := episodeIDs; len(ids) > 0; {
 			chunk := ids
 			if len(chunk) > 500 { // well under SQLite's variable limit
@@ -1606,8 +1613,8 @@ func (r *Repo) OtherSeriesUnder(ctx context.Context, seriesID int64, dir string,
 	prefix := filepath.Clean(dir) + string(filepath.Separator)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT DISTINCT series_id FROM episodes
-		 WHERE series_id <> ?1 AND has_file = 1 AND substr(file_path, 1, length(?2)) = ?2 LIMIT ?3`,
-		seriesID, prefix, limit)
+		 WHERE series_id <> ? AND has_file = 1 AND substr(file_path, 1, length(?)) = ? LIMIT ?`,
+		seriesID, prefix, prefix, limit)
 	if err != nil {
 		return []int64{0}
 	}
@@ -1628,7 +1635,7 @@ func (r *Repo) OtherSeriesUnder(ctx context.Context, seriesID int64, dir string,
 // SetQualityProfile changes a series' quality profile. Moving to another profile ends
 // every episode's upgrade hold: the holds were about the old profile's change.
 func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var old string
 		if err := tx.QueryRowContext(ctx, `SELECT quality_profile FROM series WHERE id = ?`, id).Scan(&old); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1687,12 +1694,18 @@ type RecentImport struct {
 // import first, one row per show however many episodes landed. A show whose files have
 // all gone since is left out.
 func (r *Repo) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	at := `CAST(strftime('%s', MAX(e.created_at)) AS INTEGER)`
+	since := `julianday(e.created_at) >= julianday('now', ?)`
+	if store.DialectOf(r.db) == store.Postgres {
+		at = `CAST(floor(extract(epoch FROM MAX(e.created_at))) AS bigint)`
+		since = `e.created_at >= ` + store.UTCNowTimestamp(r.db, "?")
+	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT s.tmdb_id, s.title, s.year, s.overview, s.poster_url,
-       CAST(strftime('%s', MAX(e.created_at)) AS INTEGER) AS at
+       `+at+` AS at
   FROM series_events e JOIN series s ON s.id = e.series_id
  WHERE e.event = 'imported' AND s.tmdb_id > 0
-   AND julianday(e.created_at) >= julianday('now', ?)
+   AND `+since+`
    AND EXISTS (SELECT 1 FROM episodes ep WHERE ep.series_id = s.id AND ep.has_file = 1)
  GROUP BY s.id
  ORDER BY at DESC, s.id DESC

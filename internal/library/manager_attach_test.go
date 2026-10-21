@@ -60,7 +60,7 @@ func attachManager(t *testing.T, lib string, fa *fakeAttach) (*Manager, *sql.DB)
 	t.Cleanup(func() { st.Close() })
 	m := NewManager(st.DB(), lib, nil, quiet())
 	m.SetAttach(fa.fn)
-	return m, st.DB()
+	return m, st.DB().(*sql.DB)
 }
 
 type attachRow struct {

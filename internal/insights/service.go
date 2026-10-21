@@ -9,7 +9,6 @@ package insights
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"log/slog"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/mediaserver"
 	"github.com/tristenlammi/arrmada/internal/plex"
 	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 const (
@@ -79,7 +79,7 @@ func (s *Service) Watching() bool {
 }
 
 // NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").
-func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, bus *eventbus.Bus, log *slog.Logger) *Service {
+func NewService(db store.Pool, set *settings.Service, geo *geoip.Resolver, bus *eventbus.Bus, log *slog.Logger) *Service {
 	if geo == nil {
 		geo = geoip.New("")
 	}

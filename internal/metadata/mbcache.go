@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // MusicBrainz answers are kept for good in music_mb_cache. Every answer that is stored is
@@ -87,7 +88,7 @@ func (e mbEntry) fresh(k mbKind, now time.Time) bool {
 }
 
 // mbCache is the store behind music_mb_cache. A nil db caches nothing (tests).
-type mbCache struct{ db *sql.DB }
+type mbCache struct{ db store.Pool }
 
 func (c mbCache) get(ctx context.Context, key string) (mbEntry, bool) {
 	if c.db == nil {

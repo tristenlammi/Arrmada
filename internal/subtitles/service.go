@@ -2,7 +2,6 @@ package subtitles
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Settings keys (stored in the shared settings service).
@@ -112,7 +112,7 @@ type Service struct {
 // NewService wires the module over the shared Movies/Series catalogs + a subtitle provider. db is
 // used for the probe cache; ffmpeg/ffprobe drive embedded-track probing and extraction;
 // whisperModelsDir is where the local AI (whisper.cpp) model files live.
-func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe, whisperModelsDir string, log *slog.Logger) *Service {
+func NewService(db store.Pool, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe, whisperModelsDir string, log *slog.Logger) *Service {
 	s := &Service{
 		movies: mv, series: sr, settings: set, provider: provider,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db},

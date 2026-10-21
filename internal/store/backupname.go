@@ -37,11 +37,32 @@ const backupStamp = "20060102T150405Z"
 
 // backupNameRe is deliberately strict: anything that isn't exactly one of our
 // names (a path, a "..", someone's own file in the folder) is not a backup.
-var backupNameRe = regexp.MustCompile(`^arrmada-(pre-migrate|nightly|manual|pre-restore|pre-delete-user|pre-delete-empty-user|pre-merge-user|uploaded|pre-update|pre-insights-repair)-(\d{8}T\d{6}Z)\.db$`)
+var backupNameRe = regexp.MustCompile(`^arrmada-(pre-migrate|nightly|manual|pre-restore|pre-delete-user|pre-delete-empty-user|pre-merge-user|uploaded|pre-update|pre-insights-repair)-(\d{8}T\d{6}Z)\.(db|pgdump)$`)
 
 // BackupName is the file name for a backup of kind taken at t.
 func BackupName(kind BackupKind, t time.Time) string {
 	return "arrmada-" + string(kind) + "-" + t.UTC().Format(backupStamp) + ".db"
+}
+
+// BackupNameFor selects the backend's native extension without changing SQLite names.
+func BackupNameFor(backend Dialect, kind BackupKind, t time.Time) string {
+	name := BackupName(kind, t)
+	if backend == Postgres {
+		return name[:len(name)-3] + ".pgdump"
+	}
+	return name
+}
+
+// BackupBackend identifies a recognized backup format, or returns empty.
+func BackupBackend(name string) Dialect {
+	m := backupNameRe.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	if m[3] == "pgdump" {
+		return Postgres
+	}
+	return SQLite
 }
 
 // ParseBackupName reverses BackupName. ok is false for any name it didn't make.

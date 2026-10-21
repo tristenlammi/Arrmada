@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/store"
 	"github.com/tristenlammi/arrmada/internal/toolrun"
 )
 
@@ -234,7 +234,7 @@ func minf(a, b float64) float64 {
 
 // choiceStore remembers each file's test outcome (convert_choices), keyed by path + size so
 // a replaced file is tested again.
-type choiceStore struct{ db *sql.DB }
+type choiceStore struct{ db store.Pool }
 
 func (c *choiceStore) get(ctx context.Context, path string, size int64) (string, bool) {
 	var codec string

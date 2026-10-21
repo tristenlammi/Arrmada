@@ -102,7 +102,7 @@ func scanUser(r rowScanner) (User, error) {
 
 // Service provides authentication operations backed by the database.
 type Service struct {
-	db         *sql.DB
+	db         store.Pool
 	sessionTTL time.Duration
 	log        *slog.Logger
 	now        func() time.Time // time.Now; a fake clock in tests
@@ -110,7 +110,7 @@ type Service struct {
 }
 
 // NewService builds an auth service over the given database pool.
-func NewService(db *sql.DB) *Service {
+func NewService(db store.Pool) *Service {
 	return &Service{db: db, sessionTTL: 30 * 24 * time.Hour, log: slog.New(slog.DiscardHandler), now: time.Now, tickets: newTickets()}
 }
 
@@ -173,7 +173,7 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	}
 	var taken int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM users WHERE lower(username) = lower(?)`, username).Scan(&taken); err != nil {
+		`SELECT COUNT(*) FROM users WHERE `+store.FoldASCII(s.db, "username")+` = `+store.FoldASCII(s.db, "?"), username).Scan(&taken); err != nil {
 		return nil, err
 	}
 	if taken > 0 {
@@ -186,7 +186,7 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	}
 
 	aa := boolToInt(autoApprove)
-	res, err := s.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, s.db,
 		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		username, string(hash), string(role), aa, aa, aa, aa)
 	if err != nil {
@@ -195,7 +195,6 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 		}
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	u := &User{ID: id, Username: username, Role: role}
 	u.setAutoApproval(aa, aa, aa)
 	return u, nil
@@ -253,7 +252,7 @@ func (s *Service) findOrCreateLinked(ctx context.Context, k linkKind, extID, ext
 	}
 	username := s.uniqueUsername(ctx, extName, k.fallbackName)
 	am, as, ab := boolToInt(autoApprove.Movie), boolToInt(autoApprove.Series), boolToInt(autoApprove.Book)
-	res, err := s.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, s.db,
 		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`, `+k.idCol+`, `+k.nameCol+`, password_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		username, string(hash), string(role), boolToInt(autoApprove.All()), am, as, ab, extID, extName)
 	if isUniqueViolation(err) {
@@ -265,7 +264,6 @@ func (s *Service) findOrCreateLinked(ctx context.Context, k linkKind, extID, ext
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	return s.UserByID(ctx, id)
 }
 
@@ -278,7 +276,7 @@ func (s *Service) uniqueUsername(ctx context.Context, base, fallback string) str
 	name := base
 	for i := 2; i < 1000; i++ {
 		var n int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE lower(username) = lower(?)`, name).Scan(&n); err == nil && n == 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE `+store.FoldASCII(s.db, "username")+` = `+store.FoldASCII(s.db, "?"), name).Scan(&n); err == nil && n == 0 {
 			return name
 		}
 		name = base + "-" + strconv.Itoa(i)
@@ -387,7 +385,7 @@ func (s *Service) UserByUsername(ctx context.Context, username string) (*User, e
 
 // caseInsensitiveIDs returns every account whose name matches ignoring case.
 func (s *Service) caseInsensitiveIDs(ctx context.Context, username string) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM users WHERE lower(username) = lower(?) ORDER BY id`, username)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM users WHERE `+store.FoldASCII(s.db, "username")+` = `+store.FoldASCII(s.db, "?")+` ORDER BY id`, username)
 	if err != nil {
 		return nil, err
 	}
@@ -412,9 +410,14 @@ func (s *Service) warnAmbiguous(ids []int64) {
 // were possible before names were compared ignoring case. Nothing is merged or deleted:
 // both keep signing in with their exact spelling, and the owner decides which to keep.
 func (s *Service) ReportCaseDuplicates(ctx context.Context) {
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT group_concat(id, ','), group_concat(username, ', ') FROM users
-		GROUP BY lower(username) HAVING COUNT(*) > 1`)
+		GROUP BY lower(username) HAVING COUNT(*) > 1`
+	if store.DialectOf(s.db) == store.Postgres {
+		query = `SELECT string_agg(id::text, ','), string_agg(username, ', ') FROM users
+			GROUP BY ascii_lower(username) HAVING COUNT(*) > 1`
+	}
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		s.log.Warn("auth: could not check for duplicate account names", "err", err)
 		return
@@ -493,7 +496,7 @@ func (s *Service) SetPassword(ctx context.Context, id int64, password string) er
 // transaction. Nothing else is touched — requests, listening places and history stay,
 // so re-enabling gives back exactly what they had (the apps just sign in again).
 func (s *Service) SetDisabled(ctx context.Context, id int64, disabled bool) error {
-	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		res, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, boolToInt(disabled), id)
 		if err != nil {
 			return err
@@ -521,7 +524,7 @@ func (s *Service) SetDisabled(ctx context.Context, id int64, disabled bool) erro
 // forgotten too, so every browser needs the code again.
 func (s *Service) RevokeUserSessions(ctx context.Context, id int64) (int64, error) {
 	var n int64
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
 		if err != nil {
 			return err
@@ -625,11 +628,10 @@ func (s *Service) ValidateSessionInfo(ctx context.Context, raw string) (*User, t
 		expires    sql.NullString
 		seen       sql.NullString
 	)
-	// strftime hands the expiry back as plain text whatever the driver makes of a
-	// TIMESTAMP column, in the same layout sqlTime writes.
+	// Both engines return the same plain UTC text that sqlTime writes.
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book, strftime('%Y-%m-%d %H:%M:%S', s.expires_at),
-		       strftime('%Y-%m-%d %H:%M:%S', s.last_seen_at)
+		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book, `+store.TimestampText(s.db, "s.expires_at")+`,
+		       `+store.TimestampText(s.db, "s.last_seen_at")+`
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`,
 		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &expires, &seen)
@@ -694,5 +696,5 @@ func sqlTime(t time.Time) string {
 }
 
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	return store.IsUniqueViolation(err)
 }

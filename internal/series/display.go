@@ -2,7 +2,6 @@ package series
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -206,7 +205,7 @@ func (s *Service) SyncDisplayTitles(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	var missed []int64
-	err = store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		missed = missed[:0]
 		for _, c := range changes {
 			done, err := storeDisplayIf(ctx, tx, c.row, c.want)
@@ -354,6 +353,11 @@ func (s *Service) backfillDisplayOnce(ctx context.Context, every time.Duration) 
 // SetDisplayNames stores a show's display names, leaving the rest of its extra metadata as
 // it is (json_set, as SetLocalTitles).
 func (r *Repo) SetDisplayNames(ctx context.Context, id int64, n *displaytitle.Names) error {
+	if store.DialectOf(r.db) == store.Postgres {
+		return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
+			return store.SetJSONFields(ctx, tx, "series", "extra_json", id, map[string]any{"display_names": n})
+		})
+	}
 	b, err := json.Marshal(n)
 	if err != nil {
 		return err

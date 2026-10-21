@@ -10,7 +10,6 @@ package push
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/netsafe"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 const (
@@ -91,7 +91,7 @@ type Settings interface {
 
 // Service manages VAPID keys, subscriptions and sending.
 type Service struct {
-	db       *sql.DB
+	db       store.Pool
 	settings Settings
 	log      *slog.Logger
 	// httpClient, when set, replaces pushClient (tests).
@@ -105,7 +105,7 @@ func (s *Service) client() webpush.HTTPClient {
 	return pushClient
 }
 
-func New(db *sql.DB, settings Settings, log *slog.Logger) *Service {
+func New(db store.Pool, settings Settings, log *slog.Logger) *Service {
 	return &Service{db: db, settings: settings, log: log}
 }
 

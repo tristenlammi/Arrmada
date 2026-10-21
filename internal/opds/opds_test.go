@@ -124,7 +124,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.DB().(*sql.DB)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 	x := &harness{t: t, ctx: ctx, dir: dir, db: db, enabled: true, throttle: &countingThrottle{}}

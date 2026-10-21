@@ -8,6 +8,7 @@ name: CI
 # (npm audit).
 # This is the net under all future changes — nothing merges red.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -64,7 +65,7 @@ jobs:
         run: go vet ./...
       - name: Gofmt (must be clean)
         run: |
-          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
           if [ -n "$unformatted" ]; then
             echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
           fi
@@ -101,6 +102,84 @@ jobs:
                 + ([.[] | select(.Action == "build-output") | .Output] | join("") | .[-3000:] | esc))
           ' go-test.json
           exit $status
+
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }} migrations and repository tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [16, 17, 18]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: arrmada-test-only
+          POSTGRES_DB: arrmada_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache: true
+      # Setup alone uses the disposable server's administrator. The tests create
+      # restricted application roles with no superuser or database-create access.
+      - name: Install native PostgreSQL clients
+        # Match the server major, rather than Ubuntu's default client (which
+        # cannot dump newer servers). Use PostgreSQL's signed apt repository.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl --fail --silent --show-error https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-${{ matrix.postgres }}
+      # HTTP API integration tests compile the embedded UI package. UI assets
+      # themselves are built/tested in the web job; these tests exercise JSON
+      # routes and use only a placeholder for go:embed.
+      - name: Placeholder web UI for PostgreSQL HTTP API tests
+        run: mkdir -p internal/webui/dist && echo '<!doctype html>' > internal/webui/dist/index.html
+      - name: Build server for real PostgreSQL startup/shutdown smoke test
+        run: go build -o /tmp/arrmada-postgres-test ./cmd/arrmada
+      - name: Test PostgreSQL with restricted application roles (race)
+        env:
+          ARRMADA_TEST_POSTGRES_ADMIN_URL: postgres://postgres:arrmada-test-only@127.0.0.1:5432/arrmada_test?sslmode=disable
+          ARRMADA_TEST_POSTGRES_BIN: /usr/lib/postgresql/${{ matrix.postgres }}/bin
+          ARRMADA_TEST_BINARY: /tmp/arrmada-postgres-test
+        run: go test -race -timeout 10m -count=1 ./internal/store -run 'Test(Postgres|Bind|DatabaseSQLiteBoundary)'
+      - name: Enable certificate-verified TLS on the disposable test service
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost -keyout /tmp/arrmada-test-server.key -out /tmp/arrmada-test-server.crt
+          docker cp /tmp/arrmada-test-server.key "$POSTGRES_CONTAINER:/tmp/arrmada-test-server.key"
+          docker cp /tmp/arrmada-test-server.crt "$POSTGRES_CONTAINER:/tmp/arrmada-test-server.crt"
+          docker exec -u root "$POSTGRES_CONTAINER" chown postgres:postgres /tmp/arrmada-test-server.key /tmp/arrmada-test-server.crt
+          docker exec -u root "$POSTGRES_CONTAINER" chmod 600 /tmp/arrmada-test-server.key
+          docker exec -u postgres "$POSTGRES_CONTAINER" psql -U postgres -d arrmada_test -c "ALTER SYSTEM SET ssl_cert_file='/tmp/arrmada-test-server.crt'"
+          docker exec -u postgres "$POSTGRES_CONTAINER" psql -U postgres -d arrmada_test -c "ALTER SYSTEM SET ssl_key_file='/tmp/arrmada-test-server.key'"
+          docker exec -u postgres "$POSTGRES_CONTAINER" psql -U postgres -d arrmada_test -c "ALTER SYSTEM SET ssl=on"
+          docker exec -u postgres "$POSTGRES_CONTAINER" psql -U postgres -d arrmada_test -c 'SELECT pg_reload_conf()'
+          for _ in $(seq 1 20); do
+            if /usr/lib/postgresql/${{ matrix.postgres }}/bin/psql 'postgres://postgres:arrmada-test-only@localhost:5432/arrmada_test?sslmode=verify-full&sslrootcert=/tmp/arrmada-test-server.crt' -c 'SELECT 1'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Verify Go/native TLS, certificate rejection and compressed recovery
+        env:
+          ARRMADA_TEST_POSTGRES_TLS_URL: postgres://postgres:arrmada-test-only@localhost:5432/arrmada_test?sslmode=verify-full&sslrootcert=/tmp/arrmada-test-server.crt
+          ARRMADA_TEST_POSTGRES_BIN: /usr/lib/postgresql/${{ matrix.postgres }}/bin
+        run: go test -race -timeout 5m -count=1 ./internal/store -run '^TestPostgresVerifiedTLSAndCompressedRecovery$'
 
   audit:
     name: Vulnerability scan (govulncheck, npm audit)
@@ -145,7 +224,7 @@ jobs:
       # build without leaving the app down; a quoting slip there is not caught anywhere
       # else. shellcheck is preinstalled on the runner image. -s sh: they are POSIX sh.
       - name: shellcheck
-        run: shellcheck -s sh update.sh install.sh docker/entrypoint.sh scripts/changelog-section.sh
+        run: shellcheck -s sh update.sh install.sh docker/entrypoint.sh scripts/changelog-section.sh scripts/test-postgres-image.sh
 
   web:
     name: Web build

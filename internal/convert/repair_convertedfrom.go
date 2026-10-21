@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 
@@ -27,7 +26,7 @@ const convertedFromBackfillKey = "repair:converted_from_v1"
 // migration already recovered from an appended stamp is kept and gains its size. Rows without a
 // source release (library-scanned files, extra movie versions) are skipped: nothing ties
 // them to the record safely. Only database rows change; no file is read.
-func BackfillConvertedFrom(ctx context.Context, db *sql.DB, set *settings.Service, log *slog.Logger) (int, error) {
+func BackfillConvertedFrom(ctx context.Context, db store.Pool, set *settings.Service, log *slog.Logger) (int, error) {
 	if _, done := set.Lookup(convertedFromBackfillKey); done {
 		return 0, nil
 	}
@@ -60,7 +59,7 @@ func BackfillConvertedFrom(ctx context.Context, db *sql.DB, set *settings.Servic
 	}
 
 	filled := 0
-	err = store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		for _, d := range ledger {
 			var q string
 			var args []any
@@ -114,7 +113,7 @@ type idRelease struct {
 	release string
 }
 
-func idReleases(ctx context.Context, tx *sql.Tx, q string, args ...any) ([]idRelease, error) {
+func idReleases(ctx context.Context, tx *store.Transaction, q string, args ...any) ([]idRelease, error) {
 	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

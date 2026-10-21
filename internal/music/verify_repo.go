@@ -2,7 +2,6 @@ package music
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
@@ -89,7 +88,7 @@ type VerifyApplied struct {
 func (s *Service) ApplyVerify(ctx context.Context, w VerifyWrites) (VerifyApplied, error) {
 	var out VerifyApplied
 	at := w.At.UTC().Format(time.RFC3339)
-	err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		out = VerifyApplied{}
 		exec := func(q string, args ...any) (int, error) {
 			res, err := tx.ExecContext(ctx, q, args...)

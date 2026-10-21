@@ -2,7 +2,6 @@ package insights
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 
@@ -137,7 +136,7 @@ func BenchmarkHistoryGrouped(b *testing.B) {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {
 			ctx := context.Background()
 			s := newDataTestService(b)
-			err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+			err := store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 				stmt, err := tx.PrepareContext(ctx, `INSERT INTO stream_sessions (session_key,user_id,user_name,rating_key,media_type,title,started_at,stopped_at)
 					VALUES ('',?,?,?,'movie','T',?,?)`)
 				if err != nil {

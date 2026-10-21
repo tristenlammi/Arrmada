@@ -47,8 +47,13 @@ func (s *Service) recordSwap(ctx context.Context, job *Job, part, final, src, st
 		kind = "episode"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO convert_swaps (part, final, src, kind, movie_id, series_id, season, episode, state, hold_path, op, history_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'convert', ?)`,
+		`INSERT INTO convert_swaps (part, final, src, kind, movie_id, series_id, season, episode, state, hold_path, op, history_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'convert', ?)
+		 ON CONFLICT(part) DO UPDATE SET final = excluded.final, src = excluded.src,
+		 kind = excluded.kind, movie_id = excluded.movie_id, series_id = excluded.series_id,
+		 season = excluded.season, episode = excluded.episode, state = excluded.state,
+		 hold_path = excluded.hold_path, op = excluded.op, history_id = excluded.history_id,
+		 created_at = excluded.created_at`,
 		part, final, src, kind, job.MovieID, job.SeriesID, job.Season, job.Episode, state, historyID)
 	return err
 }

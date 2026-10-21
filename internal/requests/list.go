@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Sections of the request list. Each is a plain predicate over status and ready_at, so
@@ -69,7 +71,7 @@ const (
 
 // scopeWhere is the filter every list and count shares: the user scope, media type and
 // title search. Section and status come on top.
-func (f ListFilter) scopeWhere() (where []string, args []any) {
+func (f ListFilter) scopeWhere(db store.Execer) (where []string, args []any) {
 	if f.UserID != 0 {
 		if f.IncludeJoined {
 			where = append(where, `(requested_by = ? OR id IN (SELECT request_id FROM request_subscribers WHERE user_id = ?))`)
@@ -84,7 +86,7 @@ func (f ListFilter) scopeWhere() (where []string, args []any) {
 		args = append(args, f.MediaType)
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
-		where = append(where, `title LIKE ? ESCAPE '\'`)
+		where = append(where, store.LikeASCII(db, "title", "?", true))
 		args = append(args, "%"+likeEscape(q)+"%")
 	}
 	return where, args
@@ -120,7 +122,7 @@ func (f ListFilter) sectionWhere(now time.Time) (where string, args []any, order
 
 // List returns one page of requests and how many match in all.
 func (r *Repo) List(ctx context.Context, f ListFilter) ([]Request, int, error) {
-	where, args := f.scopeWhere()
+	where, args := f.scopeWhere(r.db)
 	if f.Status != "" {
 		where = append(where, `status = ?`)
 		args = append(args, f.Status)
@@ -186,7 +188,7 @@ func (s relationScanner) Scan(dest ...any) error { return s.rows.Scan(append(des
 // Counts is how many requests each section holds under f's scope and filters (its section,
 // status and paging are ignored).
 func (r *Repo) Counts(ctx context.Context, f ListFilter) (Counts, error) {
-	where, args := f.scopeWhere()
+	where, args := f.scopeWhere(r.db)
 	clause := ""
 	if len(where) > 0 {
 		clause = ` WHERE ` + strings.Join(where, ` AND `)

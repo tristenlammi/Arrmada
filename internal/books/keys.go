@@ -76,7 +76,7 @@ func addKey(ctx context.Context, ex store.Execer, key string, bookID int64, sour
 		source = KeySource(key)
 	}
 	_, err := ex.ExecContext(ctx,
-		`INSERT OR IGNORE INTO book_keys (key, book_id, source) VALUES (?, ?, ?)`, key, bookID, source)
+		`INSERT INTO book_keys (key, book_id, source) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, key, bookID, source)
 	return err
 }
 
@@ -93,8 +93,15 @@ func (r *Repo) BookIDForKey(ctx context.Context, key string) (int64, bool) {
 // KeysFor returns every key a book has had, oldest first. The current key is always
 // among them.
 func (r *Repo) KeysFor(ctx context.Context, bookID int64) ([]BookKey, error) {
+	order := "added_at, rowid"
+	if store.DialectOf(r.db) == store.Postgres {
+		// There is no hidden insertion-order row id on PostgreSQL. Preserve
+		// oldest-first ordering, with a deterministic key tie-break within a
+		// timestamp's second; keep SQLite's existing tie-break unchanged.
+		order = "added_at, key"
+	}
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT key, source, added_at FROM book_keys WHERE book_id = ? ORDER BY added_at, rowid`, bookID)
+		`SELECT key, source, added_at FROM book_keys WHERE book_id = ? ORDER BY `+order, bookID)
 	if err != nil {
 		return nil, err
 	}

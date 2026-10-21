@@ -2,7 +2,6 @@ package series
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,7 +69,7 @@ func (r *Repo) MonitorOnlySeasons(ctx context.Context, id int64, seasons map[int
 		}
 	}
 	sort.Ints(want)
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = 0 WHERE series_id = ?`, id); err != nil {
 			return err
 		}
@@ -104,7 +103,7 @@ func (r *Repo) MonitorOnlySeasons(ctx context.Context, id int64, seasons map[int
 // off, so resuming the show for one season doesn't also resume what the owner had paused.
 // turnedOff reports whether that switched any monitored episode off.
 func (r *Repo) monitorForRequest(ctx context.Context, id int64, seasons []int, whole, wasPaused bool) (turnedOff bool, err error) {
-	err = store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		if whole {
 			for _, q := range []string{
 				`UPDATE seasons SET monitored = 1 WHERE series_id = ? AND season_number > 0`,

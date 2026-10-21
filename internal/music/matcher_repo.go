@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Reads the matcher needs beyond an edition's tracks (MUS-31).
@@ -55,7 +57,7 @@ func (r *Repo) albumByMBID(ctx context.Context, mbid string) (int64, error) {
 		return 0, nil
 	}
 	var id int64
-	err := r.db.QueryRowContext(ctx, `SELECT id FROM albums WHERE mbid = ? COLLATE NOCASE`, mbid).Scan(&id)
+	err := r.db.QueryRowContext(ctx, `SELECT id FROM albums WHERE `+store.FoldASCII(r.db, "mbid")+` = `+store.FoldASCII(r.db, "?"), mbid).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -69,7 +71,7 @@ func (r *Repo) albumOfRelease(ctx context.Context, mbid string) (int64, error) {
 		return 0, nil
 	}
 	var id int64
-	err := r.db.QueryRowContext(ctx, `SELECT album_id FROM music_releases WHERE mbid = ? COLLATE NOCASE`, mbid).Scan(&id)
+	err := r.db.QueryRowContext(ctx, `SELECT album_id FROM music_releases WHERE `+store.FoldASCII(r.db, "mbid")+` = `+store.FoldASCII(r.db, "?"), mbid).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrDownloadGone means the review's files are no longer on disk. Distinguished from a
@@ -197,7 +198,7 @@ func (c *Coordinator) addReview(ctx context.Context, r Review) {
 	if r.ReasonCode == "" {
 		r.ReasonCode = defaultReasonCode(r)
 	}
-	res, err := c.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, c.db,
 		`INSERT INTO import_reviews (hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, reason_code, size_bytes, indexer, match_json)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Hash, r.Name, r.ContentPath, r.MediaType, r.ExpectedID, r.ExpectedTitle, r.ParsedTitle, r.Reason, r.ReasonCode, r.SizeBytes, r.Indexer, string(r.Match))
@@ -205,7 +206,6 @@ func (c *Coordinator) addReview(ctx context.Context, r Review) {
 		c.log.Warn("review: record failed", "name", r.Name, "err", err)
 		return
 	}
-	id, _ := res.LastInsertId()
 	c.noteImportError(ctx, r.Hash, r.Reason)
 	// The grab is no longer downloading, and not imported either: 'held' keeps the release
 	// from being grabbed again while the review is pending, and keeps seed cleanup off it.
@@ -1251,8 +1251,8 @@ func (c *Coordinator) recordImportedHash(ctx context.Context, hash, title string
 		return
 	}
 	_, _ = c.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO imports (download_hash, source_path, target_path, title, size_bytes)
-		 VALUES (?, '', '', ?, ?)`,
+		`INSERT INTO imports (download_hash, source_path, target_path, title, size_bytes)
+		 VALUES (?, '', '', ?, ?) ON CONFLICT DO NOTHING`,
 		hash, title, size)
 }
 

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/mediaserver"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a request id doesn't exist.
@@ -121,10 +123,10 @@ type Request struct {
 }
 
 // Repo persists requests in SQLite.
-type Repo struct{ db *sql.DB }
+type Repo struct{ db store.Pool }
 
 // NewRepo builds a repository over the given pool.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
 	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons, ready_at,
@@ -180,7 +182,7 @@ func nullID(id int64) any {
 
 // Create inserts a request. Returns ErrExists (wrapped) on a duplicate media.
 func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
-	res, err := r.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.db,
 		`INSERT INTO requests (media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
 			quality_profile, requested_by, requested_by_name, note, book_id, formats, seasons, rerequest, decline_reason)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -188,12 +190,11 @@ func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
 		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats, encodeSeasons(req.Seasons),
 		req.ReRequest, req.DeclineReason)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+		if store.IsUniqueViolation(err) {
 			return Request{}, ErrExists
 		}
 		return Request{}, err
 	}
-	id, _ := res.LastInsertId()
 	return r.Get(ctx, id)
 }
 
@@ -379,6 +380,19 @@ const seasonTold = -1
 // stamp for that season stands. It answers every season's stamp (seasonTold for those
 // already announced).
 func (r *Repo) MarkSeasonOnDisk(ctx context.Context, id int64, season int, at int64) (map[int]int64, error) {
+	if store.DialectOf(r.db) == store.Postgres {
+		err := r.mutateSeasonDisk(ctx, id, func(fields map[string]json.RawMessage) error {
+			key := fmt.Sprintf("s%d", season)
+			if old, exists := fields[key]; !exists || strings.TrimSpace(string(old)) == "null" {
+				fields[key] = json.RawMessage(strconv.FormatInt(at, 10))
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return r.seasonDisk(ctx, id, season, at)
+	}
 	key := fmt.Sprintf("$.s%d", season)
 	if _, err := r.db.ExecContext(ctx,
 		`UPDATE requests SET season_disk_at = json_set(`+seasonDiskJSON+`, ?, ?)
@@ -391,6 +405,12 @@ func (r *Repo) MarkSeasonOnDisk(ctx context.Context, id int64, season int, at in
 
 // MarkSeasonTold records that a season's notice went out: it leaves the Plex check's list.
 func (r *Repo) MarkSeasonTold(ctx context.Context, id int64, season int) error {
+	if store.DialectOf(r.db) == store.Postgres {
+		return r.mutateSeasonDisk(ctx, id, func(fields map[string]json.RawMessage) error {
+			fields[fmt.Sprintf("s%d", season)] = json.RawMessage(strconv.Itoa(seasonTold))
+			return nil
+		})
+	}
 	_, err := r.db.ExecContext(ctx, `UPDATE requests SET season_disk_at = json_set(`+seasonDiskJSON+`, ?, ?) WHERE id = ?`,
 		fmt.Sprintf("$.s%d", season), seasonTold, id)
 	return err
@@ -399,11 +419,27 @@ func (r *Repo) MarkSeasonTold(ctx context.Context, id int64, season int) error {
 // ClearSeasonOnDisk forgets a season's wait (its files went again before anyone was told).
 // A season already announced keeps its mark.
 func (r *Repo) ClearSeasonOnDisk(ctx context.Context, id int64, season int) error {
+	if store.DialectOf(r.db) == store.Postgres {
+		return r.mutateSeasonDisk(ctx, id, func(fields map[string]json.RawMessage) error {
+			key := fmt.Sprintf("s%d", season)
+			var at int64
+			if json.Unmarshal(fields[key], &at) == nil && at > 0 {
+				delete(fields, key)
+			}
+			return nil
+		})
+	}
 	key := fmt.Sprintf("$.s%d", season)
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE requests SET season_disk_at = json_remove(`+seasonDiskJSON+`, ?)
 		  WHERE id = ? AND json_extract(`+seasonDiskJSON+`, ?) > 0`, key, id, key)
 	return err
+}
+
+func (r *Repo) mutateSeasonDisk(ctx context.Context, id int64, mutate func(map[string]json.RawMessage) error) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
+		return store.MutateJSONObject(ctx, tx, "requests", "season_disk_at", id, mutate)
+	})
 }
 
 func (r *Repo) seasonDisk(ctx context.Context, id int64, season int, at int64) (map[int]int64, error) {
@@ -442,6 +478,30 @@ func decodeSeasonDisk(raw string) map[int]int64 {
 // (the request, or one of its seasons not yet announced, seen complete): the Plex
 // check's work list.
 func (r *Repo) ListPlexWaiting(ctx context.Context) ([]Request, error) {
+	if store.DialectOf(r.db) == store.Postgres {
+		// Use the same signed-integer season representation as the notification
+		// logic. Parsing in Go avoids jsonb's extra numeric restrictions and
+		// treats malformed historical values as no season stamps.
+		candidates, err := r.query(ctx, `SELECT `+cols+` FROM requests
+			WHERE status = ? AND ready_at = 0 AND (on_disk_at > 0 OR season_disk_at != '') ORDER BY id`, StatusApproved)
+		if err != nil {
+			return nil, err
+		}
+		out := candidates[:0]
+		for _, req := range candidates {
+			waiting := req.onDiskAt > 0
+			var stamps map[string]int64
+			if json.Unmarshal([]byte(req.seasonDisk), &stamps) == nil {
+				for _, at := range stamps {
+					waiting = waiting || at > 0
+				}
+			}
+			if waiting {
+				out = append(out, req)
+			}
+		}
+		return out, nil
+	}
 	return r.query(ctx, `SELECT `+cols+` FROM requests
 		WHERE status = ? AND ready_at = 0
 		  AND (on_disk_at > 0 OR (season_disk_at != '' AND EXISTS (SELECT 1 FROM json_each(`+seasonDiskJSON+`) WHERE value > 0)))
@@ -529,7 +589,7 @@ type Subscriber struct {
 // AddSubscriber attaches a user to a request. Idempotent (unique request_id+user_id).
 func (r *Repo) AddSubscriber(ctx context.Context, requestID, userID int64, userName string) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO request_subscribers (request_id, user_id, user_name) VALUES (?, ?, ?)`,
+		`INSERT INTO request_subscribers (request_id, user_id, user_name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
 		requestID, userID, userName)
 	return err
 }

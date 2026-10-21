@@ -24,6 +24,12 @@ type Config struct {
 	// DataDir holds the database, config and logs, plus backups/, where a snapshot
 	// of the database is taken automatically before any schema change and every night.
 	DataDir string
+	// DatabaseBackend is opt-in: sqlite (default) or postgres. URL is secret.
+	DatabaseBackend        string
+	PostgresURL            string `json:"-"`
+	PostgresSchema         string
+	PostgresBinDir         string
+	PostgresMaxConnections int
 	// LogLevel is one of: debug, info, warn, error.
 	LogLevel string
 	// ExternalHeader marks a request as coming from OUTSIDE the LAN when present:
@@ -150,6 +156,10 @@ func Load() (Config, error) {
 		Host:                  env("ARRMADA_HOST", "0.0.0.0"),
 		BaseURLIgnored:        ignoredBaseURL(os.Getenv("ARRMADA_BASE_URL")),
 		DataDir:               env("ARRMADA_DATA_DIR", "./data"),
+		DatabaseBackend:       strings.ToLower(env("ARRMADA_DATABASE_BACKEND", "sqlite")),
+		PostgresURL:           os.Getenv("ARRMADA_POSTGRES_URL"),
+		PostgresSchema:        os.Getenv("ARRMADA_POSTGRES_SCHEMA"),
+		PostgresBinDir:        os.Getenv("ARRMADA_POSTGRES_BIN"),
 		LogLevel:              strings.ToLower(env("ARRMADA_LOG_LEVEL", "info")),
 		ExternalHeader:        env("ARRMADA_EXTERNAL_HEADER", "Cf-Connecting-Ip"),
 		QbittorrentURL:        env("ARRMADA_QBITTORRENT_URL", ""),
@@ -175,6 +185,17 @@ func Load() (Config, error) {
 		PlexToken:             env("ARRMADA_PLEX_TOKEN", ""),
 		GeoIPDB:               env("ARRMADA_GEOIP_DB", ""),
 	}
+	if c.DatabaseBackend != "sqlite" && c.DatabaseBackend != "postgres" {
+		return Config{}, fmt.Errorf("ARRMADA_DATABASE_BACKEND must be sqlite or postgres")
+	}
+	if c.DatabaseBackend == "postgres" && (c.PostgresURL == "" || c.PostgresSchema == "") {
+		return Config{}, fmt.Errorf("PostgreSQL requires ARRMADA_POSTGRES_URL and ARRMADA_POSTGRES_SCHEMA; SQLite fallback is disabled")
+	}
+	max, err := strconv.Atoi(env("ARRMADA_POSTGRES_MAX_CONNECTIONS", "4"))
+	if err != nil || max < 1 || max > 100 {
+		return Config{}, fmt.Errorf("ARRMADA_POSTGRES_MAX_CONNECTIONS must be an integer from 1 to 100")
+	}
+	c.PostgresMaxConnections = max
 
 	// Per-library roots default to their own subfolder of the shared library dir.
 	//

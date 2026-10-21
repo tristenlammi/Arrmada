@@ -198,7 +198,7 @@ func (c *Coordinator) blockedSetOf(ctx context.Context, id int64, mediaType stri
 func (c *Coordinator) pendingTitlesOf(ctx context.Context, id int64, mediaType string) (map[string]bool, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND media_type = ? AND `+pendingTitleWhere, id, mediaType)
+		 WHERE movie_id = ? AND media_type = ? AND `+c.pendingTitleWhere(), id, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("pending grabs unreadable: %w", err)
 	}

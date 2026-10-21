@@ -47,6 +47,9 @@ func (a *api) handleBackupsList(w http.ResponseWriter, r *http.Request) {
 		total += b.SizeBytes
 	}
 	out := map[string]any{
+		"backend":         svc.Backend(),
+		"can_restore":     svc.CanRestore(),
+		"can_upload":      svc.CanRestore(),
 		"backups":         list,
 		"total_bytes":     total,
 		"free_bytes":      nil, // unknown where free space can't be measured
@@ -90,6 +93,10 @@ const manualRestartCommand = "docker restart Arrmada-app"
 // while the app has the database open. When the app can restart itself it does so right
 // after answering.
 func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Backups != nil && !a.deps.Backups.CanRestore() {
+		a.writeError(w, http.StatusConflict, backup.ErrOfflineRestoreOnly.Error())
+		return
+	}
 	if !a.backupsReady(w) {
 		return
 	}
@@ -110,6 +117,10 @@ func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	info, err := a.deps.Backups.StageRestore(name, by)
 	if err != nil {
+		if errors.Is(err, backup.ErrOfflineRestoreOnly) {
+			a.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, backup.ErrBadName) || errors.Is(err, os.ErrNotExist) {
 			a.backupNameErr(w, err)
 			return
@@ -154,6 +165,10 @@ var maxBackupUpload int64 = backup.MaxUploadBytes
 // memory, and the file only joins the list as "Uploaded" once it passes the same checks
 // a restore makes. Restoring it is then the normal Restore on its row.
 func (a *api) handleBackupUpload(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Backups != nil && !a.deps.Backups.CanRestore() {
+		a.writeError(w, http.StatusConflict, backup.ErrOfflineRestoreOnly.Error())
+		return
+	}
 	if !a.backupsReady(w) {
 		return
 	}
@@ -209,6 +224,10 @@ func (a *api) handleBackupUpload(w http.ResponseWriter, r *http.Request) {
 // handleBackupRestoreCancel —DELETE /api/v1/system/backups/restore-pending. Drops a
 // staged restore that hasn't run yet (one waiting for a manual restart).
 func (a *api) handleBackupRestoreCancel(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Backups != nil && !a.deps.Backups.CanRestore() {
+		a.writeError(w, http.StatusConflict, backup.ErrOfflineRestoreOnly.Error())
+		return
+	}
 	if !a.backupsReady(w) {
 		return
 	}
@@ -302,6 +321,17 @@ func (a *api) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	h := w.Header()
+	if b.Backend == store.Postgres {
+		h.Set("Content-Type", "application/octet-stream")
+		h.Set("Content-Disposition", `attachment; filename="`+b.Name+`"`)
+		h.Set("Content-Length", strconv.FormatInt(b.SizeBytes, 10))
+		h.Set("Cache-Control", "no-store, private")
+		h.Set("Pragma", "no-cache")
+		if _, err := io.Copy(w, f); err != nil {
+			a.deps.Log.Warn("PostgreSQL backup download did not finish", "name", b.Name, "err", err)
+		}
+		return
+	}
 	h.Set("Content-Type", "application/gzip")
 	h.Set("Content-Disposition", `attachment; filename="`+b.Name+`.gz"`)
 	h.Set("Cache-Control", "no-store, private")

@@ -20,7 +20,7 @@ import (
 // A nil store, or one without a database, keeps nothing: the queue works in memory alone
 // (the unit tests that need no database).
 type jobStore struct {
-	db *sql.DB
+	db store.Pool
 	// mu orders the writes. A caller takes it before releasing Service.mu (see
 	// Service.unlockAndPersist), so rows change in the same order the queue did, without
 	// holding the queue's lock over disk I/O.
@@ -38,7 +38,7 @@ const (
 // back into the queue.
 const interruptedNote = "interrupted by restart"
 
-func newJobStore(db *sql.DB) *jobStore { return &jobStore{db: db} }
+func newJobStore(db store.Pool) *jobStore { return &jobStore{db: db} }
 
 func (st *jobStore) ok() bool { return st != nil && st.db != nil }
 
@@ -148,7 +148,7 @@ func (st *jobStore) write(ctx context.Context, inserts, saves []Job) (skipped in
 	if !st.ok() || len(inserts)+len(saves) == 0 {
 		return 0, nil
 	}
-	err = store.WithTx(ctx, st.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, st.db, func(tx *store.Transaction) error {
 		skipped = 0
 		if len(inserts) > 0 {
 			ins, err := tx.PrepareContext(ctx, `INSERT INTO subtitle_jobs (`+jobCols+`)
@@ -195,13 +195,19 @@ func saveJob(ctx context.Context, db store.Execer, j Job) error {
 }
 
 // lastID is the highest id ever handed out, so the next one is never a repeat — even of
-// a row since pruned (AUTOINCREMENT keeps that in sqlite_sequence).
+// a row since pruned (SQLite AUTOINCREMENT, or PostgreSQL's explicit-id sequence
+// high-water trigger, keeps it after the row has gone).
 func (st *jobStore) lastID(ctx context.Context) (int64, error) {
 	var seq, top sql.NullInt64
 	if err := st.db.QueryRowContext(ctx, `SELECT MAX(id) FROM subtitle_jobs`).Scan(&top); err != nil {
 		return 0, err
 	}
-	err := st.db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = 'subtitle_jobs'`).Scan(&seq)
+	sequenceQuery := `SELECT seq FROM sqlite_sequence WHERE name = 'subtitle_jobs'`
+	if store.DialectOf(st.db) == store.Postgres {
+		sequenceQuery = `SELECT pg_catalog.pg_sequence_last_value(
+			pg_catalog.pg_get_serial_sequence('subtitle_jobs', 'id')::regclass)`
+	}
+	err := st.db.QueryRowContext(ctx, sequenceQuery).Scan(&seq)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}

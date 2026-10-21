@@ -121,10 +121,10 @@ func (a *api) hasTitles(ctx context.Context) bool {
 	if a.deps.Store == nil {
 		return false
 	}
-	var n int
+	var found bool
 	err := a.deps.Store.DB().QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM movies) OR EXISTS(SELECT 1 FROM series)`).Scan(&n)
-	return err == nil && n == 1
+		`SELECT EXISTS(SELECT 1 FROM movies) OR EXISTS(SELECT 1 FROM series)`).Scan(&found)
+	return err == nil && found
 }
 
 // anyImported: a download has been imported — a movie import that placed a file, or any

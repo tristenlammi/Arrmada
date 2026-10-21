@@ -3,6 +3,8 @@ package series
 import (
 	"context"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // SearchStamp is where one show stands on the missing-sweep's backoff.
@@ -50,6 +52,6 @@ func (s *Service) CountSearchStuck(ctx context.Context, misses int) (int, error)
 		WHERE s.monitored = 1 AND s.search_misses >= ?
 		  AND EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = s.id AND e.monitored = 1
 		              AND e.has_file = 0 AND e.season_number > 0
-		              AND e.air_date != '' AND e.air_date <= date('now'))`, misses).Scan(&n)
+		              AND e.air_date != '' AND e.air_date <= `+store.UTCDateText(s.repo.db)+`)`, misses).Scan(&n)
 	return n, err
 }

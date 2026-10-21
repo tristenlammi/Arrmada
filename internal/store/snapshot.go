@@ -25,14 +25,21 @@ var freeSpace = diskspace.Of
 // ends up 100% full takes the live database down with it.
 const spaceHeadroom = 1.2
 
-// Snapshot writes a consistent copy of the live database to the backups folder
-// and returns its path. The copy is checked before it gets its final name, so a
-// file that exists under a backup name is always a usable database.
+// Snapshot writes a consistent backend-native copy to the backups folder:
+// SQLite VACUUM INTO or a PostgreSQL schema archive. The copy is checked before
+// publication; PostgreSQL recovery additionally validates matching migration
+// history and all transferred data before committing a destination.
 func (s *Store) Snapshot(ctx context.Context, kind BackupKind) (string, error) {
+	if _, _, ok := ParseBackupName(BackupName(kind, time.Now())); !ok {
+		return "", errors.New("invalid database backup kind")
+	}
 	// Held across the name pick and the copy, so a second caller sees the first
 	// one's finished file and moves on to the next free name.
 	s.snapMu.Lock()
 	defer s.snapMu.Unlock()
+	if s.pg != nil {
+		return s.postgresSnapshot(ctx, kind)
+	}
 
 	dst := freeBackupPath(BackupsDir(s.dataDir), kind, time.Now())
 	if err := snapshotTo(ctx, s.db, s.dbPath, dst); err != nil {
@@ -168,6 +175,12 @@ func syncDir(dir string) {
 // ever considered, so other kinds and anything else in the folder are left alone. The
 // backup a staged restore points at is never pruned: it's the one about to be put back.
 func PruneBackups(dir string, kind BackupKind, keep int) (removed []string, err error) {
+	return PruneBackupsFor(SQLite, dir, kind, keep)
+}
+
+// PruneBackupsFor never prunes the other backend's recovery copies when an
+// installation switches databases while retaining its data directory.
+func PruneBackupsFor(backend Dialect, dir string, kind BackupKind, keep int) (removed []string, err error) {
 	staged := pendingRestoreName(filepath.Dir(dir))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -186,7 +199,7 @@ func PruneBackups(dir string, kind BackupKind, keep int) (removed []string, err 
 			continue
 		}
 		k, at, ok := ParseBackupName(e.Name())
-		if ok && k == kind && e.Name() != staged {
+		if ok && k == kind && BackupBackend(e.Name()) == backend && e.Name() != staged {
 			mine = append(mine, backup{e.Name(), at})
 		}
 	}

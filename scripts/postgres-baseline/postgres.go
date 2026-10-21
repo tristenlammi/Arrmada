@@ -1,0 +1,409 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
+)
+
+// This generator is intentionally limited to the reviewed SQLite baseline.
+// Unsupported types/defaults/collations fail generation rather than silently
+// guessing at semantics. Runtime queries and shipped SQLite migrations never
+// pass through it. PostgreSQL's behavioral triggers are maintained separately.
+type column struct {
+	name, kind string
+	notNull    bool
+	defaultSQL sql.NullString
+	pk         int
+}
+
+type schemaObject struct{ kind, name, table, sql string }
+
+var safeName = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+func ident(name string) string {
+	if !safeName.MatchString(name) {
+		panic("unreviewed schema identifier: " + name)
+	}
+	return `"` + name + `"`
+}
+
+func literal(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+func emitPostgres(w io.Writer, db store.Pool) error {
+	rows, err := db.Query(`SELECT type, name, tbl_name, sql FROM sqlite_master
+		WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'
+		ORDER BY type, name`)
+	if err != nil {
+		return err
+	}
+	var objects []schemaObject
+	for rows.Next() {
+		var o schemaObject
+		if err := rows.Scan(&o.kind, &o.name, &o.table, &o.sql); err != nil {
+			rows.Close()
+			return err
+		}
+		objects = append(objects, o)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "-- PostgreSQL baseline corresponding to SQLite %s.\n", store.LatestMigration())
+	out.WriteString("-- Generated with: go run ./scripts/postgres-baseline -postgres\n")
+	out.WriteString("-- Do not regenerate after this migration ships; add new migrations instead.\n")
+	out.WriteString("-- Integers retain SQLite's signed 64-bit range; REAL retains double precision.\n")
+	out.WriteString("-- Flags stay integers, timestamps stay UTC, JSON stays text, blobs use bytea.\n\n")
+	out.WriteString(`CREATE FUNCTION ascii_lower(value text) RETURNS text
+LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+AS $$ SELECT translate(value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') $$;
+
+`)
+	columns := map[string][]column{}
+	for _, o := range objects {
+		if o.kind != "table" {
+			continue
+		}
+		cols, err := tableColumns(db, o.name)
+		if err != nil {
+			return err
+		}
+		columns[o.name] = cols
+		if err := emitTable(&out, db, o, cols); err != nil {
+			return err
+		}
+	}
+	// Delayed FK creation handles genuine cycles in the music model without
+	// changing relationships or depending on alphabetical table order.
+	for _, o := range objects {
+		if o.kind == "table" {
+			if err := emitForeignKeys(&out, db, o.name); err != nil {
+				return err
+			}
+		}
+	}
+	for _, o := range objects {
+		if o.kind != "index" {
+			continue
+		}
+		query := o.sql
+		// Only these two final-schema indexes use NOCASE. Keep the ASCII
+		// fold and byte ordering instead of requiring a cluster extension.
+		for _, name := range []string{"grandparent_title", "title"} {
+			query = strings.ReplaceAll(query, name+" COLLATE NOCASE", "(ascii_lower("+name+`)) COLLATE "C"`)
+		}
+		if strings.Contains(query, "NOCASE") {
+			return fmt.Errorf("unreviewed collation in index %s", o.name)
+		}
+		fmt.Fprintf(&out, "%s;\n\n", query)
+	}
+	out.WriteString("CREATE UNIQUE INDEX subtitle_profiles_name_folded ON subtitle_profiles ((ascii_lower(name)) COLLATE \"C\");\n\n")
+	out.WriteString("-- Seed the same defaults as a fresh SQLite installation.\nSET CONSTRAINTS ALL DEFERRED;\n\n")
+	for _, o := range objects {
+		if o.kind == "table" {
+			if err := emitSeeds(&out, db, o.name, columns[o.name]); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = io.WriteString(w, out.String())
+	return err
+}
+
+func tableColumns(db store.Pool, table string) ([]column, error) {
+	rows, err := db.Query(`SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cols []column
+	for rows.Next() {
+		var c column
+		if err := rows.Scan(&c.name, &c.kind, &c.notNull, &c.defaultSQL, &c.pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, c)
+	}
+	return cols, rows.Err()
+}
+
+func emitTable(out *strings.Builder, db store.Pool, o schemaObject, cols []column) error {
+	var pk []string
+	for pos := 1; ; pos++ {
+		found := false
+		for _, c := range cols {
+			if c.pk == pos {
+				pk = append(pk, ident(c.name))
+				found = true
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	var defs []string
+	for _, c := range cols {
+		kind, ok := map[string]string{"INTEGER": "bigint", "TEXT": `text COLLATE "C"`, "TIMESTAMP": "timestamp without time zone", "REAL": "double precision", "BLOB": "bytea"}[c.kind]
+		if !ok {
+			return fmt.Errorf("unreviewed type %s.%s: %s", o.name, c.name, c.kind)
+		}
+		def := "    " + ident(c.name) + " " + kind
+		if c.kind == "INTEGER" && c.pk == 1 && len(pk) == 1 {
+			def += " GENERATED BY DEFAULT AS IDENTITY"
+		}
+		if c.notNull || c.pk > 0 {
+			def += " NOT NULL"
+		}
+		if c.defaultSQL.Valid {
+			dflt := c.defaultSQL.String
+			if dflt == "datetime('now')" {
+				dflt = "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+			} else if strings.Contains(dflt, "(") || strings.Contains(dflt, ")") {
+				return fmt.Errorf("unreviewed default %s.%s: %s", o.name, c.name, dflt)
+			}
+			def += " DEFAULT " + dflt
+		}
+		defs = append(defs, def)
+	}
+	if len(pk) > 0 {
+		defs = append(defs, "    PRIMARY KEY ("+strings.Join(pk, ", ")+")")
+	}
+	rows, err := db.Query(`SELECT name FROM pragma_index_list(?) WHERE origin = 'u' ORDER BY seq`, o.name)
+	if err != nil {
+		return err
+	}
+	var uniqueNames []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		uniqueNames = append(uniqueNames, name)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range uniqueNames {
+		r, err := db.Query(`SELECT name FROM pragma_index_info(?) ORDER BY seqno`, name)
+		if err != nil {
+			return err
+		}
+		var keys []string
+		for r.Next() {
+			var key string
+			if err := r.Scan(&key); err != nil {
+				r.Close()
+				return err
+			}
+			keys = append(keys, ident(key))
+		}
+		err = r.Err()
+		r.Close()
+		if err != nil {
+			return err
+		}
+		if o.name == "subtitle_profiles" && strings.Join(keys, ",") == `"name"` {
+			continue // emitted as an ASCII-folded unique index below
+		}
+		defs = append(defs, "    UNIQUE ("+strings.Join(keys, ", ")+")")
+	}
+	checks, err := checkExpressions(o.sql)
+	if err != nil {
+		return fmt.Errorf("%s: %w", o.name, err)
+	}
+	for _, check := range checks {
+		defs = append(defs, "    CHECK ("+check+")")
+	}
+	fmt.Fprintf(out, "CREATE TABLE %s (\n%s\n);\n\n", ident(o.name), strings.Join(defs, ",\n"))
+	return nil
+}
+
+func emitForeignKeys(out *strings.Builder, db store.Pool, table string) error {
+	rows, err := db.Query(`SELECT id, seq, "table", "from", "to", on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, seq int
+		var target, from, to, update, del string
+		if err := rows.Scan(&id, &seq, &target, &from, &to, &update, &del); err != nil {
+			return err
+		}
+		if seq != 0 {
+			return fmt.Errorf("unreviewed composite foreign key in %s", table)
+		}
+		fmt.Fprintf(out, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s) ON UPDATE %s ON DELETE %s DEFERRABLE INITIALLY IMMEDIATE;\n",
+			ident(table), ident(fmt.Sprintf("%s_fk_%d", table, id)), ident(from), ident(target), ident(to), update, del)
+	}
+	out.WriteByte('\n')
+	return rows.Err()
+}
+
+func emitSeeds(out *strings.Builder, db store.Pool, table string, cols []column) error {
+	var names []string
+	var selected []column
+	var identity string
+	pkCount := 0
+	for _, c := range cols {
+		if c.pk > 0 {
+			pkCount++
+		}
+	}
+	for _, c := range cols {
+		if c.kind == "INTEGER" && c.pk == 1 && pkCount == 1 {
+			identity = c.name
+		}
+		// These defaults are evaluated at installation time, never frozen to
+		// the machine/time that generated the baseline migration.
+		if c.defaultSQL.Valid && (c.defaultSQL.String == "CURRENT_TIMESTAMP" || c.defaultSQL.String == "datetime('now')") {
+			continue
+		}
+		names = append(names, ident(c.name))
+		selected = append(selected, c)
+	}
+	rows, err := db.Query("SELECT " + strings.Join(names, ", ") + " FROM " + ident(table) + " ORDER BY " + strings.Join(names, ", "))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		values := make([]any, len(names))
+		ptrs := make([]any, len(names))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		var literals []string
+		for i, v := range values {
+			switch v := v.(type) {
+			case nil:
+				literals = append(literals, "NULL")
+			case string:
+				literals = append(literals, literal(v))
+			case []byte:
+				if selected[i].kind == "BLOB" {
+					literals = append(literals, "decode('"+hex.EncodeToString(v)+"', 'hex')")
+				} else {
+					literals = append(literals, literal(string(v)))
+				}
+			case int64:
+				literals = append(literals, strconv.FormatInt(v, 10))
+			case float64:
+				literals = append(literals, strconv.FormatFloat(v, 'g', -1, 64))
+			case time.Time:
+				literals = append(literals, literal(v.UTC().Format("2006-01-02 15:04:05.999999")))
+			default:
+				return fmt.Errorf("unreviewed seed type %s.%s: %T", table, selected[i].name, v)
+			}
+		}
+		fmt.Fprintf(out, "INSERT INTO %s (%s) VALUES (%s);\n", ident(table), strings.Join(names, ", "), strings.Join(literals, ", "))
+		count++
+	}
+	if identity != "" && count > 0 {
+		fmt.Fprintf(out, "SELECT setval(pg_get_serial_sequence(%s, %s), GREATEST(COALESCE(MAX(%s), 1), 1), COALESCE(MAX(%s), 0) >= 1) FROM %s;\n", literal(table), literal(identity), ident(identity), ident(identity), ident(table))
+	}
+	return rows.Err()
+}
+
+// checkExpressions extracts only CHECK expressions, skipping quoted strings,
+// identifiers and comments. The final baseline's checks use portable SQL.
+func checkExpressions(query string) ([]string, error) {
+	var checks []string
+	for i := 0; i < len(query); {
+		if query[i] == '\'' || query[i] == '"' {
+			quote := query[i]
+			i++
+			for i < len(query) {
+				if query[i] == quote {
+					i++
+					if i < len(query) && query[i] == quote {
+						i++
+						continue
+					}
+					break
+				}
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(query[i:], "--") {
+			if end := strings.IndexByte(query[i:], '\n'); end >= 0 {
+				i += end + 1
+			} else {
+				i = len(query)
+			}
+			continue
+		}
+		if strings.HasPrefix(query[i:], "/*") {
+			end := strings.Index(query[i+2:], "*/")
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated comment")
+			}
+			i += end + 4
+			continue
+		}
+		if i+5 <= len(query) && strings.EqualFold(query[i:i+5], "CHECK") && (i == 0 || !isWord(query[i-1])) && (i+5 == len(query) || !isWord(query[i+5])) {
+			i += 5
+			for i < len(query) && strings.ContainsRune(" \t\r\n", rune(query[i])) {
+				i++
+			}
+			if i == len(query) || query[i] != '(' {
+				return nil, fmt.Errorf("CHECK without expression")
+			}
+			start := i + 1
+			depth := 1
+			i++
+			var quote byte
+			for i < len(query) && depth > 0 {
+				c := query[i]
+				if quote != 0 {
+					if c == quote {
+						if i+1 < len(query) && query[i+1] == quote {
+							i += 2
+							continue
+						}
+						quote = 0
+					}
+				} else {
+					switch c {
+					case '\'', '"':
+						quote = c
+					case '(':
+						depth++
+					case ')':
+						depth--
+					}
+				}
+				i++
+			}
+			if depth != 0 {
+				return nil, fmt.Errorf("unterminated CHECK")
+			}
+			checks = append(checks, query[start:i-1])
+			continue
+		}
+		i++
+	}
+	return checks, nil
+}
+
+func isWord(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}

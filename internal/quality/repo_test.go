@@ -19,7 +19,7 @@ func storeService(t *testing.T) (*Service, *sql.DB, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return NewService(st.DB()), st.DB(), context.Background()
+	return NewService(st.DB()), st.DB().(*sql.DB), context.Background()
 }
 
 func mustProfile(t *testing.T, s *Service, ctx context.Context, media, name string) string {

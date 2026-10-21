@@ -2,17 +2,18 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // failureStore tracks repeated conversion failures per library file so the auto-sweep can
 // blocklist one that keeps failing (see convert_max_failures) instead of re-queuing it every
 // night. Backed by the convert_failures table, keyed on an opaque item key so movies and TV
 // episodes are quarantined the same way (migration 0059).
-type failureStore struct{ db *sql.DB }
+type failureStore struct{ db store.Pool }
 
 // movieKey / episodeKey build the identity a failure count is recorded against.
 func movieKey(movieID int64) string { return fmt.Sprintf("movie:%d", movieID) }
@@ -38,8 +39,8 @@ func (f *failureStore) recordFailure(ctx context.Context, key, errMsg string) in
 	var n int
 	if err := f.db.QueryRowContext(ctx,
 		`INSERT INTO convert_failures (item_key, count, last_error, updated_at)
-		 VALUES (?, 1, ?, datetime('now'))
-		 ON CONFLICT(item_key) DO UPDATE SET count = count + 1, last_error = excluded.last_error, updated_at = datetime('now')
+		 VALUES (?, 1, ?, `+store.UTCNowText(f.db, "")+`)
+		 ON CONFLICT(item_key) DO UPDATE SET count = convert_failures.count + 1, last_error = excluded.last_error, updated_at = excluded.updated_at
 		 RETURNING count`,
 		key, errMsg).Scan(&n); err != nil {
 		return 0

@@ -92,7 +92,7 @@ func freeMargin(size int64) int64 {
 // transaction per folder (RewritePrefix), the title is reassigned last, and Plex and
 // Jellyfin are told about both the old and the new folder.
 type Mover struct {
-	DB      *sql.DB
+	DB      store.Pool
 	Folders *Service
 	// Bin takes the originals after a verified cross-drive copy (library.RootBins).
 	Bin library.Bin
@@ -776,7 +776,7 @@ func gib(n int64) string { return fmt.Sprintf("%.1f GB", float64(n)/(1<<30)) }
 // while the destination folder still exists, checked inside it.
 func (m *Mover) repoint(ctx context.Context, media string, destID int64, from, to string) (int64, error) {
 	var n int64
-	err := store.WithTx(ctx, m.DB, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, m.DB, func(tx *store.Transaction) error {
 		if ok, err := folderExists(ctx, tx, media, destID); err != nil {
 			return err
 		} else if !ok {
@@ -947,7 +947,7 @@ func (m *Mover) prunable(dir string) bool {
 
 // assign records the title's new folder and a timeline event, while that folder exists.
 func (m *Mover) assign(ctx context.Context, t title, to int64, label string) error {
-	return store.WithTx(ctx, m.DB, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, m.DB, func(tx *store.Transaction) error {
 		if ok, err := folderExists(ctx, tx, t.media, to); err != nil {
 			return err
 		} else if !ok {

@@ -2,7 +2,6 @@ package movies
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The missing-file sweep: once a day, notice movie files that have vanished from disk, so a
@@ -217,7 +217,7 @@ func (s *Service) CheckMissingFiles(ctx context.Context) (MissingSweep, error) {
 	defer cancel()
 	stamp := out.At.UTC().Format(time.RFC3339)
 	var changed []int64
-	err = s.repo.inTx(wctx, func(_ *sql.Tx, r *Repo) error {
+	err = s.repo.inTx(wctx, func(_ *store.Transaction, r *Repo) error {
 		for _, f := range clear {
 			ok, err := r.clearMissing(wctx, f.ID, f.Path)
 			if err != nil {

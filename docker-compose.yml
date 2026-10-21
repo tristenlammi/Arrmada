@@ -62,6 +62,12 @@ services:
       ARRMADA_ALLOW_REMOTE_SETUP: "${ARRMADA_ALLOW_REMOTE_SETUP:-}"
       ARRMADA_TRUST_CF_HEADER: "${ARRMADA_TRUST_CF_HEADER:-}"
       ARRMADA_LOG_LEVEL: "info"
+      # Opt-in existing shared database; provision the dedicated schema first.
+      # No database/schema is created by Compose. URL is secret; keep .env private.
+      ARRMADA_DATABASE_BACKEND: "${ARRMADA_DATABASE_BACKEND:-sqlite}"
+      ARRMADA_POSTGRES_URL: "${ARRMADA_POSTGRES_URL:-}"
+      ARRMADA_POSTGRES_SCHEMA: "${ARRMADA_POSTGRES_SCHEMA:-}"
+      ARRMADA_POSTGRES_MAX_CONNECTIONS: "${ARRMADA_POSTGRES_MAX_CONNECTIONS:-4}"
       # Before any schema change the database is copied to <data>/backups first, and the
       # app won't upgrade if that copy can't be made. Set this to 1 in .env only to get
       # past a data disk too full for the copy.

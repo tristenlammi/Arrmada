@@ -378,6 +378,17 @@ ENV ARRMADA_WHISPER_CPU_ONLY=1
 # --- Final: the image's own platform, plus what every platform shares ---
 # Named so the Unraid all-in-one variant (the aio stages below) can build on it.
 FROM runtime-${TARGETARCH} AS arrmada
+# Native PostgreSQL backups/recovery use supported clients (never a server).
+# Ubuntu's default client is older than PostgreSQL 18; use PGDG's signed repo.
+RUN mkdir -p /usr/share/postgresql-common/pgdg && \
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc && \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y --no-install-recommends postgresql-client-18 && \
+    rm -rf /var/lib/apt/lists/* && \
+    /usr/lib/postgresql/18/bin/pg_dump --version && /usr/lib/postgresql/18/bin/pg_restore --version
+ENV ARRMADA_POSTGRES_BIN=/usr/lib/postgresql/18/bin
 COPY --from=build /out/arrmada /usr/local/bin/arrmada
 # Dolby Vision (dovi_tool) + HDR10+ (hdr10plus_tool) metadata extractors/injectors.
 COPY --from=hdrtools /usr/local/bin/dovi_tool /usr/local/bin/hdr10plus_tool /usr/local/bin/
@@ -415,6 +426,9 @@ ENTRYPOINT ["/entrypoint.sh"]
 LABEL org.arrmada.cli="1"
 # This build can stage a restore itself (`arrmada restore`), which update.sh --rollback --with-db uses.
 LABEL org.arrmada.restore="1"
+# The image honors explicit PostgreSQL backend configuration; older images
+# ignore it and must never be selected for a PostgreSQL code-only rollback.
+LABEL org.arrmada.postgres="1"
 # Declared last so a new commit only changes the image's metadata, never the cached
 # layers above.
 ARG VERSION=docker

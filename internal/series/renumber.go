@@ -244,7 +244,7 @@ func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Se
 // rebuildEpisodes is RebuildEpisodes, also counting the files left with no episode.
 func (r *Repo) rebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) (moved []EpisodeRemap, unplaced int, err error) {
 	var remaps []EpisodeRemap
-	err = store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var err error
 		remaps, err = rebuildEpisodesTx(ctx, tx, seriesID, seasons)
 		return err
@@ -263,7 +263,7 @@ func (r *Repo) rebuildEpisodes(ctx context.Context, seriesID int64, seasons []Se
 }
 
 // rebuildEpisodesTx is RebuildEpisodes' body, inside the caller's transaction.
-func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
+func rebuildEpisodesTx(ctx context.Context, tx *store.Transaction, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
 	// The same listing PlanRebuild planned against, so the preview and the rebuild agree.
 	seasons = uniqueSlots(seasons)
 	current, err := snapshotRows(ctx, tx, seriesID)

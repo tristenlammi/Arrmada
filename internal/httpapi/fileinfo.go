@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/pathguard"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // "Which torrent is this file?" had no answer anywhere in the app. The chain exists —
@@ -137,7 +138,7 @@ func (a *api) fileSourceFor(ctx context.Context, path string) (*fileSource, stri
 		dir := filepath.Dir(path) + string(filepath.Separator)
 		err = db.QueryRowContext(ctx,
 			`SELECT download_hash, source_path, title, imported_at FROM imports
-			 WHERE target_path LIKE ? ORDER BY imported_at DESC LIMIT 1`, dir+"%").
+			 WHERE `+store.LikeASCII(db, "target_path", "?", false)+` ORDER BY imported_at DESC LIMIT 1`, dir+"%").
 			Scan(&hash, &sourcePath, &importTitle, &importedAt)
 		fromPack = err == nil
 	}

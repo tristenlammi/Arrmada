@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Where you're signed in: each browser session remembers what browser it is, roughly
@@ -74,8 +76,8 @@ func (s *Service) touchSession(ctx context.Context, raw string, seen time.Time) 
 // ListSessions is userID's live sessions, most recently used first, marking currentRaw's.
 func (s *Service) ListSessions(ctx context.Context, userID int64, currentRaw string) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT token_hash, strftime('%Y-%m-%d %H:%M:%S', created_at),
-		       strftime('%Y-%m-%d %H:%M:%S', COALESCE(last_seen_at, created_at)), user_agent, network
+		SELECT token_hash, `+store.TimestampText(s.db, "created_at")+`,
+		       `+store.TimestampText(s.db, "COALESCE(last_seen_at, created_at)")+`, user_agent, network
 		FROM sessions WHERE user_id = ? AND expires_at > ?
 		ORDER BY COALESCE(last_seen_at, created_at) DESC, created_at DESC`, userID, sqlTime(s.now()))
 	if err != nil {
@@ -111,7 +113,7 @@ type SessionActivity struct {
 // Users with no live session are absent.
 func (s *Service) SessionActivityByUser(ctx context.Context) (map[int64]SessionActivity, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT user_id, COUNT(*), strftime('%Y-%m-%d %H:%M:%S', MAX(COALESCE(last_seen_at, created_at)))
+		SELECT user_id, COUNT(*), `+store.TimestampText(s.db, "MAX(COALESCE(last_seen_at, created_at))")+`
 		FROM sessions WHERE expires_at > ? GROUP BY user_id`, sqlTime(s.now()))
 	if err != nil {
 		return nil, err

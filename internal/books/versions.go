@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // A book used to hold exactly one audiobook. People who collect audiobooks often want
@@ -203,13 +205,9 @@ func (r *Repo) GetAudioVersion(ctx context.Context, bookID, id int64) (AudioVers
 }
 
 func (r *Repo) createAudioVersion(ctx context.Context, bookID int64, label string, terms []string, monitored bool) (int64, error) {
-	res, err := r.db.ExecContext(ctx,
+	return store.InsertID(ctx, r.db,
 		`INSERT INTO book_audio_versions (book_id, label, terms, monitored) VALUES (?, ?, ?, ?)`,
 		bookID, label, strings.Join(terms, ","), boolInt(monitored))
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
 func (r *Repo) updateAudioVersion(ctx context.Context, bookID, id int64, label string, terms []string, monitored bool) error {

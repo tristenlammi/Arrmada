@@ -2,7 +2,6 @@ package audioserver
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ func TestMergedItemIDsRedirect(t *testing.T) {
 	key := itemKeyFor(h.book.ID, 0)
 	const old = "b999" // a book merged into h.book (its row is gone)
 	release := h.srv.listen.HoldReports()
-	err := store.WithTx(ctx, h.srv.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, h.srv.db, func(tx *store.Transaction) error {
 		_, err := h.srv.listen.RekeyItemsTx(ctx, tx, map[string]string{old: key})
 		return err
 	})

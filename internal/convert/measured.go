@@ -2,8 +2,9 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Measured sizes. The Library's "Saves" figure is an estimate from each file's own bitrate,
@@ -21,7 +22,7 @@ type measurement struct {
 }
 
 // measureStore persists measurements (convert_measured).
-type measureStore struct{ db *sql.DB }
+type measureStore struct{ db store.Pool }
 
 func measureKey(path, codec string) string { return codec + "|" + path }
 

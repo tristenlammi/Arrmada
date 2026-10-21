@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/langs"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // detectedQueryBatch is how many paths one IN query names (SQLite's bound-parameter limit
@@ -53,7 +54,7 @@ func (s *Service) DetectedAudio(ctx context.Context, paths map[string]int64) map
 	}
 	// The paths are looked up by key, a batch at a time, so a whole library's dry run never
 	// scans the cache; only rows detection wrote to are worth decoding.
-	const base = `SELECT path, size_bytes, info_json FROM subtitle_probe_cache WHERE info_json LIKE '%"detected"%' AND path IN (`
+	base := `SELECT path, size_bytes, info_json FROM subtitle_probe_cache WHERE ` + store.LikeASCII(s.cache.db, "info_json", `'%"detected"%'`, false) + ` AND path IN (`
 	batch := make([]any, 0, detectedQueryBatch)
 	flush := func() {
 		if len(batch) > 0 {

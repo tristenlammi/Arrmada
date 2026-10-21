@@ -2,7 +2,6 @@ package music
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"testing"
@@ -197,7 +196,7 @@ func TestDeleteArtistKeepsCreditedAlbums(t *testing.T) {
 	own, _ := listed(t, r, host.ID, "rg-own", "Own", true, "One")
 	duet, _ := listed(t, r, host.ID, "rg-duet", "Duet", true, "One")
 	var duetCredit int64
-	if err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	if err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var err error
 		duetCredit, err = ensureCreditTx(ctx, tx, []CreditName{
 			{ArtistID: host.ID, ArtistMBID: "mb-host", Name: "Host", JoinPhrase: " & "},

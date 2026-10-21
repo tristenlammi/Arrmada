@@ -2,7 +2,6 @@ package metadata
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/httpua"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // MusicBrainz is the music metadata provider. Like Open Library for books it needs no API
@@ -78,7 +78,7 @@ const (
 
 // NewMusicBrainz builds the provider over the cache table in db (nil: no cache) with the
 // configured address and contact from cfg (nil: the public server, no contact).
-func NewMusicBrainz(db *sql.DB, cfg func() MBConfig) *MusicBrainz {
+func NewMusicBrainz(db store.Pool, cfg func() MBConfig) *MusicBrainz {
 	if cfg == nil {
 		cfg = func() MBConfig { return MBConfig{} }
 	}

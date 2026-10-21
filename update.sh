@@ -280,6 +280,32 @@ env_get() {
   grep -E "^$1=" .env 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r"'"'"' ' || true
 }
 
+# An older image ignores unknown database environment variables and would open
+# SQLite. Refuse it before stopping/replacing the running PostgreSQL app.
+database_backend() {
+  _requested_backend=$(printf '%s' "${ARRMADA_DATABASE_BACKEND:-$(env_get ARRMADA_DATABASE_BACKEND)}" | tr '[:upper:]' '[:lower:]')
+  if [ "$_requested_backend" = postgres ]; then printf postgres; return; fi
+  # Also honor a compose override/Portainer-style environment rather than
+  # assuming .env is the only source. Only print this non-secret field; the
+  # rendered config (which contains credentials) is never logged or saved.
+  _compose_backend=$(docker compose config --format json 2>/dev/null |
+    sed -n 's/.*"ARRMADA_DATABASE_BACKEND":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1 | tr '[:upper:]' '[:lower:]')
+  printf '%s' "${_compose_backend:-${_requested_backend:-sqlite}}"
+}
+
+require_database_backend_image() {
+  _db_backend=$(database_backend)
+  case "$_db_backend" in
+    sqlite|postgres) ;;
+    *) say "✗ Unknown database backend; nothing was changed. Use sqlite or postgres." >&2; exit 1 ;;
+  esac
+  if [ "$_db_backend" = postgres ] && [ "$(image_label "$1" org.arrmada.postgres)" != 1 ]; then
+    say "✗ The selected build does not support PostgreSQL; nothing was changed." >&2
+    say "  Select a PostgreSQL-capable build, or convert offline to SQLite before using this build." >&2
+    exit 1
+  fi
+}
+
 # A relative ARRMADA_MEDIA_HOST would put the media inside this folder, where a download of
 # newer files, or a build, would meet it. Refused before anything happens.
 MEDIA_HOST=$(env_get ARRMADA_MEDIA_HOST)
@@ -503,6 +529,17 @@ qbit_page_notice() {
 # arrmada:dev again, and the build being replaced is kept as arrmada:rolled-back so
 # going forward again is one update away. Nothing is pulled or rebuilt.
 rollback() {
+  _db_backend=$(database_backend)
+  if [ -n "$WITH_DB" ]; then
+    case "$_db_backend:$(cat "$PREVIOUS_DB_FILE" 2>/dev/null || true)" in
+      postgres:*|*.pgdump)
+        say "✗ PostgreSQL database rollback is offline only; no containers, images or schemas were changed." >&2
+        say "  Stop Arrmada, recover the pre-update archive with the matching build's restore-postgres" >&2
+        say "  into a NEW empty schema, update ARRMADA_POSTGRES_SCHEMA, then roll back without --with-db." >&2
+        say "  See docs/postgresql.md. Never copy a .pgdump archive over arrmada.db." >&2
+        exit 1 ;;
+    esac
+  fi
   _prev=$(image_id arrmada:previous)
   if [ -z "$_prev" ]; then
     say "✗ There's no earlier build to go back to (no arrmada:previous image)." >&2
@@ -515,6 +552,7 @@ rollback() {
     exit 0
   fi
   _prev_commit=$(image_label arrmada:previous org.arrmada.commit)
+  require_database_backend_image arrmada:previous
 
   _backup=""
   if [ -n "$WITH_DB" ]; then
@@ -944,6 +982,7 @@ choose_channel() {
 release_check() {
   REL_VERSION=$(image_label "$PULL_IMAGE" org.arrmada.version)
   REL_COMMIT=$(image_label "$PULL_IMAGE" org.arrmada.commit)
+  require_database_backend_image "$PULL_IMAGE"
   running_build
   _rc=2
   case "$RUN_VERSION" in *-dirty) stay_put edits ;; esac

@@ -102,7 +102,7 @@ func (s *Service) ScanAlbums(ctx context.Context) ([]ScanAlbum, error) {
 
 // ArtistByMBID is the artist with this MBID (ErrNotFound when there is none).
 func (s *Service) ArtistByMBID(ctx context.Context, mbid string) (Artist, error) {
-	a, err := scanArtist(s.repo.db.QueryRowContext(ctx, `SELECT `+artistCols+` FROM artists WHERE mbid = ? COLLATE NOCASE`, strings.TrimSpace(mbid)))
+	a, err := scanArtist(s.repo.db.QueryRowContext(ctx, `SELECT `+artistCols+` FROM artists WHERE `+store.FoldASCII(s.repo.db, "mbid")+` = `+store.FoldASCII(s.repo.db, "?"), strings.TrimSpace(mbid)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Artist{}, ErrNotFound
 	}
@@ -154,7 +154,7 @@ func (s *Service) SaveScanDirs(ctx context.Context, dirs []ScanDir) error {
 	if len(dirs) == 0 {
 		return nil
 	}
-	return store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO music_scan_dirs (path, sig, files_sig, files, state, scanned_at)
 			VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -208,7 +208,7 @@ func (s *Service) RecordScanned(ctx context.Context, files []ScannedTrack) (reco
 		}
 		free[i] = ok
 	}
-	err = store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		recorded, heldBack = 0, 0
 		for i, f := range files {
 			// Re-checked inside: a holding row the check hasn't marked (one that came back,
@@ -306,7 +306,7 @@ const scanRunsKept = 20
 
 // SaveScanRun keeps one scan's summary (JSON) and prunes the oldest beyond scanRunsKept.
 func (s *Service) SaveScanRun(ctx context.Context, started, finished time.Time, summary string) error {
-	return store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO music_scan_runs (started_at, finished_at, summary_json) VALUES (?, ?, ?)`,
 			started.UTC().Format(time.RFC3339), finished.UTC().Format(time.RFC3339), summary); err != nil {
 			return err

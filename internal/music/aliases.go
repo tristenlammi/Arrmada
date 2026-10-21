@@ -2,7 +2,6 @@ package music
 
 import (
 	"context"
-	"database/sql"
 	"sort"
 	"strings"
 	"sync"
@@ -306,7 +305,7 @@ func (r *Repo) nameRows(ctx context.Context) (map[int64]string, []aliasRow, erro
 
 // SetArtistAliases replaces an artist's stored aliases with MusicBrainz's list.
 func (r *Repo) SetArtistAliases(ctx context.Context, artistID int64, aliases []metadata.ArtistAlias) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM music_artist_aliases WHERE artist_id = ?`, artistID); err != nil {
 			return err
 		}

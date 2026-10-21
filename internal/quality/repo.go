@@ -14,10 +14,10 @@ import (
 var ErrNotFound = errors.New("quality profile not found")
 
 // Repo persists user-defined quality profiles.
-type Repo struct{ db *sql.DB }
+type Repo struct{ db store.Pool }
 
 // NewRepo builds the repository.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 const profileCols = `id, media_type, name, base, allowed_resolutions, min_source, bitrate_cap_mbps,
 	small_bias, min_format_score, format_scores, custom_formats, keywords, rejected, min_seeders, stall_minutes, max_source,
@@ -110,7 +110,7 @@ func (r *Repo) Get(ctx context.Context, id int64) (StoredProfile, error) {
 func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, error) {
 	allowed, scores, cf, kw, rej := marshalJSON(sp)
 	required, ideal := marshalExtra(sp)
-	res, err := r.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.db,
 		`INSERT INTO quality_profiles (media_type, name, base, allowed_resolutions, min_source,
 			bitrate_cap_mbps, small_bias, min_format_score, format_scores, custom_formats,
 			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_min_percent,
@@ -125,7 +125,6 @@ func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, err
 	if err != nil {
 		return StoredProfile{}, err
 	}
-	id, _ := res.LastInsertId()
 	return r.Get(ctx, id)
 }
 
@@ -194,7 +193,7 @@ func (r *Repo) DeleteAndReassign(ctx context.Context, id int64, to string) (Reas
 	if !ok {
 		return out, ErrTargetNotFound
 	}
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		return deleteAndReassignTx(ctx, tx, id, toID, from, to, &out)
 	})
 	if err != nil {
@@ -204,7 +203,7 @@ func (r *Repo) DeleteAndReassign(ctx context.Context, id int64, to string) (Reas
 }
 
 // deleteAndReassignTx is DeleteAndReassign's body, inside the caller's transaction.
-func deleteAndReassignTx(ctx context.Context, tx *sql.Tx, id, toID int64, from, to string, out *Reassigned) error {
+func deleteAndReassignTx(ctx context.Context, tx *store.Transaction, id, toID int64, from, to string, out *Reassigned) error {
 	var fromMedia, toMedia string
 	if err := tx.QueryRowContext(ctx, `SELECT media_type FROM quality_profiles WHERE id = ?`, id).Scan(&fromMedia); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -258,7 +257,15 @@ const danglingRef = `quality_profile LIKE 'custom:%'
 // repointDangling sets every dangling ref in table (narrowed by an extra WHERE clause)
 // to `to`, returning how many rows changed.
 func (r *Repo) repointDangling(ctx context.Context, table, where, to string, args ...any) (int, error) {
-	q := `UPDATE ` + table + ` SET quality_profile = ? WHERE ` + danglingRef
+	dangling := danglingRef
+	if store.DialectOf(r.db) == store.Postgres {
+		// Invalid historical references are dangling, not a cast error that
+		// aborts reconciliation. Profile identities are signed 64-bit values.
+		dangling = store.LikeASCII(r.db, "quality_profile", "'custom:%'", false) + ` AND
+			(CASE WHEN pg_input_is_valid(substr(quality_profile, 8), 'bigint')
+			THEN CAST(substr(quality_profile, 8) AS bigint) ELSE 0 END) NOT IN (SELECT id FROM quality_profiles)`
+	}
+	q := `UPDATE ` + table + ` SET quality_profile = ? WHERE ` + dangling
 	if where != "" {
 		q += ` AND ` + where
 	}

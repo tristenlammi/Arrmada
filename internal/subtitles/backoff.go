@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/langs"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Backoff: a language a run couldn't make isn't searched again by every six-hourly sweep.
@@ -283,7 +284,7 @@ func (l *Ledger) ClearBackoff(ctx context.Context, event string) (int64, error) 
 	if !l.ok() || event == "" {
 		return 0, nil
 	}
-	res, err := l.db.ExecContext(ctx, `DELETE FROM subtitle_backoff WHERE ',' || clear_on || ',' LIKE ?`, "%,"+event+",%")
+	res, err := l.db.ExecContext(ctx, `DELETE FROM subtitle_backoff WHERE `+store.LikeASCII(l.db, "',' || clear_on || ','", "?", false), "%,"+event+",%")
 	if err != nil {
 		return 0, err
 	}

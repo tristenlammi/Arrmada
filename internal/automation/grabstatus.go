@@ -1,5 +1,7 @@
 package automation
 
+import "github.com/tristenlammi/arrmada/internal/store"
+
 // The life of a grab row, and the one place its status words are spelled out.
 //
 //	grabbed ──► imported ──► seeded          (the normal path)
@@ -57,9 +59,11 @@ const (
 //     monitored and missing, so without this every search and RSS sweep would pick the same
 //     top-ranked release and grab it straight back. The window runs from grabbed_at (the
 //     only timestamp a grab has), hence the generous length.
-const pendingTitleWhere = `((status = '` + grabStatusGrabbed + `' AND grabbed_at > datetime('now', '-1 day'))
+func (c *Coordinator) pendingTitleWhere() string {
+	return `((status = '` + grabStatusGrabbed + `' AND grabbed_at > ` + store.UTCNowTimestamp(c.db, "'-1 day'") + `)
 		   OR status = '` + grabStatusHeld + `'
-		   OR (status IN ('` + grabStatusRemoved + `', '` + grabStatusDismissed + `') AND grabbed_at > datetime('now', '-30 days')))`
+		   OR (status IN ('` + grabStatusRemoved + `', '` + grabStatusDismissed + `') AND grabbed_at > ` + store.UTCNowTimestamp(c.db, "'-30 days'") + `))`
+}
 
 // everImportedWhere: grabs whose download made it into the library. A grab that was
 // imported moves on to seeded once its seed goal is met, so both count. (A dismissed

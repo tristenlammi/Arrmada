@@ -19,6 +19,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // musicCategory keeps album downloads in their own download-client category so the album
@@ -992,7 +993,7 @@ func (c *Coordinator) recordMusicGrab(ctx context.Context, mediaType string, id 
 	// An upgrade grab says so (decided_mode 'upgrade'): its import mustn't move the album
 	// to another edition (importMusicDownload).
 	key, mode := pickOf(ctx, title)
-	res, err := c.db.ExecContext(ctx,
+	rowID, err := store.InsertID(ctx, c.db,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type, info_hash, decided_by, decided_mode, transport)
 		 VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, title, indexerName, profile, c.quality.StallMinutes(ctx, profile),
@@ -1003,7 +1004,6 @@ func (c *Coordinator) recordMusicGrab(ctx context.Context, mediaType string, id 
 	}
 	c.noteHashless(mediaType, title, infoHash)
 	c.noteHandoff(ctx, mediaType, id, title, infoHash)
-	rowID, _ := res.LastInsertId()
 	return rowID
 }
 

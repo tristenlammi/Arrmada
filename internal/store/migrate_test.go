@@ -50,7 +50,7 @@ func testDB(t *testing.T, maxConns int) *sql.DB {
 	return db
 }
 
-func count(t *testing.T, db *sql.DB, query string) int {
+func count(t *testing.T, db Pool, query string) int {
 	t.Helper()
 	var n int
 	if err := db.QueryRow(query).Scan(&n); err != nil {

@@ -2,7 +2,6 @@ package quality
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service is the quality subsystem's application logic: it resolves a profile
@@ -55,10 +55,10 @@ func (s *Service) profileOf(ctx context.Context, sp StoredProfile) Profile {
 // NewService wires the quality service over the database with a settings service of its
 // own. The app passes its shared one through NewServiceWith, so a default saved here is
 // what every other reader sees; this form is for tests and tools that only need quality.
-func NewService(db *sql.DB) *Service { return NewServiceWith(db, settings.NewService(db)) }
+func NewService(db store.Pool) *Service { return NewServiceWith(db, settings.NewService(db)) }
 
 // NewServiceWith wires the quality service over the database and the app's settings.
-func NewServiceWith(db *sql.DB, set *settings.Service) *Service {
+func NewServiceWith(db store.Pool, set *settings.Service) *Service {
 	return &Service{repo: NewRepo(db), settings: set, shadow: &shadowStats{}}
 }
 

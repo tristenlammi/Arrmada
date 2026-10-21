@@ -10,12 +10,13 @@ package settings
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"maps"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Module toggles. They live here rather than in the HTTP layer because the scheduler and
@@ -48,7 +49,7 @@ const ModuleMusicDefault = false
 // Service reads settings from memory and writes them through to the shared settings
 // table.
 type Service struct {
-	db *sql.DB
+	db store.Execer
 
 	// writeMu serialises writes, so the database and the map always change in the same
 	// order: two saves of one key can't land in the table one way round and in memory
@@ -64,7 +65,7 @@ const loadTimeout = 30 * time.Second
 
 // Open loads every setting into memory. It fails when the settings table can't be read:
 // running on without them would mean running on defaults the owner never chose.
-func Open(ctx context.Context, db *sql.DB) (*Service, error) {
+func Open(ctx context.Context, db store.Execer) (*Service, error) {
 	s := &Service{db: db}
 	if err := s.Reload(ctx); err != nil {
 		return nil, err
@@ -75,7 +76,7 @@ func Open(ctx context.Context, db *sql.DB) (*Service, error) {
 // NewService is Open for callers that can't handle an error, which in practice means
 // tests over a freshly migrated database. It panics if the settings can't be loaded; the
 // app itself boots through Open and stops with a clear message instead.
-func NewService(db *sql.DB) *Service {
+func NewService(db store.Execer) *Service {
 	ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
 	defer cancel()
 	s, err := Open(ctx, db)

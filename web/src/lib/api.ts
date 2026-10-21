@@ -1292,6 +1292,7 @@ export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | 
 
 // One database backup file. Nothing from inside it is ever sent, beyond its schema version.
 export interface BackupFile {
+  backend?: "sqlite" | "postgres";
   name: string;
   kind: BackupKind;
   size_bytes: number;
@@ -1306,6 +1307,9 @@ export interface BackupSchedule {
 }
 
 export interface BackupsState {
+  backend?: "sqlite" | "postgres";
+  can_restore?: boolean;
+  can_upload?: boolean;
   backups: BackupFile[];
   total_bytes: number;
   free_bytes: number | null; // null where free space can't be measured

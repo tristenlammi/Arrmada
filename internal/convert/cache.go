@@ -2,9 +2,10 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"os"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // probeCache persists ffprobe results so the library scan doesn't re-analyze
@@ -12,7 +13,7 @@ import (
 // mtime are unchanged AND it was written by the current probe schema; any change
 // (or a missing file) forces a fresh probe.
 // Backed by the convert_probe_cache table.
-type probeCache struct{ db *sql.DB }
+type probeCache struct{ db store.Pool }
 
 // probeSchemaVersion invalidates cached probes when MediaInfo gains fields the
 // pipelines rely on. Bumped for DVProfile / Interlaced / VideoIndex / FrameRateRat —
@@ -52,7 +53,7 @@ func (c *probeCache) put(ctx context.Context, path string, size, mtime int64, mi
 	}
 	_, _ = c.db.ExecContext(ctx,
 		`INSERT INTO convert_probe_cache (path, size_bytes, mtime_unix, info_json, probed_at)
-		 VALUES (?, ?, ?, ?, datetime('now'))
+		 VALUES (?, ?, ?, ?, `+store.UTCNowText(c.db, "")+`)
 		 ON CONFLICT(path) DO UPDATE SET
 		   size_bytes = excluded.size_bytes,
 		   mtime_unix = excluded.mtime_unix,

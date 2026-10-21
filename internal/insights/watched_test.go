@@ -79,7 +79,7 @@ func TestWatchedExprMatchesWatchedSecs(t *testing.T) {
 		}
 	}
 	var sqlTotal int64
-	if err := db.QueryRowContext(ctx, `SELECT `+watchedSum+` FROM stream_sessions`).Scan(&sqlTotal); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT `+watchedSumFor(db)+` FROM stream_sessions`).Scan(&sqlTotal); err != nil {
 		t.Fatal(err)
 	}
 	var goTotal int64
@@ -151,7 +151,7 @@ func TestHistoryTotalsMatchSQL(t *testing.T) {
 		listTotal += r.WatchedSecs
 	}
 	var sqlTotal int64
-	if err := db.QueryRowContext(ctx, `SELECT `+watchedSum+` FROM stream_sessions WHERE user_id='u'`).Scan(&sqlTotal); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT `+watchedSumFor(db)+` FROM stream_sessions WHERE user_id='u'`).Scan(&sqlTotal); err != nil {
 		t.Fatal(err)
 	}
 	users, err := svc.repo.users(ctx, "")

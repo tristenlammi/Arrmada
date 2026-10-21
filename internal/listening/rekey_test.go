@@ -14,7 +14,7 @@ func rekey(t *testing.T, s *Store, db *sql.DB, moves map[string]string) RekeyCou
 	var c RekeyCounts
 	release := s.HoldReports()
 	defer release()
-	err := store.WithTx(context.Background(), db, func(tx *sql.Tx) error {
+	err := store.WithTx(context.Background(), db, func(tx *store.Transaction) error {
 		var err error
 		c, err = s.RekeyItemsTx(context.Background(), tx, moves)
 		return err
@@ -297,7 +297,7 @@ func TestRekeyRollsBack(t *testing.T) {
 	want := snapshot()
 
 	// A statement failing part-way: the bookmarks step can't find its table.
-	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		if _, err := tx.Exec(`ALTER TABLE listen_bookmarks RENAME TO listen_bookmarks_gone`); err != nil {
 			return err
 		}
@@ -309,7 +309,7 @@ func TestRekeyRollsBack(t *testing.T) {
 	}
 	// The caller failing after the re-key (the rest of a merge).
 	boom := errors.New("boom")
-	err = store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		if _, err := s.RekeyItemsTx(ctx, tx, map[string]string{"b5": "b9"}); err != nil {
 			return err
 		}
@@ -331,7 +331,7 @@ func TestRekeyRejectsBadMoves(t *testing.T) {
 	s, db, _, _ := testStore(t)
 	ctx := context.Background()
 	for _, moves := range []map[string]string{{"b5": "b5"}, {"": "b9"}, {"b5": ""}, {"b5": "b9", "b9": "b12"}} {
-		err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+		err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 			_, err := s.RekeyItemsTx(ctx, tx, moves)
 			return err
 		})

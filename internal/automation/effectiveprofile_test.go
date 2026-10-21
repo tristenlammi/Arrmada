@@ -24,7 +24,7 @@ func profileStore(t *testing.T) (*sql.DB, *quality.Service, context.Context) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return st.DB(), quality.NewService(st.DB()), context.Background()
+	return st.DB().(*sql.DB), quality.NewService(st.DB()), context.Background()
 }
 
 // createDefault stores a profile and makes it the default of its media type (a fresh

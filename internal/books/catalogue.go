@@ -2,7 +2,6 @@ package books
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"time"
@@ -284,7 +283,7 @@ func (r *Repo) SetSeriesRef(ctx context.Context, bookID int64, name string, posi
 		return nil
 	}
 	// A series edited by hand keeps the edit; the catalogue's goes underneath.
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE books SET series_key = ? WHERE id = ?`, key, bookID); err != nil {
 			return err
 		}

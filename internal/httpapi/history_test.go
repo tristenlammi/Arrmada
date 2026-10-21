@@ -177,7 +177,7 @@ func TestEventsFeedUsesTheCreatedIndexes(t *testing.T) {
 // explainFeed is EXPLAIN QUERY PLAN over the SQL eventsFeed runs for f.
 func explainFeed(t *testing.T, a *api, f eventsFilter) string {
 	t.Helper()
-	q, args := eventsFeedSQL(f)
+	q, args := eventsFeedSQL(a.deps.Store.DB(), f)
 	rows, err := a.deps.Store.DB().QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+q, args...)
 	if err != nil {
 		t.Fatal(err)

@@ -3,12 +3,14 @@ name: Image
 # Builds the Docker image the way update.sh does on the owner's server, without
 # publishing it. A broken apt repository, whisper.cpp tag or oneAPI base image then
 # fails here, on the PR, instead of half-way through an update on the server.
-# Publishing is release.yml's job, and only for a pushed v* tag.
+# Stable release publishing is release.yml's job, only for a pushed v* tag.
+# test-image.yml can separately publish commit-specific test tags on manual request.
 #
 # Both platforms a release publishes are built: amd64 on the usual runner and arm64
 # natively on GitHub's arm64 runner (no emulation), so an ARM-only break shows up on the
 # PR too, and a release finds both caches warm.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -64,8 +66,8 @@ jobs:
           swap-storage: true
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
-      # push: false and no load: the image stays in the build cache, which is all a check
-      # needs. Layers are cached in GitHub's cache, so a run that changes only Go or web
+      # Load only into this disposable runner for the PostgreSQL smoke test. No
+      # registry login or push occurs. Cached layers mean Go/web-only changes
       # code skips the whisper and oneAPI stages.
       - name: Build (not pushed)
         uses: docker/build-push-action@v7
@@ -74,11 +76,15 @@ jobs:
           # No platforms: each runner builds its own, natively, and amd64 keeps its
           # default cache scope.
           push: false
+          load: true
+          tags: arrmada-ci:postgres
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ (matrix.arch != 'arm64' || github.event_name != 'pull_request') && matrix.cache-to || '' }}
           build-args: |
             VERSION=${{ github.head_ref || github.ref_name }}-${{ github.sha }}
             COMMIT=${{ github.sha }}
+      - name: PostgreSQL startup, backup and offline recovery in the built image
+        run: sh scripts/test-postgres-image.sh arrmada-ci:postgres
 
   # The Unraid all-in-one variant (the Dockerfile's aio target), which release.yml
   # publishes as the -aio tags: a pinned download that moved or a checksum that no longer
@@ -128,9 +134,13 @@ jobs:
           context: .
           target: aio
           push: false
+          load: true
+          tags: arrmada-ci:postgres-aio
           cache-from: ${{ matrix.cache-from }}
           # arm64 writes from main only, like the plain build above.
           cache-to: ${{ (matrix.arch != 'arm64' || github.event_name != 'pull_request') && matrix.cache-to || '' }}
           build-args: |
             VERSION=${{ github.head_ref || github.ref_name }}-${{ github.sha }}
             COMMIT=${{ github.sha }}
+      - name: PostgreSQL startup, backup and offline recovery in the all-in-one image
+        run: sh scripts/test-postgres-image.sh arrmada-ci:postgres-aio

@@ -2,7 +2,6 @@ package movies
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/outbox"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrFilesNotRemoved means a movie delete stopped because the recycle bin refused a file.
@@ -86,7 +86,7 @@ func (s *Service) DeleteWith(ctx context.Context, id int64, opts DeleteOptions) 
 	}
 	// The movie, its versions and its history go together, with the row that makes
 	// Convert and Subtitles forget it.
-	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	err = s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		if err := r.Delete(ctx, id); err != nil {
 			return err
 		}
@@ -335,7 +335,7 @@ func (s *Service) ForgetMissingFile(ctx context.Context, movieID, versionID int6
 // movie.changed row that makes Convert and Subtitles drop the removed file, then announces
 // it on the bus. path is the file that went ("" when the track had none: nothing to tell).
 func (s *Service) clearTrack(ctx context.Context, movieID, versionID int64, path string, clear func(r *Repo) error) error {
-	err := s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	err := s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		if err := clear(r); err != nil {
 			return err
 		}

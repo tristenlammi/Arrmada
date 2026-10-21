@@ -19,12 +19,12 @@ func queueDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return st.DB()
+	return st.DB().(*sql.DB)
 }
 
 // bootQueue is a Service as NewService leaves it over db: the saved queue loaded. Calling
 // it again on the same db is a restart.
-func bootQueue(t *testing.T, db *sql.DB) *Service {
+func bootQueue(t *testing.T, db store.Pool) *Service {
 	t.Helper()
 	s := &Service{
 		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),

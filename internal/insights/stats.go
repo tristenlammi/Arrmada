@@ -9,9 +9,10 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/geoip"
 	"github.com/tristenlammi/arrmada/internal/jellyfin"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
-// watchedExpr is the per-row watched seconds.
+// watchedExprFor is the per-row watched seconds.
 //
 // Prefer what the source actually reported (watched_ms). Falling back to wall time is only
 // sound for a live-tracked session, where the poller observes both the start and the stop.
@@ -25,12 +26,15 @@ import (
 // Each branch clamps at 0 so a corrupt or in-progress row (stopped_at <= started_at, or a
 // paused span longer than the wall time) can't drag a total negative. Play COUNT(*) still
 // includes such rows — only the watch time is clamped.
-const watchedExpr = `(CASE WHEN watched_ms > 0
-		THEN MIN(watched_ms/1000, MAX(0, stopped_at - started_at))
-		ELSE MAX(0, (stopped_at - started_at) - paused_ms/1000) END)`
+func watchedExprFor(q store.Execer) string {
+	// These time/count columns are NOT NULL in both schemas. Keep integer
+	// division so SQL totals and watchedSecs agree even for partial seconds.
+	return `(CASE WHEN watched_ms > 0 THEN ` + store.ScalarMin(q, "watched_ms/1000", store.ScalarMax(q, "0", "stopped_at - started_at")) +
+		` ELSE ` + store.ScalarMax(q, "0", "(stopped_at - started_at) - paused_ms/1000") + ` END)`
+}
 
-// watchedSum sums per-row watched seconds.
-const watchedSum = `SUM(` + watchedExpr + `)`
+// watchedSumFor sums per-row watched seconds.
+func watchedSumFor(q store.Execer) string { return `SUM(` + watchedExprFor(q) + `)` }
 
 // windowStart returns the unix-second start of a windowDays window aligned to LOCAL midnight, so
 // day-grouped SQL (which uses 'localtime') and the day-axis labels agree at the window boundary.
@@ -77,7 +81,7 @@ func (r *repo) topTitles(ctx context.Context, mediaType, groupCol string, since 
 	if mediaType == "episode" {
 		thumb = `COALESCE(NULLIF(MAX(grandparent_thumb),''), MAX(thumb))`
 	}
-	q := `SELECT ` + groupCol + ` AS t, ` + thumb + ` AS th, COUNT(*) AS plays, ` + watchedSum + ` AS secs, ` + rowServer + `
+	q := `SELECT ` + groupCol + ` AS t, ` + thumb + ` AS th, COUNT(*) AS plays, ` + watchedSumFor(r.db) + ` AS secs, ` + rowServer + `
 		FROM stream_sessions WHERE media_type = ? AND started_at >= ? AND ` + groupCol + ` <> ''` + serverAnd("", server) + `
 		GROUP BY ` + groupCol + ` ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	rows, err := r.db.QueryContext(ctx, q, mediaType, since, limit)
@@ -99,7 +103,7 @@ func (r *repo) topTitles(ctx context.Context, mediaType, groupCol string, since 
 func (r *repo) topNames(ctx context.Context, idCol, nameCol string, since int64, byDuration bool, limit int, server string) ([]nameStatRow, error) {
 	// Group by the ID column (not the display name) so the id the UI uses for drill-down links is a
 	// real one, and carry a representative name via MAX(nameCol) rather than an arbitrary pick.
-	q := `SELECT ` + idCol + ` AS id, MAX(` + nameCol + `) AS name, COUNT(*) AS plays, ` + watchedSum + ` AS secs, ` + rowServer + `
+	q := `SELECT ` + idCol + ` AS id, MAX(` + nameCol + `) AS name, COUNT(*) AS plays, ` + watchedSumFor(r.db) + ` AS secs, ` + rowServer + `
 		FROM stream_sessions WHERE started_at >= ? AND ` + idCol + ` <> ''` + serverAnd("", server) + `
 		GROUP BY ` + idCol + ` ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	rows, err := r.db.QueryContext(ctx, q, since, limit)
@@ -133,7 +137,7 @@ func (r *repo) users(ctx context.Context, server string) ([]userStatRow, error) 
 			COALESCE(a.last,0), COALESCE(a.plays,0), COALESCE(a.secs,0),
 			COALESCE(l.ip_address,''), COALESCE(l.platform,''), COALESCE(l.player,''), COALESCE(l.title,'')
 		FROM plex_users u
-		LEFT JOIN (SELECT user_id, COUNT(*) plays, ` + watchedSum + ` secs, MAX(started_at) last
+		LEFT JOIN (SELECT user_id, COUNT(*) plays, ` + watchedSumFor(r.db) + ` secs, MAX(started_at) last
 				   FROM stream_sessions GROUP BY user_id) a ON a.user_id = u.id
 		LEFT JOIN stream_sessions l ON l.id = (
 			SELECT x.id FROM stream_sessions x
@@ -453,7 +457,7 @@ func (s *Service) RecentlyWatchedByUser(ctx context.Context, limit int, userIDs 
 		   CASE WHEN media_type = 'episode' AND grandparent_title != '' THEN grandparent_title ELSE title END AS lib_title,
 		   media_type, MAX(year) AS year, MAX(started_at) AS last_at
 		 FROM stream_sessions
-		 WHERE user_id IN (?`+strings.Repeat(",?", len(ids)-1)+`) AND lib_title != ''
+		 WHERE user_id IN (?`+strings.Repeat(",?", len(ids)-1)+`) AND (CASE WHEN media_type = 'episode' AND grandparent_title != '' THEN grandparent_title ELSE title END) != ''
 		 GROUP BY lib_title, media_type
 		 ORDER BY last_at DESC
 		 LIMIT ?`, append(ids, limit)...)

@@ -50,7 +50,7 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.DB().(*sql.DB)
 	res, err := db.Exec(`INSERT INTO users (username, password_hash, role) VALUES ('listener', 'x', 'requester')`)
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ type failingRekeyer struct {
 }
 
 func (r failingRekeyer) HoldReports() func() { return r.real.HoldReports() }
-func (r failingRekeyer) RekeyItemsTx(ctx context.Context, tx *sql.Tx, moves map[string]string) (listening.RekeyCounts, error) {
+func (r failingRekeyer) RekeyItemsTx(ctx context.Context, tx *store.Transaction, moves map[string]string) (listening.RekeyCounts, error) {
 	if _, err := r.real.RekeyItemsTx(ctx, tx, moves); err != nil {
 		return listening.RekeyCounts{}, err
 	}

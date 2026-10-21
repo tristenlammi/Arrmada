@@ -2,17 +2,18 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // requestStore persists the files someone asked for by hand (convert_requests). They're
 // converted before anything the runner picks on its own, they run outside the encode hours
 // (you asked for them now), and they survive a restart.
-type requestStore struct{ db *sql.DB }
+type requestStore struct{ db store.Pool }
 
 // Request is one hand-picked file waiting its turn.
 type Request struct {

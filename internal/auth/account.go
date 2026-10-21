@@ -50,7 +50,7 @@ func (s *Service) ChangePassword(ctx context.Context, id int64, newPw, keepRaw s
 		return 0, err
 	}
 	var ended int64
-	err = store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		res, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ?, password_login = 1 WHERE id = ?`, string(hash), id)
 		if err != nil {
 			return err

@@ -33,25 +33,46 @@ const beginAttempts = 3
 // error or panics (the panic carries on after the rollback). It is the one way to make
 // several writes land together.
 //
-// Pools opened by this package BEGIN IMMEDIATE (_txlock=immediate), so the write lock is
+// SQLite pools opened by this package BEGIN IMMEDIATE (_txlock=immediate), so the write lock is
 // taken up front: a transaction that reads and then writes can't be refused halfway with
 // BUSY_SNAPSHOT because another connection committed in between. Keep fn short — never do
 // network I/O or probe files inside it — because every other writer waits for it.
-func WithTx(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) (err error) {
-	tx, err := beginTx(ctx, db)
+// PostgreSQL takes the same schema-scoped writer lock as its statement triggers,
+// before the first read. This retains the established read-then-write semantics
+// without replaying callbacks that also update in-memory state.
+func WithTx(ctx context.Context, db Pool, fn func(tx *Transaction) error) (err error) {
+	var native *sql.DB
+	dialect := SQLite
+	switch db := db.(type) {
+	case *Database:
+		native, dialect = db.pool, db.dialect
+	case *sql.DB:
+		if _, ok := db.Driver().(*sqlite.Driver); !ok {
+			return errors.New("native transaction pools are supported only for SQLite; PostgreSQL requires its query boundary")
+		}
+		native = db
+	default:
+		return errors.New("unsupported database pool for a transaction")
+	}
+	var tx *sql.Tx
+	if dialect == Postgres {
+		tx, err = native.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	} else {
+		tx, err = beginTx(ctx, native)
+	}
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback()
-			panic(p)
+	// Rollback after a successful commit is harmless (ErrTxDone). Doing it
+	// unconditionally also handles runtime.Goexit, not only errors and panics.
+	defer func() { _ = tx.Rollback() }()
+	if dialect == Postgres {
+		if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(
+			'arrmada/write/' || current_database() || '/' || current_schema(), 0))`); err != nil {
+			return err
 		}
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-	if err = fn(tx); err != nil {
+	}
+	if err = fn(&Transaction{tx: tx, dialect: dialect}); err != nil {
 		return err
 	}
 	return tx.Commit()

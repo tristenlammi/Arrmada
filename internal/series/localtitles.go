@@ -9,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Shows are released, and folders named, in the household's language: a German tracker
@@ -292,6 +293,11 @@ func (r *Repo) SetLocalTitles(ctx context.Context, id int64, titles []metadata.T
 	}
 	if langs == nil {
 		langs = []string{}
+	}
+	if store.DialectOf(r.db) == store.Postgres {
+		return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
+			return store.SetJSONFields(ctx, tx, "series", "extra_json", id, map[string]any{"local_titles": titles, "local_langs": langs})
+		})
 	}
 	tb, err := json.Marshal(titles)
 	if err != nil {

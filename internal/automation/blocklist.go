@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrBlockNotFound means the blocklist entry doesn't exist (already unblocked).
@@ -91,8 +93,8 @@ func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) ([]Block
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := "%" + escapeLike(strings.ToLower(q)) + "%"
-		where += ` AND (lower(b.title) LIKE ? ESCAPE '\' OR lower(` + item + `) LIKE ? ESCAPE '\'
-			OR lower(` + canonical + `) LIKE ? ESCAPE '\')`
+		where += ` AND (` + store.LikeASCII(c.db, "lower(b.title)", "?", true) + ` OR ` + store.LikeASCII(c.db, "lower("+item+")", "?", true) +
+			` OR ` + store.LikeASCII(c.db, "lower("+canonical+")", "?", true) + `)`
 		args = append(args, like, like, like)
 	}
 	var total int

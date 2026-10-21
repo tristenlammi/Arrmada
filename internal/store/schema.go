@@ -109,6 +109,9 @@ type SchemaStatus struct {
 // Schema reports how the database's schema compares with this build's, without
 // changing anything: a database with no schema_migrations table has nothing applied.
 func (s *Store) Schema(ctx context.Context) (SchemaStatus, error) {
+	if s.pg != nil {
+		return postgresSchema(ctx, s.pg, postgresMigrations())
+	}
 	st := SchemaStatus{Latest: LatestMigration()}
 	var n int
 	if err := s.db.QueryRowContext(ctx,

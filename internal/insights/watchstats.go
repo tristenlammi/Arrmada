@@ -3,6 +3,8 @@ package insights
 import (
 	"context"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // "Watched by" on a title's own page: who has played it on Plex or Jellyfin, how often and
@@ -96,7 +98,7 @@ func (r *repo) watchedBy(ctx context.Context, show bool, m titleMatch) ([]UserPl
 	}
 	if show {
 		for _, t := range titles {
-			conds = append(conds, "grandparent_title = ? COLLATE NOCASE")
+			conds = append(conds, store.FoldASCII(r.db, "grandparent_title")+" = "+store.FoldASCII(r.db, "?"))
 			args = append(args, t)
 		}
 		if len(conds) == 0 {
@@ -112,7 +114,7 @@ func (r *repo) watchedBy(ctx context.Context, show bool, m titleMatch) ([]UserPl
 	}
 	if m.year > 0 { // without a year a title alone would sweep in every film of that name
 		for _, t := range titles {
-			conds = append(conds, "(title = ? COLLATE NOCASE AND year = ?)")
+			conds = append(conds, "("+store.FoldASCII(r.db, "title")+" = "+store.FoldASCII(r.db, "?")+" AND year = ?)")
 			args = append(args, t, m.year)
 		}
 	}
@@ -125,12 +127,23 @@ func (r *repo) watchedBy(ctx context.Context, show bool, m titleMatch) ([]UserPl
 func (r *repo) groupPlays(ctx context.Context, where string, args []any) ([]UserPlays, error) {
 	// The bare user_name next to MAX(started_at) is SQLite's "value from the row with the
 	// max": the name they had at their latest play, if the account isn't known by now.
-	rows, err := r.db.QueryContext(ctx, `
+	query := `
 		SELECT a.user_id, COALESCE(NULLIF(u.username, ''), a.user_name), a.server, a.plays, a.last
 		  FROM (SELECT user_id, user_name, server, COUNT(*) AS plays, MAX(started_at) AS last
-		          FROM stream_sessions WHERE `+where+` GROUP BY user_id) a
+		          FROM stream_sessions WHERE ` + where + ` GROUP BY user_id) a
 		  LEFT JOIN plex_users u ON u.id = a.user_id
-		 ORDER BY a.last DESC`, args...)
+		 ORDER BY a.last DESC`
+	if store.DialectOf(r.db) == store.Postgres {
+		query = `WITH matched AS (
+			SELECT user_id, user_name, server, started_at,
+			       COUNT(*) OVER (PARTITION BY user_id) AS plays,
+			       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY started_at DESC, id DESC) AS latest
+			FROM stream_sessions WHERE ` + where + `)
+			SELECT a.user_id, COALESCE(NULLIF(u.username, ''), a.user_name), a.server, a.plays, a.started_at
+			FROM matched a LEFT JOIN plex_users u ON u.id = a.user_id
+			WHERE a.latest = 1 ORDER BY a.started_at DESC`
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

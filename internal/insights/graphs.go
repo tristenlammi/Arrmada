@@ -2,7 +2,12 @@ package insights
 
 import (
 	"context"
+	"errors"
+	"sort"
+	"strconv"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Graphs is the time-series bundle for the Graphs tab. Every play series is in the
@@ -42,9 +47,9 @@ const (
 )
 
 // metricExpr is the SQL aggregate for a metric: plays, or hours watched.
-func metricExpr(metric string) string {
+func metricExpr(db store.Execer, metric string) string {
 	if metric == MetricDuration {
-		return `COALESCE(` + watchedSum + `,0) / 3600.0`
+		return `COALESCE(` + watchedSumFor(db) + `,0) / 3600.0`
 	}
 	return `COUNT(*)`
 }
@@ -62,7 +67,7 @@ func (s *Service) Graphs(ctx context.Context, windowDays int, metric, server str
 	if metric != MetricDuration {
 		metric = MetricPlays
 	}
-	agg := metricExpr(metric)
+	agg := metricExpr(s.repo.db, metric)
 	// Local-midnight-aligned start (windowStart) so this matches the 'localtime'-grouped SQL and the
 	// local dayAxis labels — a UTC-truncated start made the first day of every window mis-count.
 	since := windowStart(windowDays)
@@ -102,10 +107,10 @@ func (s *Service) Graphs(ctx context.Context, windowDays int, metric, server str
 		return Graphs{}, err
 	}
 
-	if err := scanBuckets(ctx, s.repo, `strftime('%w', started_at, 'unixepoch', 'localtime')`, agg, since, server, g.ByDayOfWeek); err != nil {
+	if err := scanBuckets(ctx, s.repo, "weekday", agg, since, server, g.ByDayOfWeek); err != nil {
 		return Graphs{}, err
 	}
-	if err := scanBuckets(ctx, s.repo, `strftime('%H', started_at, 'unixepoch', 'localtime')`, agg, since, server, g.ByHour); err != nil {
+	if err := scanBuckets(ctx, s.repo, "hour", agg, since, server, g.ByHour); err != nil {
 		return Graphs{}, err
 	}
 
@@ -135,8 +140,16 @@ func (s *Service) Graphs(ctx context.Context, windowDays int, metric, server str
 // dailySeries sums agg per local day and per value of keyCol over the charted media types,
 // handing each (day index, key, value) to put. Days outside the axis are skipped.
 func (s *Service) dailySeries(ctx context.Context, keyCol, agg string, since int64, server string, idx map[string]int, put func(i int, key string, v float64)) error {
+	day := `strftime('%Y-%m-%d', started_at, 'unixepoch', 'localtime')`
+	postgres := store.DialectOf(s.repo.db) == store.Postgres
+	if postgres {
+		// Bucket epoch seconds with Go's application-local timezone, not the
+		// remote database's timezone. This also handles DST and fixed zones
+		// without guessing an equivalent PostgreSQL/IANA zone name.
+		day = "started_at"
+	}
 	rows, err := s.repo.db.QueryContext(ctx, `
-		SELECT strftime('%Y-%m-%d', started_at, 'unixepoch', 'localtime') d, `+keyCol+`, `+agg+`
+		SELECT `+day+` d, `+keyCol+`, `+agg+`
 		FROM stream_sessions WHERE started_at >= ? AND `+graphMediaTypes+serverAnd("", server)+` GROUP BY d, `+keyCol, since)
 	if err != nil {
 		return err
@@ -147,6 +160,13 @@ func (s *Service) dailySeries(ctx context.Context, keyCol, agg string, since int
 		var v float64
 		if err := rows.Scan(&d, &key, &v); err != nil {
 			return err
+		}
+		if postgres {
+			at, err := strconv.ParseInt(d, 10, 64)
+			if err != nil {
+				return err
+			}
+			d = time.Unix(at, 0).In(time.Local).Format("2006-01-02")
 		}
 		if i, ok := idx[d]; ok {
 			put(i, key, v)
@@ -168,9 +188,17 @@ func dayAxis(n int) ([]string, map[string]int) {
 	return days, idx
 }
 
-// scanBuckets fills a slice keyed by a strftime bucket expression (values are the bucket
-// index) with agg per bucket.
-func scanBuckets(ctx context.Context, r *repo, expr, agg string, since int64, server string, out []float64) error {
+// scanBuckets fills weekday or hour buckets with the aggregate. PostgreSQL
+// groups by epoch second first, then the application applies its local timezone.
+func scanBuckets(ctx context.Context, r *repo, kind, agg string, since int64, server string, out []float64) error {
+	expr := `strftime('%H', started_at, 'unixepoch', 'localtime')`
+	if kind == "weekday" {
+		expr = `strftime('%w', started_at, 'unixepoch', 'localtime')`
+	}
+	postgres := store.DialectOf(r.db) == store.Postgres
+	if postgres {
+		expr = "started_at"
+	}
 	rows, err := r.db.QueryContext(ctx, `SELECT `+expr+` b, `+agg+` FROM stream_sessions WHERE started_at >= ?`+serverAnd("", server)+` GROUP BY b`, since)
 	if err != nil {
 		return err
@@ -182,8 +210,20 @@ func scanBuckets(ctx context.Context, r *repo, expr, agg string, since int64, se
 		if err := rows.Scan(&b, &c); err != nil {
 			return err
 		}
-		if i := atoiSafe(b); i >= 0 && i < len(out) {
-			out[i] = c
+		i := atoiSafe(b)
+		if postgres {
+			at, err := strconv.ParseInt(b, 10, 64)
+			if err != nil {
+				return err
+			}
+			local := time.Unix(at, 0).In(time.Local)
+			i = local.Hour()
+			if kind == "weekday" {
+				i = int(local.Weekday())
+			}
+		}
+		if i >= 0 && i < len(out) {
+			out[i] += c
 		}
 	}
 	return rows.Err()
@@ -193,11 +233,14 @@ func scanBuckets(ctx context.Context, r *repo, expr, agg string, since int64, se
 // across both servers the hour's figure is each server's peak added together: an upper
 // bound when the two peaked at different moments, never an undercount.
 func (s *Service) bandwidthSeries(ctx context.Context, since int64, server string) ([]BWPoint, error) {
+	if store.DialectOf(s.repo.db) == store.Postgres {
+		return s.bandwidthLocal(ctx, since, server)
+	}
 	rows, err := s.repo.db.QueryContext(ctx, `
 		SELECT bucket, SUM(t), SUM(l), SUM(w) FROM (
 			SELECT strftime('%Y-%m-%d %H:00', at, 'unixepoch', 'localtime') bucket, server,
 			       MAX(total_kbps) t, MAX(lan_kbps) l, MAX(wan_kbps) w
-			FROM bandwidth_samples WHERE at >= ?`+serverAnd("", server)+` GROUP BY bucket, server)
+			FROM bandwidth_samples WHERE at >= ?`+serverAnd("", server)+` GROUP BY bucket, server) AS peaks
 		GROUP BY bucket ORDER BY bucket`, since)
 	if err != nil {
 		return nil, err
@@ -212,6 +255,63 @@ func (s *Service) bandwidthSeries(ctx context.Context, since int64, server strin
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Service) bandwidthLocal(ctx context.Context, since int64, server string) ([]BWPoint, error) {
+	rows, err := s.repo.db.QueryContext(ctx, `SELECT at, server, MAX(total_kbps), MAX(lan_kbps), MAX(wan_kbps)
+		FROM bandwidth_samples WHERE at >= ?`+serverAnd("", server)+` GROUP BY at, server`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type key struct{ bucket, server string }
+	peaks := map[key]BWPoint{}
+	for rows.Next() {
+		var at int64
+		var server string
+		var point BWPoint
+		if err := rows.Scan(&at, &server, &point.Total, &point.LAN, &point.WAN); err != nil {
+			return nil, err
+		}
+		point.T = time.Unix(at, 0).In(time.Local).Format("2006-01-02 15:00")
+		k := key{point.T, server}
+		if previous, exists := peaks[k]; exists {
+			point.Total = max(point.Total, previous.Total)
+			point.LAN = max(point.LAN, previous.LAN)
+			point.WAN = max(point.WAN, previous.WAN)
+		}
+		peaks[k] = point
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	totals := map[string]BWPoint{}
+	for k, point := range peaks {
+		total := totals[k.bucket]
+		total.T = k.bucket
+		var ok bool
+		if total.Total, ok = bandwidthSum(total.Total, point.Total); !ok {
+			return nil, errors.New("bandwidth total exceeds signed 64-bit range")
+		}
+		if total.LAN, ok = bandwidthSum(total.LAN, point.LAN); !ok {
+			return nil, errors.New("bandwidth LAN total exceeds signed 64-bit range")
+		}
+		if total.WAN, ok = bandwidthSum(total.WAN, point.WAN); !ok {
+			return nil, errors.New("bandwidth WAN total exceeds signed 64-bit range")
+		}
+		totals[k.bucket] = total
+	}
+	out := make([]BWPoint, 0, len(totals))
+	for _, point := range totals {
+		out = append(out, point)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].T < out[j].T })
+	return out, nil
+}
+
+func bandwidthSum(a, b int64) (int64, bool) {
+	sum := a + b
+	return sum, !(b > 0 && sum < a || b < 0 && sum > a)
 }
 
 func atoiSafe(s string) int {

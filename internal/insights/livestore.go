@@ -140,7 +140,7 @@ func (s *Service) saveAllLive(ctx context.Context, tr *tracker) {
 	if len(tr.live) == 0 {
 		return
 	}
-	err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		for _, ls := range tr.live {
 			if err := s.repo.saveLive(ctx, tx, ls); err != nil {
 				return err

@@ -2,13 +2,13 @@ package movies
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The needs-review list: folders a library scan couldn't confidently identify. It lives in
@@ -26,7 +26,7 @@ const mediaMovie = "movie"
 // scan, since nobody looked at them.
 func (r *Repo) replaceUnmatched(ctx context.Context, media string, list []UnmatchedFolder, complete bool, keep []string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	return r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+	return r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
 		if complete {
 			q, args := `DELETE FROM library_unmatched WHERE media = ?`, []any{media}
 			if len(keep) > 0 {
@@ -77,7 +77,7 @@ func (r *Repo) unmatched(ctx context.Context, media string, roots []string) ([]U
 		marks = append(marks, "?")
 	}
 	rows, err := r.q().QueryContext(ctx, `SELECT folder, root, title, year, candidates_json FROM library_unmatched
-		WHERE media = ? AND root IN (`+strings.Join(marks, ",")+`) ORDER BY folder COLLATE NOCASE`, args...)
+		WHERE media = ? AND root IN (`+strings.Join(marks, ",")+`) ORDER BY `+store.FoldASCII(r.q(), "folder"), args...)
 	if err != nil {
 		return nil, err
 	}

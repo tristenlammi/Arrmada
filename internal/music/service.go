@@ -2,7 +2,6 @@ package music
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service is the Music module's application logic.
@@ -27,7 +27,7 @@ type Service struct {
 }
 
 // NewService wires the module.
-func NewService(db *sql.DB, meta metadata.MusicProvider, log *slog.Logger) *Service {
+func NewService(db store.Pool, meta metadata.MusicProvider, log *slog.Logger) *Service {
 	return &Service{repo: NewRepo(db), meta: meta, log: log}
 }
 

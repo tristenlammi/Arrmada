@@ -46,12 +46,42 @@ var cliCommands = []cliCommand{
 	{name: "reset-2fa", args: "<email> [--policy-off] | --policy-off", summary: "turn off two-factor sign-in for an account whose authenticator and recovery codes are lost", dataDir: true, run: cmdResetTwoFactor},
 	{name: "restore", args: "<backup name | path to .db or .db.gz> | --cancel", summary: "check a backup and put it in place the next time Arrmada starts", dataDir: true,
 		run: func(_ context.Context, c *cli, args []string) int {
+			if c.cfg.DatabaseBackend == "postgres" {
+				fmt.Fprintln(c.stderr, "arrmada restore:", backup.ErrOfflineRestoreOnly)
+				return exitFail
+			}
 			return restoreCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
 		}},
+	{name: "restore-postgres", args: "--schema <empty destination schema> <archive.pgdump>", summary: "restore offline into an empty PostgreSQL schema using ARRMADA_POSTGRES_URL", dataDir: true, run: cmdRestorePostgres},
+	{name: "convert-database", args: "--from sqlite|postgres --to postgres|sqlite --sqlite-file <source or new destination.db>", summary: "convert offline between SQLite and the configured PostgreSQL schema; preserve the source", dataDir: true, run: cmdConvertDatabase},
 	{name: "backups", summary: "list the backups in the data folder", dataDir: true,
 		run: func(_ context.Context, c *cli, args []string) int {
-			return backupsCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
+			return backupsCommandForBackend(c.cfg.DataDir, args, c.stdout, c.stderr, store.Dialect(c.cfg.DatabaseBackend), c.cfg.PostgresBinDir)
 		}},
+}
+
+func cmdRestorePostgres(ctx context.Context, c *cli, args []string) int {
+	flags := newFlags(c, "restore-postgres")
+	schema := flags.String("schema", "", "pre-provisioned empty destination schema (required)")
+	pos, stop, code := parseFlags(flags, args)
+	if stop {
+		return code
+	}
+	if *schema == "" || len(pos) != 1 {
+		fmt.Fprintln(c.stderr, "Usage: arrmada restore-postgres --schema <empty destination schema> <archive.pgdump>")
+		return exitUsage
+	}
+	address := os.Getenv("ARRMADA_POSTGRES_URL")
+	if address == "" {
+		fmt.Fprintln(c.stderr, "arrmada restore-postgres: set ARRMADA_POSTGRES_URL; connection credentials must not be command-line arguments")
+		return exitUsage
+	}
+	if err := store.RestorePostgres(ctx, store.PostgresOptions{URL: address, Schema: *schema, BinDir: c.cfg.PostgresBinDir}, pos[0], filepath.Join(c.cfg.DataDir, "restore-work")); err != nil {
+		fmt.Fprintf(c.stderr, "arrmada restore-postgres: %v\n", err)
+		return exitFail
+	}
+	fmt.Fprintln(c.stdout, "PostgreSQL recovery verified and committed. Source archive preserved; runtime configuration was not changed.")
+	return exitOK
 }
 
 // cli is what a command runs with: its streams and, for dataDir commands, the config.
@@ -192,7 +222,7 @@ func cmdSchema(ctx context.Context, c *cli, args []string) int {
 		fmt.Fprintf(c.stderr, "arrmada schema: unexpected argument %q\n", pos[0])
 		return exitUsage
 	}
-	st, err := store.OpenNoMigrate(c.cfg.DataDir)
+	st, err := openMaintenanceStore(ctx, c.cfg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "arrmada schema: %v\n", err)
 		return exitFail
@@ -221,7 +251,7 @@ func cmdSchema(ctx context.Context, c *cli, args []string) int {
 	return exitOK
 }
 
-// cmdBackup takes a checked copy of the live database (the same VACUUM INTO snapshot
+// cmdBackup takes a checked backend-native copy of the live database (the same snapshot
 // the app's own backups use) without stopping the server, prunes that kind to its
 // retention, and prints the new file's path.
 func cmdBackup(ctx context.Context, c *cli, args []string) int {
@@ -243,7 +273,7 @@ func cmdBackup(ctx context.Context, c *cli, args []string) int {
 
 	// Never migrates: a backup must copy the database as it is, and the server running
 	// beside this owns upgrades.
-	st, err := store.OpenNoMigrate(c.cfg.DataDir)
+	st, err := openMaintenanceStore(ctx, c.cfg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "arrmada backup: %v\n", err)
 		return exitFail

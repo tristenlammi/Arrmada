@@ -124,7 +124,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	f := &fixture{db: st.DB(), lib: &fakeLibrary{items: map[string]Item{}}, told: &told{}, users: map[string]int64{}}
+	f := &fixture{db: st.DB().(*sql.DB), lib: &fakeLibrary{items: map[string]Item{}}, told: &told{}, users: map[string]int64{}}
 	for _, name := range []string{"alice", "bob", "carol"} {
 		res, err := f.db.Exec(`INSERT INTO users (username, password_hash, role) VALUES (?, 'x', 'requester')`, name)
 		if err != nil {

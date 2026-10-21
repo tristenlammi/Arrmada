@@ -64,7 +64,7 @@ func importedEndSQL(t string) string {
 // rating_key, title, grandparent_title, parent_index and media_index; end is the SQL for
 // i's window end. The single-row check and the repair both use it, so the import and the
 // repair can never disagree about what a duplicate is.
-func liveOverlapSQL(end string) string {
+func liveOverlapSQL(db store.Execer, end string) string {
 	return `EXISTS (SELECT 1 FROM stream_sessions l
 		WHERE l.session_key <> '' AND l.user_id = i.user_id
 		  AND l.started_at >= i.started_at - ` + fmt.Sprint(maxLiveLeadSecs) + `
@@ -72,8 +72,8 @@ func liveOverlapSQL(end string) string {
 		  AND ((i.rating_key <> '' AND l.rating_key = i.rating_key)
 		    OR (i.title <> '' AND l.title = i.title AND l.grandparent_title = i.grandparent_title
 		        AND l.parent_index = i.parent_index AND l.media_index = i.media_index))
-		  AND 2 * (MIN(l.stopped_at, ` + end + `) - MAX(l.started_at, i.started_at))
-		      > MIN(l.stopped_at - l.started_at, ` + end + ` - i.started_at))`
+		  AND 2 * (` + store.ScalarMin(db, "l.stopped_at", end) + ` - ` + store.ScalarMax(db, "l.started_at", "i.started_at") + `)
+		      > ` + store.ScalarMin(db, "l.stopped_at - l.started_at", end+" - i.started_at") + `)`
 }
 
 // overlapsLive reports whether Arrmada already recorded this play live.
@@ -84,18 +84,20 @@ func (r *repo) overlapsLive(ctx context.Context, w playWindow) (bool, error) {
 	var hit bool
 	err := r.db.QueryRowContext(ctx, `
 		WITH i(user_id, started_at, end_at, rating_key, title, grandparent_title, parent_index, media_index)
-		  AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?))
-		SELECT `+liveOverlapSQL("i.end_at")+` FROM i`,
+		  AS (VALUES (CAST(? AS text), CAST(? AS bigint), CAST(? AS bigint), CAST(? AS text), CAST(? AS text), CAST(? AS text), CAST(? AS bigint), CAST(? AS bigint)))
+		SELECT `+liveOverlapSQL(r.db, "i.end_at")+` FROM i`,
 		w.UserID, w.Start, w.End, w.RatingKey, w.Title, w.GrandparentTitle, w.ParentIndex, w.MediaIndex).Scan(&hit)
 	return hit, err
 }
 
 // importOverlapWhere selects imported rows (an empty session_key) that repeat a live play.
-var importOverlapWhere = `i.session_key = '' AND i.user_id <> '' AND ` + liveOverlapSQL(importedEndSQL("i"))
+func importOverlapWhere(db store.Execer) string {
+	return `i.session_key = '' AND i.user_id <> '' AND ` + liveOverlapSQL(db, importedEndSQL("i"))
+}
 
 func (r *repo) countImportOverlaps(ctx context.Context) (int, error) {
 	var n int
-	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM stream_sessions i WHERE `+importOverlapWhere).Scan(&n)
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM stream_sessions i WHERE `+importOverlapWhere(r.db)).Scan(&n)
 	return n, err
 }
 
@@ -104,9 +106,9 @@ var ErrOverlapsChanged = errors.New("the number of double-counted plays changed 
 
 func (r *repo) removeImportOverlaps(ctx context.Context, expected int) (int64, error) {
 	var removed int64
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM stream_sessions i WHERE `+importOverlapWhere).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM stream_sessions i WHERE `+importOverlapWhere(tx)).Scan(&n); err != nil {
 			return err
 		}
 		if expected >= 0 && n != expected {
@@ -117,7 +119,7 @@ func (r *repo) removeImportOverlaps(ctx context.Context, expected int) (int64, e
 		}
 		// The predicate only reads live rows, which this never deletes, so evaluating it
 		// again for the second statement selects exactly the same imported rows.
-		ids := `SELECT i.id FROM stream_sessions i WHERE ` + importOverlapWhere
+		ids := `SELECT i.id FROM stream_sessions i WHERE ` + importOverlapWhere(tx)
 		if _, err := tx.ExecContext(ctx, `DELETE FROM buffer_events WHERE session_id IN (`+ids+`)`); err != nil {
 			return err
 		}

@@ -88,7 +88,7 @@ func (c Connection) Subscribes(key string) bool {
 
 // Service stores connections and delivers notifications to them via Apprise.
 type Service struct {
-	db      *sql.DB
+	db      store.Pool
 	bus     *eventbus.Bus
 	log     *slog.Logger
 	apprise string // path to the apprise binary ("" if not found)
@@ -129,7 +129,7 @@ type Transport func(ctx context.Context, url, title, body string) error
 type AttachTransport func(ctx context.Context, url, title, body, attach string) error
 
 // NewService wires the notification service.
-func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
+func NewService(db store.Pool, bus *eventbus.Bus, log *slog.Logger) *Service {
 	s := &Service{db: db, bus: bus, log: log, wake: make(chan struct{}, 1), now: time.Now, poll: defaultQueuePoll, streams: newStreamMemory(), webhook: newWebhookClient()}
 	if p, err := exec.LookPath("apprise"); err == nil {
 		s.apprise = p
@@ -270,14 +270,12 @@ func legacyFlags(c Connection) (grab, imp, stream, buffering int) {
 func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) {
 	grab, imp, stream, buf := legacyFlags(c)
 	var id int64
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
+		var err error
+		id, err = store.InsertID(ctx, tx,
 			`INSERT INTO notifications (name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled, config, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config), c.Options.encode())
 		if err != nil {
-			return err
-		}
-		if id, err = res.LastInsertId(); err != nil {
 			return err
 		}
 		return writeEvents(ctx, tx, id, c.Events)
@@ -291,7 +289,7 @@ func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) 
 // Update changes a connection and replaces its subscriptions, together.
 func (s *Service) Update(ctx context.Context, id int64, c Connection) error {
 	grab, imp, stream, buf := legacyFlags(c)
-	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		res, err := tx.ExecContext(ctx,
 			`UPDATE notifications SET name = ?, kind = ?, url = ?, on_grab = ?, on_import = ?, on_stream = ?, on_buffering = ?, enabled = ?, config = ?, options = ? WHERE id = ?`,
 			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config), c.Options.encode(), id)
@@ -314,10 +312,10 @@ func (s *Service) Update(ctx context.Context, id int64, c Connection) error {
 	})
 }
 
-func writeEvents(ctx context.Context, tx *sql.Tx, id int64, events []string) error {
+func writeEvents(ctx context.Context, tx *store.Transaction, id int64, events []string) error {
 	for _, key := range events {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO notification_subscriptions (connection_id, event_key) VALUES (?, ?)`, id, key); err != nil {
+			`INSERT INTO notification_subscriptions (connection_id, event_key) VALUES (?, ?) ON CONFLICT DO NOTHING`, id, key); err != nil {
 			return err
 		}
 	}

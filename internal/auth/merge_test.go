@@ -2,9 +2,10 @@ package auth
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // mergeFixture: an admin with no Plex link, a duplicate Plex requester (plex id 4242) who
@@ -12,7 +13,7 @@ import (
 // and a third person whose request both of them follow.
 type mergeFixture struct {
 	s                *Service
-	db               *sql.DB
+	db               store.Pool
 	admin, dup, kid  *User
 	dupReq, adminReq int64
 }

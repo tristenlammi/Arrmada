@@ -3,7 +3,6 @@ package download
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service manages download clients and dispatches downloads to them.
@@ -118,7 +118,7 @@ func (s *Service) record(ctx context.Context, c Client, err error, dur time.Dura
 }
 
 // NewService wires a Service over the database.
-func NewService(db *sql.DB, log *slog.Logger) *Service {
+func NewService(db store.Pool, log *slog.Logger) *Service {
 	return &Service{repo: NewRepo(db), registry: NewRegistry(), log: log}
 }
 

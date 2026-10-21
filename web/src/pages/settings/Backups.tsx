@@ -168,7 +168,7 @@ export function Backups() {
     <div id="backups" className="scroll-mt-20 rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <h2 className="m-0 text-md font-bold">Backups</h2>
       <p className="mb-4 mt-0.5 text-sm text-ink-faint">
-        Copies of Arrmada's database: one every night, one before every update, and any you take yourself. Backups contain your API keys and password hashes. They're stored next to the database (on Unraid: /mnt/user/appdata/arrmada/backups when the data dir is in appdata), so download one now and then to keep a copy off this server.
+        Copies of Arrmada's database: one every night, one before every update, and any you take yourself. Backups contain your API keys and password hashes. They're stored in Arrmada's data directory (on Unraid: /mnt/user/appdata/arrmada/backups when the data dir is in appdata), so download one now and then to keep a copy off this server.
       </p>
 
       <div className="flex flex-col gap-4">
@@ -204,7 +204,7 @@ export function Backups() {
 
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={backUpNow} disabled={busy || progress !== null} className={btn} style={btnStyle}>{busy ? "Backing up…" : "Back up now"}</button>
-          <button onClick={() => fileRef.current?.click()} disabled={busy || progress !== null} title="A .db, or a .db.gz from Download — up to 4 GB" className={btn} style={btnStyle}>Restore from file…</button>
+          {state && state.can_upload !== false && <button onClick={() => fileRef.current?.click()} disabled={busy || progress !== null} title="A .db, or a .db.gz from Download — up to 4 GB" className={btn} style={btnStyle}>Restore from file…</button>}
           <input ref={fileRef} type="file" accept=".db,.gz,.sqlite,application/gzip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) upload(f); }} />
           {state && (
             <span className="text-sm text-ink-dim">
@@ -249,7 +249,7 @@ export function Backups() {
                     </div>
                     <span className="flex-none font-mono text-xs text-ink-faint">{fmtBytes(b.size_bytes)}</span>
                     <a href={backupDownloadURL(b.name)} download className={rowBtn} style={{ border: "1px solid var(--accent-line)", color: "var(--accent-text)" }}>Download</a>
-                    <button onClick={() => setToRestore(b)} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Restore</button>
+                    {state.can_restore !== false && b.backend !== "postgres" && <button onClick={() => setToRestore(b)} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Restore</button>}
                     <button onClick={() => setToDelete(b)} disabled={pending?.name === b.name} title={pending?.name === b.name ? "Staged to be restored — cancel the restore first" : undefined} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--reject-text)" }}>Delete</button>
                   </div>
                 );
@@ -261,7 +261,9 @@ export function Backups() {
         {state && <NightlySchedule schedule={state.settings} lastNightly={state.last_nightly_at} save={saveSchedule} />}
 
         {state && <p className="m-0 truncate font-mono text-xs text-ink-faint" title={state.dir}>{state.dir}</p>}
-        <p className="m-0 text-xs text-ink-faint">Backups sit on the same disk as the database, so they cover a bad update or a mistake — not a failed disk. That's what Download is for. Restore from file takes a .db or a downloaded .db.gz up to 4 GB; behind Cloudflare anything over 100 MB fails, so upload big ones from your home network.</p>
+        <p className="m-0 text-xs text-ink-faint">{state?.backend === "postgres"
+          ? <>PostgreSQL native archives live on this Arrmada server. Download a copy off-server. Recovery is offline only: stop Arrmada, provision an empty schema and use <code>arrmada restore-postgres --schema arrmada_recovered backup.pgdump</code> with the connection URL supplied securely through the environment. Media and other filesystem data need separate backups.</>
+          : <>Backups sit on the same disk as the database, so they cover a bad update or a mistake — not a failed disk. That's what Download is for. Restore from file takes a .db or a downloaded .db.gz up to 4 GB; behind Cloudflare anything over 100 MB fails, so upload big ones from your home network.</>}</p>
       </div>
 
       {toDelete && (

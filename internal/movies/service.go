@@ -2,7 +2,6 @@ package movies
 
 import (
 	"context"
-	"database/sql"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -27,6 +26,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ProfileResolver reports the resolutions a quality-profile reference allows,
@@ -114,7 +114,7 @@ type UnmatchedFolder struct {
 
 // NewService wires the module. recycleDir is where deleted files are moved
 // ("" = hard delete).
-func NewService(db *sql.DB, meta metadata.MovieProvider, resolver ProfileResolver, root, recycleDir string, bus *eventbus.Bus, log *slog.Logger) *Service {
+func NewService(db store.Pool, meta metadata.MovieProvider, resolver ProfileResolver, root, recycleDir string, bus *eventbus.Bus, log *slog.Logger) *Service {
 	imp := library.NewImporter(root, log)
 	// Manual imports and renames that replace a file go through the same bin as deletes.
 	imp.SetRecycleDir(recycleDir)
@@ -759,7 +759,7 @@ func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int,
 // requested the film that it's ready — it was wanted, so that's news).
 func (s *Service) attachExisting(ctx context.Context, m Movie, video, eventPrefix string) error {
 	media := mediaJSONOf(s.probeTrack(video))
-	err := s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	err := s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		// Re-check inside the transaction: an import may have landed since the scan read it.
 		cur, err := r.Get(ctx, m.ID)
 		if err != nil {
@@ -1022,7 +1022,7 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 	// The file record and the outbox row land together: once the movie reads as
 	// downloaded, Convert, Subtitles and the requester are certain to hear about it. If
 	// anything fails nothing is written, and the import's attach is retried.
-	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	err = s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		// The release goes with the file: a new file with no known release keeps none of the
 		// old one's (the same path keeps it — the same file attached again).
 		release, setRelease := sourceRelease, sourceRelease != "" || target.FilePath != path
@@ -1595,7 +1595,7 @@ func (s *Service) setDefaultFile(ctx context.Context, id int64, path string) err
 // along with the file by movedMedia).
 func (s *Service) setDefaultFileWith(ctx context.Context, id int64, path string, info *MovieFile) error {
 	media := mediaJSONOf(info)
-	return s.repo.inTx(ctx, func(_ *sql.Tx, r *Repo) error {
+	return s.repo.inTx(ctx, func(_ *store.Transaction, r *Repo) error {
 		return setDefaultFileIn(ctx, r, id, path, media)
 	})
 }
@@ -1610,7 +1610,7 @@ func (s *Service) adoptDefaultFile(ctx context.Context, m Movie, path string) er
 	info := s.probeTrack(path)
 	same := s.sameFileRenamed(m, path, info)
 	media := mediaJSONOf(info)
-	return s.repo.inTx(ctx, func(_ *sql.Tx, r *Repo) error {
+	return s.repo.inTx(ctx, func(_ *store.Transaction, r *Repo) error {
 		if err := setDefaultFileIn(ctx, r, m.ID, path, media); err != nil {
 			return err
 		}

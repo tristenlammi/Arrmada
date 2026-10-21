@@ -17,7 +17,7 @@ func TestSearchStateOnBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.DB().(*sql.DB)
 	repo := NewRepo(db)
 	ctx := context.Background()
 	b, err := repo.Create(ctx, Book{OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", Monitored: true})

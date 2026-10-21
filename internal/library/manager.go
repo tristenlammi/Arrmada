@@ -2,7 +2,6 @@ package library
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Candidate is a finished download to (maybe) import. Kept package-local so the
@@ -222,7 +222,7 @@ func (m *Manager) SetGate(g ImportGate) { m.gate = g }
 func (m *Manager) SetFailureHook(f ImportFailure) { m.onFail = f }
 
 // NewManager wires the import manager against the library root.
-func NewManager(db *sql.DB, root string, bus *eventbus.Bus, log *slog.Logger) *Manager {
+func NewManager(db store.Pool, root string, bus *eventbus.Bus, log *slog.Logger) *Manager {
 	return &Manager{
 		imp:  NewImporter(root, log),
 		repo: &importRepo{db: db},

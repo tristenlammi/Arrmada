@@ -3,7 +3,6 @@ package indexer
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -247,7 +246,7 @@ func (s *Service) SyncProwlarr(ctx context.Context, o ProwlarrSync) (SyncResult,
 		res    SyncResult
 		resets []int64 // rows whose address, key or on/off changed: old failures no longer apply
 	)
-	err = store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		res, resets = SyncResult{}, nil
 		return s.applyProwlarr(ctx, tx, base, o.APIKey, remote, existing, &res, &resets)
 	})
@@ -275,7 +274,7 @@ func (s *Service) SyncProwlarr(ctx context.Context, o ProwlarrSync) (SyncResult,
 }
 
 // applyProwlarr writes one sync inside its transaction.
-func (s *Service) applyProwlarr(ctx context.Context, tx *sql.Tx, base, key string, remote []prowlarrIndexer, existing []Indexer, res *SyncResult, resets *[]int64) error {
+func (s *Service) applyProwlarr(ctx context.Context, tx *store.Transaction, base, key string, remote []prowlarrIndexer, existing []Indexer, res *SyncResult, resets *[]int64) error {
 	byPID := map[int]Indexer{}
 	byName := map[string]Indexer{} // rows synced before prowlarr_id, matched once by name
 	for _, e := range existing {
@@ -419,7 +418,7 @@ func prowlarrKind(usenet bool) Kind {
 
 // syncOff switches a row off for a sync with note. A row already off for the owner's own
 // reason stays theirs; one a sync turned off just gets the newer note.
-func (s *Service) syncOff(ctx context.Context, tx *sql.Tx, e Indexer, note string, res *SyncResult) error {
+func (s *Service) syncOff(ctx context.Context, tx *store.Transaction, e Indexer, note string, res *SyncResult) error {
 	switch {
 	case e.Enabled:
 		res.Disabled++

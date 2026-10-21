@@ -4,16 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a client id doesn't exist.
 var ErrNotFound = errors.New("download client not found")
 
 // Repo persists download clients in SQLite.
-type Repo struct{ db *sql.DB }
+type Repo struct{ db store.Pool }
 
 // NewRepo builds a repository over the given pool.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 const clientCols = `id, name, kind, url, username, password, category, enabled, priority, bundled, path_maps`
 
@@ -102,14 +104,14 @@ func (r *Repo) Create(ctx context.Context, c Client) (Client, error) {
 	if c.Priority <= 0 {
 		c.Priority = DefaultPriority
 	}
-	res, err := r.db.ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.db,
 		`INSERT INTO download_clients (name, kind, url, username, password, category, enabled, priority, bundled, path_maps)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.Name, c.Kind, c.URL, c.Username, c.Password, c.Category, boolToInt(c.Enabled), c.Priority, boolToInt(c.Bundled), encodePathMaps(c.PathMaps))
 	if err != nil {
 		return Client{}, err
 	}
-	c.ID, _ = res.LastInsertId()
+	c.ID = id
 	return c, nil
 }
 

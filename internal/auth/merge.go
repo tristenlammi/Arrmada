@@ -168,7 +168,7 @@ func (s *Service) MergePlexDuplicate(ctx context.Context, targetID, fromID int64
 // signed out, not moved (see MergePreview.SignedInDevices), and its two-factor sign-in is
 // turned off, not moved (MergePreview.TwoFactor).
 func (s *Service) MergeDuplicate(ctx context.Context, targetID, fromID int64) error {
-	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		target, from, err := mergeCheck(ctx, tx, targetID, fromID)
 		if err != nil {
 			return err
@@ -196,27 +196,32 @@ func (s *Service) MergeDuplicate(ctx context.Context, targetID, fromID int64) er
 			{"requests", `UPDATE requests SET requested_by = ?, requested_by_name = ? WHERE requested_by = ?`, []any{targetID, to, fromID}},
 			// Following: one row per request and person; the target keeps its own, and never
 			// follows a request it now owns.
-			{"followed requests", `UPDATE OR IGNORE request_subscribers SET user_id = ?, user_name = ? WHERE user_id = ?`, []any{targetID, to, fromID}},
+			{"followed requests", `UPDATE request_subscribers SET user_id = ?, user_name = ? WHERE user_id = ?
+				AND NOT EXISTS (SELECT 1 FROM request_subscribers kept WHERE kept.request_id = request_subscribers.request_id AND kept.user_id = ?)`, []any{targetID, to, fromID, targetID}},
 			{"followed requests", `DELETE FROM request_subscribers WHERE user_id = ?`, []any{fromID}},
 			{"followed requests", `DELETE FROM request_subscribers WHERE user_id = ? AND request_id IN (SELECT id FROM requests WHERE requested_by = ?)`, []any{targetID, targetID}},
-			{"inbox", `UPDATE OR IGNORE user_notifications SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
+			{"inbox", `UPDATE user_notifications SET user_id = ? WHERE user_id = ?
+				AND NOT EXISTS (SELECT 1 FROM user_notifications kept WHERE kept.ref = user_notifications.ref AND kept.user_id = ?)`, []any{targetID, fromID, targetID}},
 			{"inbox", `DELETE FROM user_notifications WHERE user_id = ?`, []any{fromID}},
 			{"push devices", `UPDATE push_subscriptions SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
 			{"request limits", `UPDATE request_usage SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
 			// Reported problems: one row per issue and person; where both reported the same
 			// one, the target's own report stays.
 			{"reported problems", `UPDATE issues SET reported_by = ?, reported_by_name = ? WHERE reported_by = ?`, []any{targetID, to, fromID}},
-			{"reported problems", `UPDATE OR IGNORE issue_reporters SET user_id = ?, user_name = ? WHERE user_id = ?`, []any{targetID, to, fromID}},
+			{"reported problems", `UPDATE issue_reporters SET user_id = ?, user_name = ? WHERE user_id = ?
+				AND NOT EXISTS (SELECT 1 FROM issue_reporters kept WHERE kept.issue_id = issue_reporters.issue_id AND kept.user_id = ?)`, []any{targetID, to, fromID, targetID}},
 			{"reported problems", `DELETE FROM issue_reporters WHERE user_id = ?`, []any{fromID}},
 			// Audiobooks: places and bookmarks move unless the target has its own for that
 			// book; history, sessions and the listening log all move (they're keyed by
 			// session or row id, so nothing collides).
-			{"audiobook places", `UPDATE OR IGNORE listen_progress SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
-			{"audiobook bookmarks", `UPDATE OR IGNORE listen_bookmarks SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
+			{"audiobook places", `UPDATE listen_progress SET user_id = ? WHERE user_id = ?
+				AND NOT EXISTS (SELECT 1 FROM listen_progress kept WHERE kept.item_key = listen_progress.item_key AND kept.user_id = ?)`, []any{targetID, fromID, targetID}},
+			{"audiobook bookmarks", `UPDATE listen_bookmarks SET user_id = ? WHERE user_id = ?
+				AND NOT EXISTS (SELECT 1 FROM listen_bookmarks kept WHERE kept.item_key = listen_bookmarks.item_key AND kept.time = listen_bookmarks.time AND kept.user_id = ?)`, []any{targetID, fromID, targetID}},
 			{"audiobook history", `UPDATE listen_history SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
 			{"audiobook sessions", `UPDATE listen_sessions SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
 			{"listening log", `UPDATE listen_log SET user_id = ? WHERE user_id = ?`, []any{targetID, fromID}},
-			{"audiobook password", `INSERT OR IGNORE INTO audio_passwords (user_id, hash, updated_at) SELECT ?, hash, updated_at FROM audio_passwords WHERE user_id = ?`, []any{targetID, fromID}},
+			{"audiobook password", `INSERT INTO audio_passwords (user_id, hash, updated_at) SELECT ?, hash, updated_at FROM audio_passwords WHERE user_id = ? ON CONFLICT(user_id) DO NOTHING`, []any{targetID, fromID}},
 			{"personal alerts", `UPDATE users SET apprise_url = (SELECT apprise_url FROM users WHERE id = ?) WHERE id = ? AND apprise_url = ''`, []any{fromID, targetID}},
 			// Their per-event notification choices, when the target never made any.
 			{"notification choices", `UPDATE users SET notify_prefs = (SELECT notify_prefs FROM users WHERE id = ?) WHERE id = ? AND notify_prefs = ''`, []any{fromID, targetID}},

@@ -2,7 +2,6 @@ package issues
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -40,7 +39,7 @@ type Publisher interface {
 
 // Service records issues and resolves them.
 type Service struct {
-	db   *sql.DB
+	db   store.Pool
 	lib  Library
 	log  *slog.Logger
 	now  func() time.Time
@@ -53,7 +52,7 @@ type Service struct {
 
 // NewService builds the service. lib reads the library; the other parts are wired with the
 // setters and may stay unset (tests).
-func NewService(db *sql.DB, lib Library, log *slog.Logger) *Service {
+func NewService(db store.Pool, lib Library, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -117,7 +116,7 @@ func (s *Service) Create(ctx context.Context, r Report) (Issue, bool, error) {
 	t := Target{MediaType: r.MediaType, LibraryID: it.LibraryID, Season: r.Season, Episode: r.Episode}
 	var out Issue
 	joined := false
-	err = store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		// The transaction holds the write lock from its start (BEGIN IMMEDIATE), so two
 		// people reporting at once can't both miss the live issue and open two.
 		live, ok, err := liveIssue(ctx, tx, t, r.Category)

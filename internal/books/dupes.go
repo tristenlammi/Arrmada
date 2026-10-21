@@ -2,7 +2,6 @@ package books
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"regexp"
 	"sort"
@@ -349,7 +348,7 @@ func (s *Service) IgnoreDuplicates(ctx context.Context, ids []int64) error {
 		list = append(list, id)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
-	return store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		for i := range list {
 			for j := i + 1; j < len(list); j++ {
 				if _, err := tx.ExecContext(ctx,
@@ -375,7 +374,7 @@ func (s *Service) flagDuplicate(ctx context.Context, a, b int64, reason string) 
 	}
 	p := pairOf(a, b)
 	if _, err := s.repo.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO book_dupe_reviews (a_id, b_id, reason, status) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO book_dupe_reviews (a_id, b_id, reason, status) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		p[0], p[1], reason, dupOpen); err != nil {
 		s.log.Warn("books: couldn't record a possible duplicate", "book_id", a, "other_id", b, "err", err)
 	}
@@ -384,14 +383,15 @@ func (s *Service) flagDuplicate(ctx context.Context, a, b int64, reason string) 
 // carryDupeReviewsTx gives the kept book the dropped one's review pairs with other
 // books (a "these are different" still holds for the merged book), before the dropped
 // row's own pairs go with it.
-func carryDupeReviewsTx(ctx context.Context, tx *sql.Tx, keepID, dropID int64) error {
+func carryDupeReviewsTx(ctx context.Context, tx *store.Transaction, keepID, dropID int64) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO book_dupe_reviews (a_id, b_id, reason, status, created_at)
-		 SELECT MIN(?, other), MAX(?, other), reason, status, created_at FROM (
+		`INSERT INTO book_dupe_reviews (a_id, b_id, reason, status, created_at)
+		 SELECT CASE WHEN ? < other THEN ? ELSE other END,
+		        CASE WHEN ? > other THEN ? ELSE other END, reason, status, created_at FROM (
 		   SELECT CASE WHEN a_id = ? THEN b_id ELSE a_id END AS other, reason, status, created_at
-		     FROM book_dupe_reviews WHERE a_id = ? OR b_id = ?)
-		 WHERE other != ?`,
-		keepID, keepID, dropID, dropID, dropID, keepID)
+		     FROM book_dupe_reviews WHERE a_id = ? OR b_id = ?) AS pairs
+		 WHERE other != ? ON CONFLICT DO NOTHING`,
+		keepID, keepID, keepID, keepID, dropID, dropID, dropID, keepID)
 	return err
 }
 
@@ -406,7 +406,7 @@ var mergedDetailRe = regexp.MustCompile(`^Merged (duplicate entry )?(?:("(?:[^"\
 func (s *Service) PastMerges(ctx context.Context, limit int) ([]PastMerge, error) {
 	rows, err := s.repo.db.QueryContext(ctx,
 		`SELECT e.book_id, b.title, e.detail, e.created_at FROM book_events e JOIN books b ON b.id = e.book_id
-		  WHERE e.event = 'merged' AND (e.detail LIKE 'Merged duplicate entry %' OR e.detail LIKE 'Merged “%')
+		  WHERE e.event = 'merged' AND (`+store.LikeASCII(s.repo.db, "e.detail", "'Merged duplicate entry %'", false)+` OR `+store.LikeASCII(s.repo.db, "e.detail", "'Merged “%'", false)+`)
 		  ORDER BY e.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err

@@ -2,7 +2,6 @@ package requests
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +22,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service is the Requests module's application logic. On approval it hands the media
@@ -166,7 +166,7 @@ type PushSender interface {
 func (s *Service) SetPushSender(p PushSender) { s.push = p }
 
 // NewService wires the module. bus + appriseBin drive request-ready notifications (both optional).
-func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {
+func NewService(db store.Pool, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {
 	s := &Service{repo: NewRepo(db), quality: q, bus: bus, appriseBin: appriseBin, log: log}
 	// Only non-nil pointers go into the interfaces: a nil *movies.Service in one would
 	// pass every "is it wired?" check and then panic.

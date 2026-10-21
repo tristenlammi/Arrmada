@@ -2,7 +2,6 @@ package attention
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -107,7 +106,7 @@ func eventFor(it Item) string {
 // Alerter turns the attention feed into alerts. Its Diff runs at the end of every
 // refresh (Service.SetAlerts).
 type Alerter struct {
-	db    *sql.DB
+	db    store.Pool
 	emit  Emitter
 	flags Flags
 	log   *slog.Logger
@@ -122,7 +121,7 @@ type Alerter struct {
 }
 
 // NewAlerter builds the alerter. Call it at start-up: the boot grace counts from now.
-func NewAlerter(db *sql.DB, emit Emitter, flags Flags, log *slog.Logger) *Alerter {
+func NewAlerter(db store.Pool, emit Emitter, flags Flags, log *slog.Logger) *Alerter {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -363,7 +362,7 @@ func (a *Alerter) load(ctx context.Context) (map[string]*alertRow, error) {
 }
 
 func (a *Alerter) save(ctx context.Context, rows map[string]*alertRow) error {
-	return store.WithTx(ctx, a.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, a.db, func(tx *store.Transaction) error {
 		for _, r := range rows {
 			if !r.dirty {
 				continue

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Request quotas: an optional limit on how much one person can ask for in a rolling
@@ -172,7 +174,7 @@ func (r *Repo) refundQuota(ctx context.Context, requestID int64) error {
 // trimQuota lowers a series request's season charge to the seasons approved.
 func (r *Repo) trimQuota(ctx context.Context, requestID int64, seasons int) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE request_usage SET units = MIN(units, ?) WHERE request_id = ? AND kind = ?`, seasons, requestID, QuotaSeason)
+		`UPDATE request_usage SET units = `+store.ScalarMin(r.db, "units", "?")+` WHERE request_id = ? AND kind = ?`, seasons, requestID, QuotaSeason)
 	return err
 }
 

@@ -1,7 +1,6 @@
 package series
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -278,7 +277,7 @@ func TestRenumberKeepsPresetHonest(t *testing.T) {
 	ctx := t.Context()
 	check := func() string {
 		t.Helper()
-		if err := store.WithTx(ctx, repo.db, func(tx *sql.Tx) error { return markCustomIfRenumberedTx(ctx, tx, id) }); err != nil {
+		if err := store.WithTx(ctx, repo.db, func(tx *store.Transaction) error { return markCustomIfRenumberedTx(ctx, tx, id) }); err != nil {
 			t.Fatal(err)
 		}
 		s, _ := repo.Get(ctx, id)

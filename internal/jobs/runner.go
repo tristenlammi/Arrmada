@@ -18,7 +18,6 @@ package jobs
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +27,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Job states.
@@ -157,7 +157,7 @@ type entry struct {
 
 // Runner runs jobs. Create with New; stop with Shutdown.
 type Runner struct {
-	db  *sql.DB
+	db  store.Pool
 	log *slog.Logger
 	bus Publisher
 
@@ -178,7 +178,7 @@ type Runner struct {
 
 // New makes a Runner whose jobs run under ctx (the app's run context). Jobs left queued
 // or running by a crash or a kill are marked interrupted: they will never finish.
-func New(ctx context.Context, db *sql.DB, log *slog.Logger, bus Publisher) (*Runner, error) {
+func New(ctx context.Context, db store.Pool, log *slog.Logger, bus Publisher) (*Runner, error) {
 	if log == nil {
 		log = slog.Default()
 	}

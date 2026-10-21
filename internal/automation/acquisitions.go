@@ -147,8 +147,10 @@ func (c *Coordinator) acquisitionsWhere(ctx context.Context, where string, args 
 // been gone from the client for longer than missingGrace, and less hashless 'grabbed' rows
 // older than a day: those can't be reconciled with the client, so their claim runs out
 // the way the pending-title guard's does (pendingTitleWhere). args: the cutoff (unix ms).
-const activeWhere = inFlightWhere + ` AND NOT (phase = '` + phaseMissing + `' AND updated_at < ?)` +
-	` AND NOT (info_hash = '' AND status = '` + grabStatusGrabbed + `' AND grabbed_at <= datetime('now', '-1 day'))`
+func (c *Coordinator) activeWhere() string {
+	return inFlightWhere + ` AND NOT (phase = '` + phaseMissing + `' AND updated_at < ?)` +
+		` AND NOT (info_hash = '' AND status = '` + grabStatusGrabbed + `' AND grabbed_at <= ` + store.UTCNowTimestamp(c.db, "'-1 day'") + `)`
+}
 
 func (c *Coordinator) missingCutoff() int64 { return c.clock().Add(-missingGrace).UnixMilli() }
 
@@ -156,7 +158,7 @@ func (c *Coordinator) missingCutoff() int64 { return c.clock().Add(-missingGrace
 // closed out. It fails closed — callers deciding whether to grab must skip the item on an
 // error, never treat it as "nothing in flight".
 func (c *Coordinator) Active(ctx context.Context, mediaType string, itemID int64) ([]Acquisition, error) {
-	return c.acquisitionsWhere(ctx, activeWhere+` AND media_type = ? AND movie_id = ?`,
+	return c.acquisitionsWhere(ctx, c.activeWhere()+` AND media_type = ? AND movie_id = ?`,
 		c.missingCutoff(), mediaType, itemID)
 }
 
@@ -178,7 +180,7 @@ func (c *Coordinator) ActiveForVersion(ctx context.Context, movieID, versionID i
 // ActiveByItem is every in-flight acquisition of one media type, keyed by item id — one
 // query for a list page or feed (the library list joins downloads through this).
 func (c *Coordinator) ActiveByItem(ctx context.Context, mediaType string) (map[int64][]Acquisition, error) {
-	all, err := c.acquisitionsWhere(ctx, activeWhere+` AND media_type = ?`, c.missingCutoff(), mediaType)
+	all, err := c.acquisitionsWhere(ctx, c.activeWhere()+` AND media_type = ?`, c.missingCutoff(), mediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +496,7 @@ func (c *Coordinator) ReconcileAcquisitions(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	defer c.grabsChanged()
-	err = store.WithTx(ctx, c.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, c.db, func(tx *store.Transaction) error {
 		for _, r := range changed {
 			if _, err := tx.ExecContext(ctx, `UPDATE grabs SET phase = ?, progress = ?, progress_at = ?,
 				last_seen_at = ?, completed_at = ?, updated_at = ?, client_id = ? WHERE id = ?`,

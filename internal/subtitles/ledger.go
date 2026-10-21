@@ -186,12 +186,12 @@ type BlockEntry struct {
 // Ledger reads and writes the subtitle tables. A nil Ledger (or one without a DB) records
 // nothing and reads empty, so code paths that run without a database still work.
 type Ledger struct {
-	db  *sql.DB
+	db  store.Pool
 	now func() time.Time
 }
 
 // NewLedger wraps the app database.
-func NewLedger(db *sql.DB) *Ledger { return &Ledger{db: db, now: time.Now} }
+func NewLedger(db store.Pool) *Ledger { return &Ledger{db: db, now: time.Now} }
 
 func (l *Ledger) ok() bool { return l != nil && l.db != nil }
 
@@ -282,11 +282,12 @@ func (l *Ledger) RecordFile(ctx context.Context, f SubtitleFile) (int64, error) 
 		season, episode = f.Season, f.Episode
 	}
 	var id int64
-	err := store.WithTx(ctx, l.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, l.db, func(tx *store.Transaction) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE subtitle_files SET superseded_at = ? WHERE path = ? AND superseded_at IS NULL`, now, f.Path); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO subtitle_files
+		var err error
+		id, err = store.InsertID(ctx, tx, `INSERT INTO subtitle_files
 			(media_key, kind, movie_id, series_id, season, episode, video_path, path, lang, variant, source,
 			 embedded_index, provider, provider_file_id, release_name, hash_match, score, model,
 			 sync_offset_ms, sync_confidence, sync_shift_ms, sync_scale, sync_checked_at, locked, created_at)
@@ -300,7 +301,6 @@ func (l *Ledger) RecordFile(ctx context.Context, f SubtitleFile) (int64, error) 
 		if err != nil {
 			return err
 		}
-		id, err = res.LastInsertId()
 		return err
 	})
 	return id, err
@@ -496,7 +496,7 @@ func (l *Ledger) RecordAttempts(ctx context.Context, runID, mediaKey, videoPath 
 		return nil
 	}
 	at := l.clock().Unix()
-	return store.WithTx(ctx, l.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, l.db, func(tx *store.Transaction) error {
 		for _, o := range outs {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO subtitle_attempts
 				(run_id, media_key, video_path, lang, variant, rung, outcome, detail, at)

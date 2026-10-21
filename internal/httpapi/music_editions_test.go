@@ -52,7 +52,7 @@ func musicEditionServer(t *testing.T) (http.Handler, *settings.Service, string, 
 	svc := music.NewService(st.DB(), listingOnly{metadata.NewMusicBrainz(nil, nil)}, slog.Default())
 	svc.SetSettingsLookup(set.Lookup)
 	srv := New(Deps{Log: slog.Default(), Store: st, Auth: authSvc, Settings: set, Music: svc})
-	return srv.Handler, set, session, st.DB()
+	return srv.Handler, set, session, st.DB().(*sql.DB)
 }
 
 // MUS-30's routes: 404 while Music is off; the editions list; a switch by hand (400 for a

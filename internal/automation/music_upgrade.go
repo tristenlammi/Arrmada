@@ -9,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The music upgrade sweep (MUS-16): better copies of albums already held, up to the
@@ -354,7 +355,7 @@ func (c *Coordinator) upgradeBudgetUsed(ctx context.Context) (bool, error) {
 	}
 	var n int
 	err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM grabs WHERE media_type = 'music' AND decided_mode = ?
-		AND grabbed_at > datetime('now', '-6 hours')`, decidedUpgrade).Scan(&n)
+		AND grabbed_at > `+store.UTCNowTimestamp(c.db, "'-6 hours'"), decidedUpgrade).Scan(&n)
 	return n >= max, err
 }
 

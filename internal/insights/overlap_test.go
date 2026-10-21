@@ -48,7 +48,7 @@ func countRows(t *testing.T, s *Service, where string) int {
 
 func totalWatched(t *testing.T, s *Service) (plays int, secs int64) {
 	t.Helper()
-	if err := s.repo.db.QueryRow(`SELECT COUNT(*), COALESCE(`+watchedSum+`,0) FROM stream_sessions`).Scan(&plays, &secs); err != nil {
+	if err := s.repo.db.QueryRow(`SELECT COUNT(*), COALESCE(`+watchedSumFor(s.repo.db)+`,0) FROM stream_sessions`).Scan(&plays, &secs); err != nil {
 		t.Fatal(err)
 	}
 	return plays, secs
@@ -193,7 +193,7 @@ func TestRemoveImportOverlaps(t *testing.T) {
 	var dupSecs int64
 	for _, id := range []int64{dupA, dupB} {
 		var w int64
-		if err := s.repo.db.QueryRow(`SELECT `+watchedExpr+` FROM stream_sessions WHERE id = ?`, id).Scan(&w); err != nil {
+		if err := s.repo.db.QueryRow(`SELECT `+watchedExprFor(s.repo.db)+` FROM stream_sessions WHERE id = ?`, id).Scan(&w); err != nil {
 			t.Fatal(err)
 		}
 		dupSecs += w

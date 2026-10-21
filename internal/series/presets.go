@@ -53,18 +53,20 @@ func presetNewSeasons(p string) bool {
 }
 
 // airedSQL matches automation's aired(): an episode with no air date hasn't aired.
-const airedSQL = `(air_date <> '' AND date(air_date) <= date('now'))`
+func airedSQL(db store.Execer) string {
+	return `(air_date <> '' AND ` + store.DateText(db, "air_date") + ` <= ` + store.UTCDateText(db) + `)`
+}
 
 // presetRule is a preset's rule as an SQL condition on an episodes row of show id, with its
 // arguments: true for an episode the preset monitors.
-func presetRule(preset string, id int64) (string, []any) {
+func presetRule(db store.Execer, preset string, id int64) (string, []any) {
 	switch preset {
 	case PresetFuture:
-		return `NOT ` + airedSQL, nil
+		return `NOT ` + airedSQL(db), nil
 	case PresetMissing:
-		return `(has_file = 0 OR NOT ` + airedSQL + `)`, nil
+		return `(has_file = 0 OR NOT ` + airedSQL(db) + `)`, nil
 	case PresetExisting:
-		return `(has_file = 1 OR NOT ` + airedSQL + `)`, nil
+		return `(has_file = 1 OR NOT ` + airedSQL(db) + `)`, nil
 	case PresetFirstSeason, PresetLatestSeason:
 		agg := "MIN"
 		if preset == PresetLatestSeason {
@@ -72,9 +74,9 @@ func presetRule(preset string, id int64) (string, []any) {
 		}
 		return `season_number = (SELECT ` + agg + `(season_number) FROM episodes WHERE series_id = ? AND season_number > 0)`, []any{id}
 	case PresetNone:
-		return "0", nil
+		return "1 = 0", nil
 	}
-	return "1", nil
+	return "1 = 1", nil
 }
 
 // markCustomIfRenumberedTx keeps the remembered preset honest after a renumber moved
@@ -83,7 +85,7 @@ func presetRule(preset string, id int64) (string, []any) {
 // "the first season". All and None are checked the same way. Missing, Existing and Future
 // are left alone: their rules follow files and air dates, which drift from the flags with
 // time anyway, and a renumber changes neither.
-func markCustomIfRenumberedTx(ctx context.Context, tx *sql.Tx, id int64) error {
+func markCustomIfRenumberedTx(ctx context.Context, tx *store.Transaction, id int64) error {
 	var preset string
 	if err := tx.QueryRowContext(ctx, `SELECT monitor_preset FROM series WHERE id = ?`, id).Scan(&preset); err != nil {
 		return err
@@ -93,7 +95,7 @@ func markCustomIfRenumberedTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	default:
 		return nil
 	}
-	rule, args := presetRule(preset, id)
+	rule, args := presetRule(tx, preset, id)
 	var one int
 	err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM episodes WHERE series_id = ? AND season_number > 0
@@ -120,7 +122,7 @@ func (r *Repo) ApplyMonitorPreset(ctx context.Context, id int64, preset string, 
 	if newSeasons != nil {
 		mns = *newSeasons
 	}
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var exists int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM series WHERE id = ?`, id).Scan(&exists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -128,7 +130,7 @@ func (r *Repo) ApplyMonitorPreset(ctx context.Context, id int64, preset string, 
 			}
 			return err
 		}
-		rule, args := presetRule(preset, id)
+		rule, args := presetRule(tx, preset, id)
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE episodes SET monitored = CASE WHEN `+rule+` THEN 1 ELSE 0 END
 			 WHERE series_id = ? AND season_number > 0`, append(args, id)...); err != nil {
@@ -161,10 +163,10 @@ func (r *Repo) ApplyMonitorPreset(ctx context.Context, id int64, preset string, 
 // episode in an unmonitored season used to do nothing at all. season < 0 syncs every
 // season. A season with no episodes yet (announced, empty) takes emptyFlag, so it follows
 // "monitor new seasons" once its episodes arrive.
-func syncSeasonsTx(ctx context.Context, tx *sql.Tx, seriesID int64, season int, emptyFlag bool) error {
+func syncSeasonsTx(ctx context.Context, tx *store.Transaction, seriesID int64, season int, emptyFlag bool) error {
 	q := `UPDATE seasons SET monitored = CASE
 	        WHEN EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = seasons.series_id AND e.season_number = seasons.season_number)
-	        THEN EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = seasons.series_id AND e.season_number = seasons.season_number AND e.monitored = 1)
+	        THEN CASE WHEN EXISTS (SELECT 1 FROM episodes e WHERE e.series_id = seasons.series_id AND e.season_number = seasons.season_number AND e.monitored = 1) THEN 1 ELSE 0 END
 	        ELSE ? END
 	      WHERE series_id = ?`
 	args := []any{b2i(emptyFlag), seriesID}
@@ -191,7 +193,7 @@ func changed(res sql.Result) bool {
 
 // markCustomTx records that a show's seasons or episodes were changed one by one, so the
 // preset it remembers no longer describes them.
-func markCustomTx(ctx context.Context, tx *sql.Tx, seriesID int64) error {
+func markCustomTx(ctx context.Context, tx *store.Transaction, seriesID int64) error {
 	_, err := tx.ExecContext(ctx, `UPDATE series SET monitor_preset = ? WHERE id = ?`, PresetCustom, seriesID)
 	return err
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/displaytitle"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // minAltKeyLen is the shortest alternative-title key matching uses. A one- or two-letter
@@ -231,6 +232,13 @@ func (r *Repo) SetTitles(ctx context.Context, id int64, original string, alts []
 	if alts == nil {
 		alts = []string{}
 	}
+	if store.DialectOf(r.q()) == store.Postgres {
+		return r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
+			return store.SetJSONFields(ctx, tx, "movies", "extra_json", id, map[string]any{
+				"original_title": original, "alt_titles": alts, "titles_read": true,
+			})
+		})
+	}
 	b, err := json.Marshal(alts)
 	if err != nil {
 		return err
@@ -245,6 +253,11 @@ func (r *Repo) SetTitles(ctx context.Context, id int64, original string, alts []
 // SetDisplayNames stores a movie's display names (display.go), leaving the rest of its
 // extra metadata as it is (json_set, as SetTitles).
 func (r *Repo) SetDisplayNames(ctx context.Context, id int64, n *displaytitle.Names) error {
+	if store.DialectOf(r.q()) == store.Postgres {
+		return r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
+			return store.SetJSONFields(ctx, tx, "movies", "extra_json", id, map[string]any{"display_names": n})
+		})
+	}
 	b, err := json.Marshal(n)
 	if err != nil {
 		return err
@@ -264,6 +277,11 @@ func (r *Repo) SetLocalTitles(ctx context.Context, id int64, titles []metadata.T
 	}
 	if langs == nil {
 		langs = []string{}
+	}
+	if store.DialectOf(r.q()) == store.Postgres {
+		return r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
+			return store.SetJSONFields(ctx, tx, "movies", "extra_json", id, map[string]any{"local_titles": titles, "local_langs": langs})
+		})
 	}
 	tb, err := json.Marshal(titles)
 	if err != nil {

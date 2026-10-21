@@ -2,7 +2,6 @@ package indexer
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/httpua"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service manages configured indexers and runs aggregated searches across them.
@@ -131,7 +131,7 @@ func copyErrors(m map[string]string) map[string]string {
 
 // NewService wires a Service over the database. fs is the FlareSolverr client, whose URL
 // is read on every use; nil (or one with no URL set) means no Cloudflare solving.
-func NewService(db *sql.DB, log *slog.Logger, fs *flaresolverr.Client) *Service {
+func NewService(db store.Pool, log *slog.Logger, fs *flaresolverr.Client) *Service {
 	s := &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
 	s.registry.SetLogger(log) // per-page request tracing
 	// Persist a rotated MyAnonaMouse session so it doesn't silently expire.

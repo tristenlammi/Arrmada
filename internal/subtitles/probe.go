@@ -2,7 +2,6 @@ package subtitles
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/langs"
+	"github.com/tristenlammi/arrmada/internal/store"
 	"github.com/tristenlammi/arrmada/internal/toolrun"
 )
 
@@ -199,7 +199,7 @@ func parseRate(r string) float64 {
 
 // probeCache persists ffprobe results (subtitle_probe_cache table) so the library scan doesn't
 // re-analyze every file on each page load — valid while the file's size + mtime are unchanged.
-type probeCache struct{ db *sql.DB }
+type probeCache struct{ db store.Pool }
 
 func (c *probeCache) get(ctx context.Context, path string, size, mtime int64) (*mediaInfo, bool) {
 	if c == nil || c.db == nil {
@@ -229,7 +229,7 @@ func (c *probeCache) put(ctx context.Context, path string, size, mtime int64, mi
 	}
 	_, _ = c.db.ExecContext(ctx,
 		`INSERT INTO subtitle_probe_cache (path, size_bytes, mtime_unix, info_json, probed_at)
-		 VALUES (?, ?, ?, ?, datetime('now'))
+		 VALUES (?, ?, ?, ?, `+store.UTCNowText(c.db, "")+`)
 		 ON CONFLICT(path) DO UPDATE SET
 		   size_bytes = excluded.size_bytes,
 		   mtime_unix = excluded.mtime_unix,

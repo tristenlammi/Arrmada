@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -35,7 +34,7 @@ var legacyStamps = []struct {
 // are written; a settings key stops it running again. The key is saved after the rows,
 // so a failure in between only means the next boot looks again, and finds nothing left
 // to change.
-func RepairCodecStamps(ctx context.Context, db *sql.DB, set *settings.Service, log *slog.Logger) (int, error) {
+func RepairCodecStamps(ctx context.Context, db store.Pool, set *settings.Service, log *slog.Logger) (int, error) {
 	if _, done := set.Lookup(codecStampRepairKey); done {
 		return 0, nil
 	}
@@ -49,7 +48,7 @@ func RepairCodecStamps(ctx context.Context, db *sql.DB, set *settings.Service, l
 		// LIKE is case-insensitive in SQLite, so this over-selects slightly; the exact
 		// suffix is checked below. Rows are read fully before any write.
 		rows, err := db.QueryContext(ctx,
-			`SELECT id, source_release FROM `+table+` WHERE source_release LIKE '% AV1' OR source_release LIKE '% x265'`)
+			`SELECT id, source_release FROM `+table+` WHERE `+store.LikeASCII(db, "source_release", "'% AV1'", false)+` OR `+store.LikeASCII(db, "source_release", "'% x265'", false))
 		if err != nil {
 			return 0, err
 		}
@@ -71,7 +70,7 @@ func RepairCodecStamps(ctx context.Context, db *sql.DB, set *settings.Service, l
 		}
 	}
 
-	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		for _, f := range fixes {
 			if _, err := tx.ExecContext(ctx, `UPDATE `+f.table+` SET source_release = ? WHERE id = ?`, f.after, f.id); err != nil {
 				return err

@@ -112,14 +112,14 @@ func (s *Service) mostWatched(ctx context.Context, mediaType string, since int64
 	// A title watched on both servers is one row (it's the same title), Server "" then. Its
 	// rating key is whichever server's sorts last, which only links it when that's Plex's.
 	srv := serverAnd("", server)
-	q := `SELECT title AS t, MAX(year), MAX(thumb), MAX(rating_key), COUNT(*) AS plays, ` + watchedSum + ` AS secs, ` + rowServer + `
+	q := `SELECT title AS t, MAX(year), MAX(thumb), MAX(rating_key), COUNT(*) AS plays, ` + watchedSumFor(s.repo.db) + ` AS secs, ` + rowServer + `
 		FROM stream_sessions WHERE media_type = 'movie' AND started_at >= ? AND title <> ''` + srv + `
 		GROUP BY t ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	kind := "movie"
 	if mediaType == "episode" {
 		kind = "show"
 		q = `SELECT grandparent_title AS t, 0, COALESCE(NULLIF(MAX(grandparent_thumb),''), MAX(thumb)), MAX(grandparent_rating_key),
-				COUNT(*) AS plays, ` + watchedSum + ` AS secs, ` + rowServer + `
+				COUNT(*) AS plays, ` + watchedSumFor(s.repo.db) + ` AS secs, ` + rowServer + `
 			FROM stream_sessions WHERE media_type = 'episode' AND started_at >= ? AND grandparent_title <> ''` + srv + `
 			GROUP BY t ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	}

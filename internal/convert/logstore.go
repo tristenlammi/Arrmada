@@ -2,9 +2,10 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"regexp"
 	"strconv"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // maxLogLines is how many Convert activity-console lines are retained — in memory and in the DB.
@@ -13,7 +14,7 @@ const maxLogLines = 5000
 // logStore persists the Convert activity console (convert_logs table) so its history survives an
 // app restart / update. The in-memory ring buffer on Service is the fast read path; this is the
 // durable mirror, trimmed to the most recent maxLogLines on every append.
-type logStore struct{ db *sql.DB }
+type logStore struct{ db store.Pool }
 
 // append writes one line and trims the table back to the most recent maxLogLines.
 func (l *logStore) append(ctx context.Context, ln LogLine) {

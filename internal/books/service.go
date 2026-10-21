@@ -2,7 +2,6 @@ package books
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Service is the Books module's application logic.
@@ -26,7 +26,7 @@ type Service struct {
 }
 
 // NewService wires the module.
-func NewService(db *sql.DB, meta metadata.BookProvider, log *slog.Logger) *Service {
+func NewService(db store.Pool, meta metadata.BookProvider, log *slog.Logger) *Service {
 	return &Service{repo: NewRepo(db), meta: meta, log: log}
 }
 

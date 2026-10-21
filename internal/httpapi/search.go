@@ -11,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/displaytitle"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The command palette's library lookup (GET /api/v1/library/search?q=, staff only): the titles in
@@ -168,7 +169,7 @@ func (a *api) buildSearchEntries(ctx context.Context, booksOn, musicOn bool) ([]
 		// A book is listed by the title it shows (an edit by hand, when it has one) and
 		// found by that or the catalogue's title kept underneath the edit.
 		err := read(`SELECT id, title, year, author, cover_url,
-		                    CASE WHEN json_valid(edits_json) THEN COALESCE(json_extract(edits_json, '$.title'), '') ELSE '' END
+		                    COALESCE(`+store.JSONScalar(db, "edits_json", "title")+`, '')
 		               FROM books`, func(rows searchRow) (searchEntry, error) {
 			h := searchHit{Kind: "book"}
 			var matched string

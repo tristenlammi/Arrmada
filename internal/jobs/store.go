@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The jobs table stores times as unix milliseconds, 0 for not yet.
@@ -21,29 +23,25 @@ func fromMS(v int64) *time.Time {
 	return &t
 }
 
-func insertJob(ctx context.Context, db *sql.DB, s Spec, now time.Time) (int64, error) {
-	res, err := db.ExecContext(ctx,
+func insertJob(ctx context.Context, db store.Pool, s Spec, now time.Time) (int64, error) {
+	return store.InsertID(ctx, db,
 		`INSERT INTO jobs (kind, target, trigger, status, created_at) VALUES (?, ?, ?, ?, ?)`,
 		s.Kind, s.Target, s.Trigger, StatusQueued, ms(now))
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
-func markRunning(ctx context.Context, db *sql.DB, id int64, at time.Time) error {
+func markRunning(ctx context.Context, db store.Pool, id int64, at time.Time) error {
 	_, err := db.ExecContext(ctx, `UPDATE jobs SET status = ?, started_at = ? WHERE id = ?`, StatusRunning, ms(at), id)
 	return err
 }
 
-func setProgress(ctx context.Context, db *sql.DB, id int64, pct float64, msg string) error {
+func setProgress(ctx context.Context, db store.Pool, id int64, pct float64, msg string) error {
 	// Never over a finished row: work that keeps reporting after its job ended (a goroutine
 	// it left behind) mustn't rewrite the result.
 	_, err := db.ExecContext(ctx, `UPDATE jobs SET progress = ?, message = ? WHERE id = ? AND finished_at = 0`, pct, msg, id)
 	return err
 }
 
-func markFinished(ctx context.Context, db *sql.DB, id int64, status string, pct float64, msg, errText, result string, at time.Time) error {
+func markFinished(ctx context.Context, db store.Pool, id int64, status string, pct float64, msg, errText, result string, at time.Time) error {
 	_, err := db.ExecContext(ctx,
 		`UPDATE jobs SET status = ?, progress = ?, message = ?, error = ?, result = ?, finished_at = ? WHERE id = ?`,
 		status, pct, msg, errText, result, ms(at), id)
@@ -51,7 +49,7 @@ func markFinished(ctx context.Context, db *sql.DB, id int64, status string, pct 
 }
 
 // markInterrupted closes out jobs a previous run of the app never finished.
-func markInterrupted(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
+func markInterrupted(ctx context.Context, db store.Pool, now time.Time) (int64, error) {
 	res, err := db.ExecContext(ctx,
 		`UPDATE jobs SET status = ?, error = 'the app stopped before this finished', finished_at = ?
 		 WHERE status IN (?, ?)`, StatusInterrupted, ms(now), StatusQueued, StatusRunning)
@@ -80,7 +78,7 @@ func scanJob(sc interface{ Scan(...any) error }) (Job, error) {
 	return j, nil
 }
 
-func getJob(ctx context.Context, db *sql.DB, id int64) (Job, error) {
+func getJob(ctx context.Context, db store.Pool, id int64) (Job, error) {
 	j, err := scanJob(db.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, ErrNotFound
@@ -88,7 +86,7 @@ func getJob(ctx context.Context, db *sql.DB, id int64) (Job, error) {
 	return j, err
 }
 
-func listJobs(ctx context.Context, db *sql.DB, f Filter) ([]Job, error) {
+func listJobs(ctx context.Context, db store.Pool, f Filter) ([]Job, error) {
 	var where []string
 	var args []any
 	if f.Kind != "" {
@@ -122,7 +120,7 @@ func listJobs(ctx context.Context, db *sql.DB, f Filter) ([]Job, error) {
 	return out, rows.Err()
 }
 
-func pruneJobs(ctx context.Context, db *sql.DB, before time.Time, keepMax int) (int64, error) {
+func pruneJobs(ctx context.Context, db store.Pool, before time.Time, keepMax int) (int64, error) {
 	res, err := db.ExecContext(ctx, `DELETE FROM jobs WHERE finished_at > 0 AND finished_at < ?`, ms(before))
 	if err != nil {
 		return 0, err

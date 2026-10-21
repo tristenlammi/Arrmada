@@ -81,7 +81,7 @@ func ValidMedia(media string) bool { return media == MediaMovie || media == Medi
 // this service, which reloads the list right after it, so the copy is never stale. The
 // default folder is never cached — it's read through libroots on every use.
 type Service struct {
-	db      *sql.DB
+	db      store.Pool
 	roots   *libroots.Roots
 	dataDir string
 	now     func() time.Time
@@ -130,7 +130,7 @@ func (s *Service) beginMove(ctx context.Context, media string, id int64) (func()
 	}, nil
 }
 
-// querier is a *sql.DB or a *sql.Tx.
+// querier is a store.Pool or a *store.Transaction.
 type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -150,7 +150,7 @@ func folderExists(ctx context.Context, q querier, media string, id int64) (bool,
 
 // New builds the service. roots resolves the default folders (and downloads, for the
 // overlap checks); dataDir is Arrmada's own data folder, which no media folder may touch.
-func New(db *sql.DB, roots *libroots.Roots, dataDir string) *Service {
+func New(db store.Pool, roots *libroots.Roots, dataDir string) *Service {
 	return &Service{db: db, roots: roots, dataDir: dataDir, now: time.Now}
 }
 
@@ -375,20 +375,20 @@ func (s *Service) Add(ctx context.Context, in AddInput) (Folder, error) {
 	}
 	clean := filepath.Clean(in.Path)
 	var id int64
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var pos int
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), 0) + 1 FROM library_folders WHERE media = ?`, in.Media).Scan(&pos); err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `INSERT INTO library_folders (media, path, label, rule, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		var err error
+		id, err = store.InsertID(ctx, tx, `INSERT INTO library_folders (media, path, label, rule, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			in.Media, clean, in.Label, in.Rule, pos, s.now().Unix())
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if store.IsUniqueViolation(err) {
 				return ErrDuplicates
 			}
 			return err
 		}
-		id, _ = res.LastInsertId()
 		return nil
 	})
 	if err != nil {
@@ -552,7 +552,7 @@ func (s *Service) Reorder(ctx context.Context, media string, ids []int64) error 
 	if len(seen) != len(have) {
 		return fmt.Errorf("%w: the order must list each of the library's extra folders once", ErrNotFound)
 	}
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		for i, id := range ids {
 			if _, err := tx.ExecContext(ctx, `UPDATE library_folders SET position = ? WHERE id = ?`, i+1, id); err != nil {
 				return err
@@ -639,7 +639,7 @@ func (s *Service) Remove(ctx context.Context, id int64) error {
 	if s.moving[id] > 0 {
 		return ErrMoving
 	}
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		u, err := usageTx(ctx, tx, f)
 		if err != nil {
 			return err
@@ -660,7 +660,7 @@ func (s *Service) Remove(ctx context.Context, id int64) error {
 }
 
 // usageTx is UsageOf inside a transaction.
-func usageTx(ctx context.Context, tx *sql.Tx, f Folder) (Usage, error) {
+func usageTx(ctx context.Context, tx *store.Transaction, f Folder) (Usage, error) {
 	var u Usage
 	prefix := filepath.Clean(f.Path) + string(filepath.Separator)
 	if f.Media == MediaSeries {

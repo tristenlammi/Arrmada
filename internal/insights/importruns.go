@@ -92,13 +92,9 @@ var (
 
 // StartImportRun records a run as running and returns its id.
 func (s *Service) StartImportRun(ctx context.Context, jobID, cutoff int64) (int64, error) {
-	res, err := s.repo.db.ExecContext(ctx,
+	return store.InsertID(ctx, s.repo.db,
 		`INSERT INTO insights_import_runs (job_id, source, started_at, status, cutoff_at) VALUES (?, 'tautulli', ?, ?, ?)`,
 		jobID, time.Now().Unix(), RunRunning, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
 // UpdateImportRun records progress: Tautulli's total and the counts so far.
@@ -185,7 +181,7 @@ func (s *Service) ImportRun(ctx context.Context, id int64) (ImportRun, error) {
 // longer matches, nothing is deleted.
 func (s *Service) RemoveImportRun(ctx context.Context, id int64, expected int) (int64, error) {
 	var removed int64
-	err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		var status string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM insights_import_runs WHERE id = ?`, id).Scan(&status); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {

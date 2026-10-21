@@ -19,14 +19,14 @@ var ErrExists = errors.New("movie already in library")
 
 // Repo persists movies in SQLite.
 type Repo struct {
-	db *sql.DB
+	db store.Pool
 	// tx, when set, is the transaction every statement runs in instead of the pool (see
 	// inTx). A Repo bound to one is only used inside that transaction's function.
-	tx *sql.Tx
+	tx *store.Transaction
 }
 
 // NewRepo builds a repository over the given pool.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 // q is where statements run: the bound transaction, or the pool.
 func (r *Repo) q() store.Execer {
@@ -38,11 +38,11 @@ func (r *Repo) q() store.Execer {
 
 // inTx runs fn with a copy of the repo whose statements all go through one transaction,
 // committed when fn returns nil and rolled back otherwise.
-func (r *Repo) inTx(ctx context.Context, fn func(tx *sql.Tx, r *Repo) error) error {
+func (r *Repo) inTx(ctx context.Context, fn func(tx *store.Transaction, r *Repo) error) error {
 	if r.tx != nil {
 		return fn(r.tx, r) // already inside one
 	}
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		return fn(tx, &Repo{db: r.db, tx: tx})
 	})
 }
@@ -105,7 +105,7 @@ func (r *Repo) SetMediaInfoForPath(ctx context.Context, id int64, path, mediaJSO
 // and the rest of it never leave the database) and the media facts from media_json.
 func (r *Repo) ListSummaries(ctx context.Context) ([]MovieSummary, error) {
 	rows, err := r.q().QueryContext(ctx, `SELECT id, title, year, poster_url, monitored, has_file, quality_profile,
-		min_availability, added_at, COALESCE(CASE WHEN json_valid(extra_json) THEN json_extract(extra_json, '$.vote_average') END, 0), media_json,
+		min_availability, added_at, COALESCE(`+store.JSONNumber(r.q(), "extra_json", "vote_average")+`, 0), media_json,
 		file_missing_since IS NOT NULL, display_title, library_folder_id
 		FROM movies ORDER BY added_at DESC, id DESC`)
 	if err != nil {
@@ -301,7 +301,7 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 			extraJSON = string(b)
 		}
 	}
-	res, err := r.q().ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.q(),
 		`INSERT INTO movies (tmdb_id, imdb_id, title, year, overview, poster_url, runtime, status,
 			monitored, quality_profile, min_availability, extra_json, library_folder_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -313,7 +313,6 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 		}
 		return Movie{}, err
 	}
-	id, _ := res.LastInsertId()
 	return r.Get(ctx, id)
 }
 
@@ -321,7 +320,7 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 // Those tables have no foreign keys, so without this a deleted movie left its timeline
 // and version rows behind, waiting to attach to whatever reused the id.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
-	return r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+	return r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
 		if err != nil {
 			return err
@@ -412,13 +411,13 @@ func (r *Repo) SearchStatesFor(ctx context.Context, ids []int64) (map[int64]Sear
 // RecordSearchMiss stamps the sweep time and increments the miss counter.
 func (r *Repo) RecordSearchMiss(ctx context.Context, movieID int64) {
 	_, _ = r.q().ExecContext(ctx,
-		`UPDATE movies SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, movieID)
+		`UPDATE movies SET last_search_at = `+store.UTCNowText(r.q(), "")+`, search_misses = search_misses + 1 WHERE id = ?`, movieID)
 }
 
 // ResetSearchMisses clears the backoff after a successful grab.
 func (r *Repo) ResetSearchMisses(ctx context.Context, movieID int64) {
 	_, _ = r.q().ExecContext(ctx,
-		`UPDATE movies SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, movieID)
+		`UPDATE movies SET last_search_at = `+store.UTCNowText(r.q(), "")+`, search_misses = 0 WHERE id = ?`, movieID)
 }
 
 // SetSearchPaced marks (or unmarks) a movie as added in bulk: the missing sweep searches
@@ -466,7 +465,7 @@ func (r *Repo) ClearFile(ctx context.Context, id int64) error {
 // its codec. A track that already has a baseline keeps it: a re-conversion's "before" is
 // itself a conversion, and upgrades must beat the first original.
 func (r *Repo) SetConvertedFromForPath(ctx context.Context, movieID int64, path string, size int64) error {
-	return r.inTx(ctx, func(_ *sql.Tx, r *Repo) error {
+	return r.inTx(ctx, func(_ *store.Transaction, r *Repo) error {
 		if _, err := r.q().ExecContext(ctx,
 			`UPDATE movies SET converted_from_release = source_release, converted_from_size = ?
 			  WHERE id = ? AND has_file = 1 AND movie_file_path = ?
@@ -681,14 +680,13 @@ func (r *Repo) GetVersion(ctx context.Context, id int64) (Version, int64, error)
 
 // CreateVersion adds an extra version track.
 func (r *Repo) CreateVersion(ctx context.Context, movieID int64, v Version) (Version, error) {
-	res, err := r.q().ExecContext(ctx,
+	id, err := store.InsertID(ctx, r.q(),
 		`INSERT INTO movie_versions (movie_id, label, quality_profile, edition, monitored)
 		 VALUES (?, ?, ?, ?, ?)`,
 		movieID, v.Label, v.QualityProfile, v.Edition, boolToInt(v.Monitored))
 	if err != nil {
 		return Version{}, err
 	}
-	id, _ := res.LastInsertId()
 	out, _, err := r.GetVersion(ctx, id)
 	return out, err
 }
@@ -740,7 +738,7 @@ const holdChunk = 500
 // extra tracks, in one transaction, returning how many rows changed. Rows without a file are
 // left alone: there's nothing to keep, and a missing file must still be searched for.
 func (r *Repo) HoldUpgrades(ctx context.Context, movieIDs, versionIDs []int64) (heldMovies, heldVersions int, err error) {
-	err = r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+	err = r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
 		var e error
 		if heldMovies, e = holdRows(ctx, tx, "movies", movieIDs); e != nil {
 			return e
@@ -755,7 +753,7 @@ func (r *Repo) HoldUpgrades(ctx context.Context, movieIDs, versionIDs []int64) (
 }
 
 // holdRows sets upgrade_hold on rows of a fixed table (never user input) that have a file.
-func holdRows(ctx context.Context, tx *sql.Tx, table string, ids []int64) (int, error) {
+func holdRows(ctx context.Context, tx *store.Transaction, table string, ids []int64) (int, error) {
 	n := 0
 	for len(ids) > 0 {
 		chunk := ids
@@ -796,7 +794,7 @@ func placeholders(n int) string {
 // how many were held.
 func (r *Repo) ResumeUpgrades(ctx context.Context, movieID int64) (int, error) {
 	n := 0
-	err := r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+	err := r.inTx(ctx, func(tx *store.Transaction, _ *Repo) error {
 		for _, q := range []string{
 			`UPDATE movies SET upgrade_hold = 0 WHERE id = ? AND upgrade_hold = 1`,
 			`UPDATE movie_versions SET upgrade_hold = 0 WHERE movie_id = ? AND upgrade_hold = 1`,
@@ -891,12 +889,18 @@ type RecentImport struct {
 // newest import first, one row per movie. It reads the activity timeline, so a library
 // scan's finds count too: they are new to the library all the same.
 func (r *Repo) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	at := `CAST(strftime('%s', MAX(e.created_at)) AS INTEGER)`
+	since := `julianday(e.created_at) >= julianday('now', ?)`
+	if store.DialectOf(r.q()) == store.Postgres {
+		at = `CAST(floor(extract(epoch FROM MAX(e.created_at))) AS bigint)`
+		since = `e.created_at >= ` + store.UTCNowTimestamp(r.q(), "?")
+	}
 	rows, err := r.q().QueryContext(ctx, `
 SELECT m.tmdb_id, m.title, m.year, m.overview, m.poster_url,
-       CAST(strftime('%s', MAX(e.created_at)) AS INTEGER) AS at
+       `+at+` AS at
   FROM movie_events e JOIN movies m ON m.id = e.movie_id
  WHERE e.event = 'imported' AND m.has_file = 1 AND m.tmdb_id > 0
-   AND julianday(e.created_at) >= julianday('now', ?)
+   AND `+since+`
  GROUP BY m.id
  ORDER BY at DESC, m.id DESC
  LIMIT ?`, "-"+strconv.Itoa(days)+" days", limit)
@@ -923,7 +927,7 @@ func boolToInt(b bool) int {
 }
 
 func isUnique(err error) bool {
-	return err != nil && containsAny(err.Error(), "UNIQUE constraint failed")
+	return store.IsUniqueViolation(err)
 }
 
 func containsAny(s, sub string) bool {

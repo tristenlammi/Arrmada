@@ -2,7 +2,6 @@ package books
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +39,7 @@ type ItemRekeyer interface {
 	// HoldReports keeps sync writes out from before the transaction starts until after it
 	// commits, so a report that read a place under the old key can't write it back there.
 	HoldReports() (release func())
-	RekeyItemsTx(ctx context.Context, tx *sql.Tx, moves map[string]string) (listening.RekeyCounts, error)
+	RekeyItemsTx(ctx context.Context, tx *store.Transaction, moves map[string]string) (listening.RekeyCounts, error)
 }
 
 // MergeAnnouncer queues the follow-up work for the kept book (the audiobook catalogue
@@ -108,7 +107,7 @@ func (s *Service) Merge(ctx context.Context, keepID, dropID int64, opts MergeOpt
 
 	release := s.items.HoldReports()
 	defer release()
-	err = store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		res.Moved = map[string]int{}
 		res.LeftFiles = []string{}
 		return s.mergeTx(ctx, tx, keepID, dropID, &res)
@@ -125,7 +124,7 @@ func (s *Service) Merge(ctx context.Context, keepID, dropID int64, opts MergeOpt
 }
 
 // mergeTx is Merge's transaction. Every statement goes through tx.
-func (s *Service) mergeTx(ctx context.Context, tx *sql.Tx, keepID, dropID int64, res *MergeResult) error {
+func (s *Service) mergeTx(ctx context.Context, tx *store.Transaction, keepID, dropID int64, res *MergeResult) error {
 	keep, err := bookTx(ctx, tx, keepID)
 	if err != nil {
 		return err
@@ -174,25 +173,30 @@ func (s *Service) mergeTx(ctx context.Context, tx *sql.Tx, keepID, dropID int64,
 			// A typed narrator is a hand edit, with the files' tags ('') underneath, so
 			// Reset (or clearing it) hands the moved audiobook back to its own tags.
 			if drop.AudiobookNarrator != "" {
+				edits := `json_set(edits_json, '$.narrator', '')`
+				if store.DialectOf(tx) == store.Postgres {
+					if err := store.SetJSONFields(ctx, tx, "books", "edits_json", keepID, map[string]any{"narrator": ""}); err != nil {
+						return err
+					}
+					edits = "edits_json"
+				}
+				now := time.Now().UnixMilli()
 				if _, err := tx.ExecContext(ctx,
-					`UPDATE books SET audiobook_narrator = ?, edits_json = json_set(edits_json, '$.narrator', ''),
-					        edited_at = MAX(?, edited_at + 1) WHERE id = ?`,
-					drop.AudiobookNarrator, time.Now().UnixMilli(), keepID); err != nil {
+					`UPDATE books SET audiobook_narrator = ?, edits_json = `+edits+`,
+					        edited_at = CASE WHEN ? > edited_at THEN ? ELSE edited_at + 1 END WHERE id = ?`,
+					drop.AudiobookNarrator, now, now, keepID); err != nil {
 					return err
 				}
 			}
 			res.MovedAudiobook = true
 		} else {
 			label := uniqueLabel(MergedCopyLabel, taken)
-			r, err := tx.ExecContext(ctx,
+			res.MergedCopyID, err = store.InsertID(ctx, tx,
 				`INSERT INTO book_audio_versions (book_id, label, terms, monitored, path, format, size, files, narrator)
 				 VALUES (?, ?, '', 0, ?, ?, ?, ?, ?)`,
 				keepID, label, drop.Audiobook.Path, drop.Audiobook.Format, drop.Audiobook.SizeBytes, max1(drop.Audiobook.FileCount),
 				drop.AudiobookNarrator)
 			if err != nil {
-				return err
-			}
-			if res.MergedCopyID, err = r.LastInsertId(); err != nil {
 				return err
 			}
 			moves[dropMain] = listening.ItemKey(keepID, res.MergedCopyID)
@@ -270,7 +274,7 @@ func (s *Service) mergeTx(ctx context.Context, tx *sql.Tx, keepID, dropID int64,
 // Gaps are filled with the dropped book's CATALOGUE values (drop.Matched()), never its hand
 // edits, which travel separately (carryEditsTx); and a detail the kept book edited by hand
 // is never filled, even when the edit is empty (a series deliberately cleared).
-func carryOverTx(ctx context.Context, tx *sql.Tx, keep, drop Book) error {
+func carryOverTx(ctx context.Context, tx *store.Transaction, keep, drop Book) error {
 	dm := drop.Matched()
 	monitored := keep.Monitored || drop.Monitored
 	filled := keep // the kept book after the gaps are filled, for carryEditsTx
@@ -324,7 +328,7 @@ func carryOverTx(ctx context.Context, tx *sql.Tx, keep, drop Book) error {
 // The narrator isn't carried: it belongs to the dropped book's audiobook and travels with
 // that file (step 2), as the moved standard audiobook's narrator or the merged copy's.
 // Put on the kept book, it would name the wrong reader for the kept book's own audiobook.
-func carryEditsTx(ctx context.Context, tx *sql.Tx, keep Book, drop Book) error {
+func carryEditsTx(ctx context.Context, tx *store.Transaction, keep Book, drop Book) error {
 	if len(drop.Edits) == 0 {
 		return nil
 	}
@@ -353,7 +357,7 @@ func carryEditsTx(ctx context.Context, tx *sql.Tx, keep Book, drop Book) error {
 	if err != nil {
 		return err
 	}
-	sets = append(sets, "edits_json = ?", "edited_at = MAX(?, edited_at + 1)")
+	sets = append(sets, "edits_json = ?", "edited_at = "+store.ScalarMax(tx, "?", "edited_at + 1"))
 	args = append(args, raw, time.Now().UnixMilli(), keep.ID)
 	_, err = tx.ExecContext(ctx, `UPDATE books SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	return err
@@ -431,10 +435,12 @@ func uniqueLabel(label string, taken map[string]bool) string {
 }
 
 // bookTx loads one book row inside a transaction.
-func bookTx(ctx context.Context, tx *sql.Tx, id int64) (Book, error) { return getTx(ctx, tx, id) }
+func bookTx(ctx context.Context, tx *store.Transaction, id int64) (Book, error) {
+	return getTx(ctx, tx, id)
+}
 
 // versionsTx loads a book's audio versions inside a transaction.
-func versionsTx(ctx context.Context, tx *sql.Tx, bookID int64) ([]AudioVersion, error) {
+func versionsTx(ctx context.Context, tx *store.Transaction, bookID int64) ([]AudioVersion, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT `+versionCols+` FROM book_audio_versions WHERE book_id = ? ORDER BY id`, bookID)
 	if err != nil {
 		return nil, err
@@ -452,7 +458,7 @@ func versionsTx(ctx context.Context, tx *sql.Tx, bookID int64) ([]AudioVersion, 
 }
 
 // setEditionTx records an edition's file on a book inside a transaction.
-func setEditionTx(ctx context.Context, tx *sql.Tx, id int64, kind string, f BookFile) error {
+func setEditionTx(ctx context.Context, tx *store.Transaction, id int64, kind string, f BookFile) error {
 	col := "ebook"
 	if kind == KindAudiobook {
 		col = "audiobook"

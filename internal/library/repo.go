@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ImportRecord is a row in the import history.
@@ -39,7 +41,7 @@ const (
 	AttachStateGone      = "gone"      // the imported file vanished before it was attached
 )
 
-type importRepo struct{ db *sql.DB }
+type importRepo struct{ db store.Pool }
 
 func (r *importRepo) exists(ctx context.Context, hash string) (bool, error) {
 	var n int
@@ -126,8 +128,8 @@ func (r *importRepo) record(ctx context.Context, rec ImportRecord, state string)
 		state = AttachStateAttached
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO imports (download_hash, source_path, target_path, title, size_bytes, release_name, year, attach_state, movie_id, version_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO imports (download_hash, source_path, target_path, title, size_bytes, release_name, year, attach_state, movie_id, version_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		rec.Hash, rec.SourcePath, rec.TargetPath, rec.Title, rec.SizeBytes, rec.ReleaseName, rec.Year, state, rec.MovieID, rec.VersionID)
 	return err
 }

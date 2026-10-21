@@ -220,7 +220,7 @@ func (r *Repo) Credits(ctx context.Context, ids []int64) (map[int64]Credit, erro
 
 // ensureCreditTx stores a credit (or finds the identical one already stored) and returns
 // its id. Every name must name an artist row.
-func ensureCreditTx(ctx context.Context, tx *sql.Tx, names []CreditName) (int64, error) {
+func ensureCreditTx(ctx context.Context, tx *store.Transaction, names []CreditName) (int64, error) {
 	if len(names) == 0 {
 		return 0, errors.New("music: a credit needs at least one artist")
 	}
@@ -250,7 +250,7 @@ func ensureCreditTx(ctx context.Context, tx *sql.Tx, names []CreditName) (int64,
 
 // artistCreditTx is an artist's own one-name credit (credited under its own name), stored
 // on first use.
-func artistCreditTx(ctx context.Context, tx *sql.Tx, artistID int64) (int64, error) {
+func artistCreditTx(ctx context.Context, tx *store.Transaction, artistID int64) (int64, error) {
 	var n CreditName
 	if err := tx.QueryRowContext(ctx, `SELECT id, mbid, name FROM artists WHERE id = ?`, artistID).
 		Scan(&n.ArtistID, &n.ArtistMBID, &n.Name); err != nil {
@@ -291,7 +291,7 @@ type EditionTrack struct {
 // transaction, and returns its id. It doesn't make it the target (SetTargetEdition does).
 func (r *Repo) AddEdition(ctx context.Context, albumID int64, in EditionInput) (int64, error) {
 	var id int64
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var err error
 		id, err = addEditionTx(ctx, tx, albumID, in)
 		return err
@@ -299,7 +299,7 @@ func (r *Repo) AddEdition(ctx context.Context, albumID int64, in EditionInput) (
 	return id, err
 }
 
-func addEditionTx(ctx context.Context, tx *sql.Tx, albumID int64, in EditionInput) (int64, error) {
+func addEditionTx(ctx context.Context, tx *store.Transaction, albumID int64, in EditionInput) (int64, error) {
 	var albumTitle string
 	var albumCredit sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT title, artist_credit_id FROM albums WHERE id = ?`, albumID).
@@ -357,7 +357,7 @@ func addEditionTx(ctx context.Context, tx *sql.Tx, albumID int64, in EditionInpu
 // listing's title, MBID and length and keeps its recording, monitoring and file; a new one
 // gets its recording (shared by MBID when it has one) and starts monitored. The edition's
 // and its discs' counts are brought up to date.
-func putTracksTx(ctx context.Context, tx *sql.Tx, releaseID int64, tracks []EditionTrack) error {
+func putTracksTx(ctx context.Context, tx *store.Transaction, releaseID int64, tracks []EditionTrack) error {
 	media := map[int]int64{}
 	for _, t := range tracks {
 		disc := discOf(t.Disc)
@@ -440,7 +440,7 @@ func putTracksTx(ctx context.Context, tx *sql.Tx, releaseID int64, tracks []Edit
 
 // recordingTx is the recording a new track points at: the stored one with its MBID, or a
 // new one.
-func recordingTx(ctx context.Context, tx *sql.Tx, t EditionTrack) (int64, error) {
+func recordingTx(ctx context.Context, tx *store.Transaction, t EditionTrack) (int64, error) {
 	var id int64
 	if t.RecordingMBID != "" {
 		err := tx.QueryRowContext(ctx, `

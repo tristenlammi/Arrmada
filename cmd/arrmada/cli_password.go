@@ -12,7 +12,6 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/settings"
-	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // cmdResetPassword gives an account a new password from the server's shell, for an
@@ -35,7 +34,7 @@ func cmdResetPassword(ctx context.Context, c *cli, args []string) int {
 	}
 	login := strings.TrimSpace(pos[0])
 
-	st, err := store.OpenNoMigrate(c.cfg.DataDir)
+	st, err := openMaintenanceStore(ctx, c.cfg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "arrmada reset-password: %v\n", err)
 		return exitFail
@@ -175,7 +174,7 @@ func cmdResetTwoFactor(ctx context.Context, c *cli, args []string) int {
 		return exitUsage
 	}
 
-	st, err := store.OpenNoMigrate(c.cfg.DataDir)
+	st, err := openMaintenanceStore(ctx, c.cfg)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "arrmada reset-2fa: %v\n", err)
 		return exitFail

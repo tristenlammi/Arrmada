@@ -24,7 +24,7 @@ func testStore(t *testing.T) (*Store, *sql.DB, int64, *time.Time) {
 	clock := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
 	s := NewStore(st.DB())
 	s.now = func() time.Time { return clock }
-	return s, st.DB(), uid, &clock
+	return s, st.DB().(*sql.DB), uid, &clock
 }
 
 // at is a reported position, for Sync's "maybe not sent" argument.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Catalogue freshness. Books added from an author's catalogue or 'Add missing in series'
@@ -121,7 +122,7 @@ func (s *Service) RefreshBooks(ctx context.Context, ids []int64) int {
 // (an empty stamp sorts first), then refreshed more than staleDays ago, oldest first.
 func (r *Repo) DueForRefresh(ctx context.Context, staleDays, limit int) ([]int64, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id FROM books WHERE meta_checked_at = '' OR meta_checked_at < datetime('now', ?)
+		`SELECT id FROM books WHERE meta_checked_at = '' OR meta_checked_at < `+store.UTCNowText(r.db, "?")+`
 		  ORDER BY meta_checked_at, id LIMIT ?`, fmt.Sprintf("-%d days", staleDays), limit)
 	if err != nil {
 		return nil, err
@@ -140,6 +141,6 @@ func (r *Repo) DueForRefresh(ctx context.Context, staleDays, limit int) ([]int64
 
 // StampMetaChecked records that a book's catalogue entry was just looked up.
 func (r *Repo) StampMetaChecked(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE books SET meta_checked_at = datetime('now') WHERE id = ?`, id)
+	_, err := r.db.ExecContext(ctx, `UPDATE books SET meta_checked_at = `+store.UTCNowText(r.db, "")+` WHERE id = ?`, id)
 	return err
 }

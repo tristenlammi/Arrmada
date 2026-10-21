@@ -2,7 +2,6 @@ package automation
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -408,8 +407,9 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 	// Stored even when the job that ran the search is timing out: the search happened.
 	wctx := context.WithoutCancel(ctx)
 	var attemptID int64
-	werr := store.WithTx(wctx, c.db, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(wctx, `INSERT INTO search_attempts
+	werr := store.WithTx(wctx, c.db, func(tx *store.Transaction) error {
+		var err error
+		attemptID, err = store.InsertID(wctx, tx, `INSERT INTO search_attempts
 			(media_type, media_id, scope, triggered_by, started_at, duration_ms, returned, wrong_title,
 			 blocklisted, pending, out_of_scope, rejected, eligible, grabbed, reasons_json, top_reason,
 			 example, grabbed_titles, indexer_errors, outcome, reason, error)
@@ -421,7 +421,6 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 		if err != nil {
 			return err
 		}
-		attemptID, _ = res.LastInsertId()
 		_, err = tx.ExecContext(wctx, `DELETE FROM search_attempts
 			WHERE media_type = ? AND media_id = ? AND id NOT IN (
 				SELECT id FROM search_attempts WHERE media_type = ? AND media_id = ?

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Stall is one reason conversions are waiting for room right now, for the Needs-you feed:
@@ -35,7 +37,7 @@ func (s *Service) Stalls(ctx context.Context) ([]Stall, error) {
 	}
 	rows, err := s.skips.db.QueryContext(ctx,
 		`SELECT item_key, kind, reason, updated_at FROM convert_skips
-		  WHERE kind IN (?, ?, ?, ?) AND updated_at >= datetime('now', ?)
+		  WHERE kind IN (?, ?, ?, ?) AND updated_at >= `+store.UTCNowText(s.skips.db, "?")+`
 		  ORDER BY updated_at DESC`,
 		SkipNoScratch, SkipLibraryFull, SkipBinFull, "hold_full", fmt.Sprintf("-%d hours", int(stallFresh.Hours())))
 	if err != nil {

@@ -38,7 +38,7 @@ var ErrEditionNotListed = errors.New("that edition's tracks aren't known yet")
 
 // creditFromInputsTx stores a credit given by MBIDs (finding or adding each artist) and
 // returns its id; 0 for an empty credit.
-func creditFromInputsTx(ctx context.Context, tx *sql.Tx, parts []CreditInput) (int64, error) {
+func creditFromInputsTx(ctx context.Context, tx *store.Transaction, parts []CreditInput) (int64, error) {
 	if len(parts) == 0 {
 		return 0, nil
 	}
@@ -76,7 +76,7 @@ func creditFromInputsTx(ctx context.Context, tx *sql.Tx, parts []CreditInput) (i
 // date, and its discs too while its tracks aren't. The album is stamped as listed.
 // Editions are matched by MBID; one whose MBID another album already holds is skipped.
 func (r *Repo) StoreEditionSummaries(ctx context.Context, albumID int64, eds []EditionSummary) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var albumTitle string
 		var albumCredit sql.NullInt64
 		if err := tx.QueryRowContext(ctx, `SELECT title, artist_credit_id FROM albums WHERE id = ?`, albumID).
@@ -166,7 +166,7 @@ func (r *Repo) StoreEditionSummaries(ctx context.Context, albumID int64, eds []E
 // its facts. A track already at a (disc, position) keeps its recording, monitoring and
 // file (see putTracksTx).
 func (r *Repo) StoreEditionTracks(ctx context.Context, releaseID int64, sum EditionSummary, tracks []EditionTrack) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var exists int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM music_releases WHERE id = ?`, releaseID).Scan(&exists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -304,7 +304,7 @@ func (r *Repo) RekeyEdition(ctx context.Context, albumID, releaseID int64) (Swit
 
 func (r *Repo) switchEdition(ctx context.Context, albumID, releaseID int64, pinned, allOrNothing bool) (SwitchResult, error) {
 	res := SwitchResult{To: releaseID}
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var owner int64
 		if err := tx.QueryRowContext(ctx, `SELECT album_id FROM music_releases WHERE id = ?`, releaseID).Scan(&owner); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -481,7 +481,7 @@ type albumTally struct{ tracks, have int }
 
 // tallyTx counts an edition of an album the way the library does (Repo.albumCounts):
 // wanted tracks are monitored ones, or every one when the album isn't monitored.
-func tallyTx(ctx context.Context, tx *sql.Tx, albumID, releaseID int64) (albumTally, error) {
+func tallyTx(ctx context.Context, tx *store.Transaction, albumID, releaseID int64) (albumTally, error) {
 	var t albumTally
 	err := tx.QueryRowContext(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(EXISTS (SELECT 1 FROM music_track_files f

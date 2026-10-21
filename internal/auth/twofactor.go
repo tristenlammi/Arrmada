@@ -64,7 +64,7 @@ func (s *Service) TwoFactor(ctx context.Context, userID int64) (TwoFactorStatus,
 	var st TwoFactorStatus
 	var enabledAt sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT strftime('%Y-%m-%d %H:%M:%S', enabled_at) FROM user_totp WHERE user_id = ? AND enabled = 1`, userID).Scan(&enabledAt)
+		`SELECT `+store.TimestampText(s.db, "enabled_at")+` FROM user_totp WHERE user_id = ? AND enabled = 1`, userID).Scan(&enabledAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, nil
 	}
@@ -144,7 +144,7 @@ func (s *Service) ConfirmTOTP(ctx context.Context, userID int64, code string) ([
 		return nil, err
 	}
 	code = normalizeOTP(code)
-	err = store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var secret string
 		var enabled int
 		err := tx.QueryRowContext(ctx, `SELECT secret, enabled FROM user_totp WHERE user_id = ?`, userID).Scan(&secret, &enabled)
@@ -191,7 +191,7 @@ func (s *Service) VerifySecondFactor(ctx context.Context, userID int64, code str
 // verifyTOTP accepts an authenticator code for a step newer than the last one used, and
 // records that step, so the same code (or an older one) can't be replayed.
 func (s *Service) verifyTOTP(ctx context.Context, userID int64, code string) error {
-	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var secret string
 		var last int64
 		err := tx.QueryRowContext(ctx, `SELECT secret, last_step FROM user_totp WHERE user_id = ? AND enabled = 1`, userID).Scan(&secret, &last)
@@ -278,7 +278,7 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64) ([]
 	if err != nil {
 		return nil, err
 	}
-	err = store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_totp WHERE user_id = ? AND enabled = 1`, userID).Scan(&n); err != nil {
 			return err
@@ -300,7 +300,7 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64) ([]
 // and the reset-2fa command don't.
 func (s *Service) DisableTwoFactor(ctx context.Context, userID int64) (bool, error) {
 	var was bool
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_totp WHERE user_id = ? AND enabled = 1`, userID).Scan(&n); err != nil {
 			return err
@@ -321,7 +321,7 @@ func (s *Service) DisableTwoFactor(ctx context.Context, userID int64) (bool, err
 }
 
 // replaceRecoveryCodes swaps the account's recovery codes for hashes, inside tx.
-func replaceRecoveryCodes(ctx context.Context, tx *sql.Tx, userID int64, hashes []string) error {
+func replaceRecoveryCodes(ctx context.Context, tx *store.Transaction, userID int64, hashes []string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_recovery_codes WHERE user_id = ?`, userID); err != nil {
 		return err
 	}

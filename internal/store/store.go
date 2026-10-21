@@ -1,7 +1,6 @@
-// Package store owns Arrmada's persistence: a SQLite database (pure-Go driver,
-// so the binary stays cgo-free and cross-compiles cleanly) with an embedded
-// migration runner. PostgreSQL support arrives in a later phase behind the same
-// surface.
+// Package store owns Arrmada's persistence: default SQLite and opt-in PostgreSQL,
+// each with embedded migrations and a reviewed query boundary. Both Go drivers
+// remain cgo-free; PostgreSQL backups use external native clients.
 package store
 
 import (
@@ -21,9 +20,13 @@ import (
 
 // Store wraps the database connection pool.
 type Store struct {
-	db      *sql.DB
-	dataDir string
-	dbPath  string
+	db        *sql.DB
+	pg        *Database
+	owner     *postgresOwner
+	pgOpt     PostgresOptions
+	sqliteUse *os.File
+	dataDir   string
+	dbPath    string
 
 	// snapMu serialises Snapshot: two copies picking a name in the same second
 	// would otherwise share a .tmp file and clobber each other.
@@ -32,6 +35,10 @@ type Store struct {
 
 // Options tunes OpenWith. The zero value is what Open uses.
 type Options struct {
+	// Backend is explicitly selected; empty retains the SQLite default. A
+	// failed PostgreSQL open never falls back to a local SQLite database.
+	Backend  Dialect
+	Postgres PostgresOptions
 	// Log receives migration and snapshot progress. Nil discards it.
 	Log *slog.Logger
 
@@ -70,6 +77,12 @@ func Open(dataDir string) (*Store, error) {
 
 // OpenWith is Open with options.
 func OpenWith(dataDir string, opt Options) (*Store, error) {
+	if opt.Backend == Postgres {
+		return openPostgresStore(context.Background(), dataDir, opt)
+	}
+	if opt.Backend != "" && opt.Backend != SQLite {
+		return nil, fmt.Errorf("unsupported database backend %q", opt.Backend)
+	}
 	log := opt.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -77,6 +90,16 @@ func OpenWith(dataDir string, opt Options) (*Store, error) {
 	if err := mkPrivateDir(dataDir); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
+	lease, err := lockSQLiteUse(dataDir, false)
+	if err != nil {
+		return nil, err
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = lease.Close()
+		}
+	}()
 
 	fsys := opt.migrations
 	if fsys == nil {
@@ -86,7 +109,7 @@ func OpenWith(dataDir string, opt Options) (*Store, error) {
 	// anything has the database open. It never stops the boot; see restore.go.
 	applyPendingRestore(dataDir, versionsIn(fsys), log)
 
-	st := &Store{dataDir: dataDir, dbPath: filepath.Join(dataDir, "arrmada.db")}
+	st := &Store{dataDir: dataDir, dbPath: filepath.Join(dataDir, "arrmada.db"), sqliteUse: lease}
 	if opt.migrations == nil && opt.BeforeMigrate == nil && !opt.noTestTemplate {
 		// A no-op outside `go test`; see testtemplate.go.
 		if err := seedFromTestTemplate(st.dbPath); err != nil {
@@ -116,6 +139,7 @@ func OpenWith(dataDir string, opt Options) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	opened = true
 	return st, nil
 }
 
@@ -234,6 +258,16 @@ func OpenNoMigrate(dataDir string) (*Store, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s isn't a database file", dbPath)
 	}
+	lease, err := lockSQLiteUse(dataDir, false)
+	if err != nil {
+		return nil, err
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = lease.Close()
+		}
+	}()
 	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, err
@@ -244,7 +278,8 @@ func OpenNoMigrate(dataDir string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	return &Store{db: db, dataDir: dataDir, dbPath: dbPath}, nil
+	opened = true
+	return &Store{db: db, dataDir: dataDir, dbPath: dbPath, sqliteUse: lease}, nil
 }
 
 // openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout, and
@@ -274,11 +309,46 @@ func openDB(dbPath string) (*sql.DB, error) {
 // DataDir is the folder holding the database, its backups and the restore marker.
 func (s *Store) DataDir() string { return s.dataDir }
 
-// DB exposes the underlying pool for repositories built on top of the store.
-func (s *Store) DB() *sql.DB { return s.db }
+// DB exposes the repository boundary, never an unbound native PostgreSQL pool.
+// Use WithTx for transactions. SQLite still uses its native database/sql pool.
+func (s *Store) DB() Pool {
+	if s.pg != nil {
+		return s.pg
+	}
+	return s.db
+}
+
+// Backend identifies the selected database; a failed open never changes it.
+func (s *Store) Backend() Dialect {
+	if s.pg != nil {
+		return Postgres
+	}
+	return SQLite
+}
+
+// Done closes if PostgreSQL ownership is lost. Nil for SQLite/maintenance
+// readers; selecting on a nil channel is disabled.
+func (s *Store) Done() <-chan struct{} {
+	if s.owner != nil {
+		return s.owner.done
+	}
+	return nil
+}
+
+// PostgresBinDir is the configured native client directory, empty for PATH.
+func (s *Store) PostgresBinDir() string { return s.pgOpt.BinDir }
 
 // Ping checks database connectivity (used by health checks).
-func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+func (s *Store) Ping(ctx context.Context) error { return s.DB().PingContext(ctx) }
 
 // Close closes the connection pool.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.owner != nil {
+		return s.owner.Close()
+	}
+	err := s.DB().Close()
+	if s.sqliteUse != nil {
+		_ = s.sqliteUse.Close()
+	}
+	return err
+}

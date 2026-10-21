@@ -8,6 +8,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // One album search's judgement of the releases it found (MUS-09, MUS-16, MUS-17, MUS-21).
@@ -225,7 +226,7 @@ func (c *Coordinator) musicImportedReleases(ctx context.Context, albumID int64) 
 	ir := importedReleases{hashes: map[string]bool{}, hashlessTitle: map[string]bool{}, anyTitle: map[string]bool{}}
 	rows, err := c.db.QueryContext(ctx, `SELECT title, info_hash FROM grabs
 		WHERE media_type = 'music' AND movie_id = ? AND `+everImportedWhere+`
-		  AND grabbed_at > datetime('now', '`+importedRecall+`')`, albumID)
+		  AND grabbed_at > `+store.UTCNowTimestamp(c.db, "'"+importedRecall+"'"), albumID)
 	if err != nil {
 		return ir, err
 	}

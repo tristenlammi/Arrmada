@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -16,7 +17,7 @@ func txTestDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.db
 	for _, q := range []string{
 		`CREATE TABLE tx_counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)`,
 		`INSERT INTO tx_counter (id, n) VALUES (1, 0)`,
@@ -54,7 +55,7 @@ func TestWithTxReadThenWriteUnderContention(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				errs <- WithTx(ctx, db, func(tx *sql.Tx) error {
+				errs <- WithTx(ctx, db, func(tx *Transaction) error {
 					var n int
 					if err := tx.QueryRowContext(ctx, `SELECT n FROM tx_counter WHERE id = 1`).Scan(&n); err != nil {
 						return err
@@ -89,7 +90,7 @@ func TestWithTxReadThenWriteUnderContention(t *testing.T) {
 func TestWithTxRollsBackOnError(t *testing.T) {
 	db := txTestDB(t)
 	boom := errors.New("boom")
-	err := WithTx(context.Background(), db, func(tx *sql.Tx) error {
+	err := WithTx(context.Background(), db, func(tx *Transaction) error {
 		if _, err := tx.Exec(`UPDATE tx_counter SET n = 99 WHERE id = 1`); err != nil {
 			return err
 		}
@@ -111,7 +112,7 @@ func TestWithTxRollsBackOnPanicAndRepanics(t *testing.T) {
 				t.Errorf("recovered %v, want the original panic", p)
 			}
 		}()
-		_ = WithTx(context.Background(), db, func(tx *sql.Tx) error {
+		_ = WithTx(context.Background(), db, func(tx *Transaction) error {
 			if _, err := tx.Exec(`UPDATE tx_counter SET n = 99 WHERE id = 1`); err != nil {
 				return err
 			}
@@ -123,7 +124,7 @@ func TestWithTxRollsBackOnPanicAndRepanics(t *testing.T) {
 		t.Errorf("counter = %d after a panicking transaction, want 0", got)
 	}
 	// The connection went back to the pool clean: a new transaction works.
-	if err := WithTx(context.Background(), db, func(tx *sql.Tx) error {
+	if err := WithTx(context.Background(), db, func(tx *Transaction) error {
 		_, err := tx.Exec(`UPDATE tx_counter SET n = 1 WHERE id = 1`)
 		return err
 	}); err != nil {
@@ -136,7 +137,7 @@ func TestWithTxRollsBackOnPanicAndRepanics(t *testing.T) {
 
 func TestWithTxCommits(t *testing.T) {
 	db := txTestDB(t)
-	if err := WithTx(context.Background(), db, func(tx *sql.Tx) error {
+	if err := WithTx(context.Background(), db, func(tx *Transaction) error {
 		_, err := tx.Exec(`UPDATE tx_counter SET n = 7 WHERE id = 1`)
 		return err
 	}); err != nil {
@@ -144,6 +145,30 @@ func TestWithTxCommits(t *testing.T) {
 	}
 	if got := counter(t, db); got != 7 {
 		t.Errorf("counter = %d, want 7", got)
+	}
+}
+
+func TestWithTxRollsBackOnGoexit(t *testing.T) {
+	db := txTestDB(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := WithTx(context.Background(), db, func(tx *Transaction) error {
+			if _, err := tx.Exec(`UPDATE tx_counter SET n = 99 WHERE id = 1`); err != nil {
+				return err
+			}
+			runtime.Goexit()
+			return nil
+		}); err != nil {
+			t.Errorf("transaction before Goexit: %v", err)
+		}
+	}()
+	<-done
+	if got := counter(t, db); got != 0 {
+		t.Fatalf("Goexit committed %d", got)
+	}
+	if err := WithTx(context.Background(), db, func(*Transaction) error { return nil }); err != nil {
+		t.Fatalf("Goexit leaked the transaction: %v", err)
 	}
 }
 
@@ -163,7 +188,7 @@ func TestWithTxGivesUpWhileLocked(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
-	holder, err := st.DB().BeginTx(ctx, nil) // IMMEDIATE: takes the write lock now
+	holder, err := st.db.BeginTx(ctx, nil) // IMMEDIATE: takes the write lock now
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +201,7 @@ func TestWithTxGivesUpWhileLocked(t *testing.T) {
 	}
 	defer func() { _ = other.Close() }()
 	ran := false
-	err = WithTx(ctx, other, func(*sql.Tx) error { ran = true; return nil })
+	err = WithTx(ctx, other, func(*Transaction) error { ran = true; return nil })
 	if !IsBusy(err) {
 		t.Fatalf("err = %v, want SQLITE_BUSY", err)
 	}

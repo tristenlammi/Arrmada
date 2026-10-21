@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,13 +12,14 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // libraryIndex is the persisted answer to "what's in the library and what codec is it".
 // Listing reads this table instead of walking the library and probing per request — see
 // migration 0058 for why.
 type libraryIndex struct {
-	db *sql.DB
+	db store.Pool
 	// gen counts writes, so the cached views built over the index (libcache.go) know
 	// when they're stale.
 	gen atomic.Uint64
@@ -131,7 +131,7 @@ func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
 		`INSERT INTO convert_library
 		   (path, media_type, movie_id, series_id, season, episode, title, year, poster_url,
 		    size_bytes, video_codec, info_json, orig_lang, info_ver, version_id, version_label, indexed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+store.UTCNowText(ix.db, "")+`)
 		 ON CONFLICT(path) DO UPDATE SET
 		   media_type = excluded.media_type, movie_id = excluded.movie_id,
 		   series_id = excluded.series_id, season = excluded.season, episode = excluded.episode,
@@ -139,7 +139,7 @@ func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
 		   size_bytes = excluded.size_bytes, video_codec = excluded.video_codec,
 		   info_json = excluded.info_json, orig_lang = excluded.orig_lang,
 		   info_ver = excluded.info_ver, version_id = excluded.version_id,
-		   version_label = excluded.version_label, indexed_at = datetime('now')`,
+		   version_label = excluded.version_label, indexed_at = excluded.indexed_at`,
 		r.Path, r.MediaType, r.MovieID, r.SeriesID, r.Season, r.Episode, r.Title, r.Year,
 		r.PosterURL, r.SizeBytes, r.Codec, infoJSON, r.OrigLang, probeSchemaVersion, r.VersionID, r.VersionLabel)
 	if err == nil {

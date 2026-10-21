@@ -2,7 +2,6 @@ package libfolders
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -109,7 +108,7 @@ func TestRewritePrefixRepointsEveryTable(t *testing.T) {
 	exec(`INSERT INTO issues (media_type, library_id, title, category, reported_by, created_at, updated_at, action_file) VALUES ('movie', 1, 'Heat', 'video', 1, 1, 1, ?)`, file)
 
 	var n int64
-	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		c, err := RewritePrefix(ctx, tx, oldDir, newDir)
 		n = c.Total()
 		return err
@@ -159,7 +158,7 @@ func TestRewritePrefixRepointsEveryTable(t *testing.T) {
 		t.Errorf("rewrite reported %d paths", n)
 	}
 	// "/" or "" can never be the folder rewritten.
-	_ = store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	_ = store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		if _, err := RewritePrefix(ctx, tx, string(filepath.Separator), newDir); err == nil {
 			t.Error("rewriting everything under / was allowed")
 		}

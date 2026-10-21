@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The conversion ledger (convert_history). The job list on the Overview is in memory and
@@ -213,7 +215,7 @@ type HistoryFilter struct {
 }
 
 // historyStore persists the ledger.
-type historyStore struct{ db *sql.DB }
+type historyStore struct{ db store.Pool }
 
 // historyRow is the full set of columns one write sets.
 type historyRow struct {
@@ -279,7 +281,7 @@ func (h *historyStore) finish(ctx context.Context, id int64, r historyRow) int64
 }
 
 func (h *historyStore) insert(ctx context.Context, r historyRow) int64 {
-	res, err := h.db.ExecContext(ctx, `INSERT INTO convert_history (
+	id, err := store.InsertID(ctx, h.db, `INSERT INTO convert_history (
 		  item_key, kind, movie_id, series_id, season, episode, title, outcome, outcome_kind, note, requested,
 		  src_path, src_release, src_size, src_info_json, out_path, out_size, out_info_json, codec, crf, encoder,
 		  ssim_mean, ssim_min, ssim_windows_json, crop, kept_tracks_json, dropped_tracks_json, warnings_json,
@@ -292,7 +294,6 @@ func (h *historyStore) insert(ctx context.Context, r historyRow) int64 {
 	if err != nil {
 		return 0
 	}
-	id, _ := res.LastInsertId()
 	return id
 }
 
@@ -360,7 +361,7 @@ func (h *historyStore) list(ctx context.Context, f HistoryFilter) ([]HistoryEntr
 		args = append(args, f.Media)
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
-		where = append(where, "title LIKE ? ESCAPE '\\'")
+		where = append(where, store.LikeASCII(h.db, "title", "?", true))
 		args = append(args, "%"+likeEscape(q)+"%")
 	}
 	if f.Before != "" {

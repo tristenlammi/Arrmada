@@ -9,6 +9,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrSessionNotFound is returned for a session id this server never issued (or pruned).
@@ -62,13 +64,13 @@ const (
 
 // Store persists progress, sessions, history, bookmarks and the listening log.
 type Store struct {
-	db  *sql.DB
+	db  store.Pool
 	now func() time.Time
 	mu  sync.Mutex // one report at a time: read-decide-write must not interleave
 }
 
 // NewStore wraps the database.
-func NewStore(db *sql.DB) *Store { return &Store{db: db, now: time.Now} }
+func NewStore(db store.Pool) *Store { return &Store{db: db, now: time.Now} }
 
 func (s *Store) nowMs() int64 { return s.now().UnixMilli() }
 
@@ -248,7 +250,7 @@ func (s *Store) SyncOffline(ctx context.Context, userID int64, o OfflineSession)
 			return Decision{}, err
 		}
 	} else if _, err := s.db.ExecContext(ctx,
-		`UPDATE listen_sessions SET last_at = MAX(last_at, ?), cur_pos = ?, listened = MAX(listened, ?) WHERE id = ?`,
+		`UPDATE listen_sessions SET last_at = `+store.ScalarMax(s.db, "last_at", "?")+`, cur_pos = ?, listened = `+store.ScalarMax(s.db, "listened", "?")+` WHERE id = ?`,
 		o.UpdatedAt, sanitize(o.Position), listened, o.ID); err != nil {
 		return Decision{}, err
 	}
@@ -562,8 +564,8 @@ func pruneHistory(ctx context.Context, ex interface {
 		keep = historyKeep
 	}
 	_, err := ex.ExecContext(ctx,
-		`DELETE FROM listen_history WHERE user_id = ? AND item_key = ? AND (kind IN (?, ?)) = ? AND id NOT IN (
-		   SELECT id FROM listen_history WHERE user_id = ? AND item_key = ? AND (kind IN (?, ?)) = ?
+		`DELETE FROM listen_history WHERE user_id = ? AND item_key = ? AND (CASE WHEN kind IN (?, ?) THEN 1 ELSE 0 END) = ? AND id NOT IN (
+		   SELECT id FROM listen_history WHERE user_id = ? AND item_key = ? AND (CASE WHEN kind IN (?, ?) THEN 1 ELSE 0 END) = ?
 		   ORDER BY at DESC, id DESC LIMIT ?)`,
 		userID, key, KindApplied, KindBefore, boolInt(place), userID, key, KindApplied, KindBefore, boolInt(place), keep)
 	return err
@@ -579,8 +581,8 @@ func (s *Store) touchLog(ctx context.Context, sess Session, setListened float64)
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO listen_log (session_id, user_id, device, client, started_at, ended_at, seconds) VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(session_id) DO UPDATE SET ended_at = MAX(listen_log.ended_at, excluded.ended_at),
-		   seconds = MAX(listen_log.seconds, excluded.seconds)`,
+		 ON CONFLICT(session_id) DO UPDATE SET ended_at = `+store.ScalarMax(s.db, "listen_log.ended_at", "excluded.ended_at")+`,
+		   seconds = `+store.ScalarMax(s.db, "listen_log.seconds", "excluded.seconds"),
 		sess.ID, sess.UserID, sess.Device, sess.Client, sess.StartedAt, sess.LastAt, seconds)
 	return err
 }

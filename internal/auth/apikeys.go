@@ -186,7 +186,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID int64, n NewAPIKey) (
 		expires = &e
 	}
 	key := APIKey{Name: name, Hint: keyHint(raw[len(raw)-4:]), Scope: n.Scope, CreatedAt: now, ExpiresAt: expires}
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		var role Role
 		var disabled int
 		err := tx.QueryRowContext(ctx, `SELECT role, disabled FROM users WHERE id = ?`, userID).Scan(&role, &disabled)
@@ -216,13 +216,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID int64, n NewAPIKey) (
 		if expires != nil {
 			exp = sqlTime(*expires)
 		}
-		res, err := tx.ExecContext(ctx,
+		key.ID, err = store.InsertID(ctx, tx,
 			`INSERT INTO api_keys (user_id, name, key_hash, created_at, scope, role, last4, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			userID, name, hashToken(raw), sqlTime(now), string(n.Scope), string(key.Role), raw[len(raw)-4:], exp)
-		if err != nil {
-			return err
-		}
-		key.ID, err = res.LastInsertId()
 		return err
 	})
 	if err != nil {
@@ -254,7 +250,7 @@ func (s *Service) ValidateAPIKey(ctx context.Context, raw, ip string) (*KeyUse, 
 	// The lookup is by hash, so the database's comparison never sees the key itself; the
 	// hash is compared again in constant time below as a second, timing-safe check.
 	err := s.db.QueryRowContext(ctx, `
-		SELECT k.id, k.key_hash, k.scope, k.role, strftime('%Y-%m-%d %H:%M:%S', k.last_used_at), k.last_used_network,
+		SELECT k.id, k.key_hash, k.scope, k.role, `+store.TimestampText(s.db, "k.last_used_at")+`, k.last_used_network,
 		       u.id, u.username, u.role, u.disabled, u.auto_approve_movie, u.auto_approve_series, u.auto_approve_book
 		FROM api_keys k JOIN users u ON u.id = k.user_id
 		WHERE k.key_hash = ? AND (k.expires_at IS NULL OR k.expires_at > ?)`,
@@ -285,9 +281,11 @@ func (s *Service) ValidateAPIKey(ctx context.Context, raw, ip string) (*KeyUse, 
 }
 
 // apiKeyCols are what scanAPIKey reads, in its order.
-const apiKeyCols = `k.id, k.name, k.last4, k.scope, k.role, strftime('%Y-%m-%d %H:%M:%S', k.created_at),
-	COALESCE(strftime('%Y-%m-%d %H:%M:%S', k.last_used_at), ''), k.last_used_network,
-	COALESCE(strftime('%Y-%m-%d %H:%M:%S', k.expires_at), ''), k.user_id, u.username`
+func (s *Service) apiKeyCols() string {
+	return `k.id, k.name, k.last4, k.scope, k.role, ` + store.TimestampText(s.db, "k.created_at") + `,
+	COALESCE(` + store.TimestampText(s.db, "k.last_used_at") + `, ''), k.last_used_network,
+	COALESCE(` + store.TimestampText(s.db, "k.expires_at") + `, ''), k.user_id, u.username`
+}
 
 func (s *Service) scanAPIKey(r rowScanner) (APIKey, error) {
 	var k APIKey
@@ -308,7 +306,7 @@ func (s *Service) scanAPIKey(r rowScanner) (APIKey, error) {
 }
 
 func (s *Service) listAPIKeys(ctx context.Context, where string, args ...any) ([]APIKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+apiKeyCols+` FROM api_keys k JOIN users u ON u.id = k.user_id `+where+
+	rows, err := s.db.QueryContext(ctx, `SELECT `+s.apiKeyCols()+` FROM api_keys k JOIN users u ON u.id = k.user_id `+where+
 		` ORDER BY k.created_at DESC, k.id DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -373,7 +371,7 @@ func (s *Service) SessionSignedInRecently(ctx context.Context, userID int64, raw
 	}
 	var created string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT strftime('%Y-%m-%d %H:%M:%S', created_at) FROM sessions WHERE token_hash = ? AND user_id = ? AND expires_at > ?`,
+		`SELECT `+store.TimestampText(s.db, "created_at")+` FROM sessions WHERE token_hash = ? AND user_id = ? AND expires_at > ?`,
 		hashToken(raw), userID, sqlTime(s.now())).Scan(&created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -389,7 +387,7 @@ func (s *Service) SessionSignedInRecently(ctx context.Context, userID int64, raw
 // (0 when there was no such key).
 func (s *Service) RevokeAnyAPIKey(ctx context.Context, id int64) (int64, error) {
 	var owner int64
-	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.db, func(tx *store.Transaction) error {
 		err := tx.QueryRowContext(ctx, `SELECT user_id FROM api_keys WHERE id = ?`, id).Scan(&owner)
 		if errors.Is(err, sql.ErrNoRows) {
 			owner = 0

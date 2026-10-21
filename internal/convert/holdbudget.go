@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The hold's budget. Held originals take no new space — they're the files that were
@@ -51,7 +53,7 @@ func (s *Service) HoldStats(ctx context.Context) HoldStats {
 		return st
 	}
 	_ = s.history.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(src_size), 0), COALESCE(SUM(MAX(src_size - out_size, 0)), 0), COUNT(*), COALESCE(MIN(NULLIF(hold_until, 0)), 0)
+		`SELECT COALESCE(SUM(src_size), 0), COALESCE(SUM(`+store.ScalarMax(s.history.db, "src_size - out_size", "0")+`), 0), COUNT(*), COALESCE(MIN(NULLIF(hold_until, 0)), 0)
 		   FROM convert_history WHERE hold_state = ?`, HoldHeld).
 		Scan(&st.HeldBytes, &st.HeldSavingBytes, &st.HeldCount, &st.NextReleaseAt)
 	return st

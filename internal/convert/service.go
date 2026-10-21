@@ -6,7 +6,6 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +21,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // defaultScanAt is when the daily index sweep runs if the admin hasn't picked a time.
@@ -100,7 +100,7 @@ type Job struct {
 // Service runs the conversion engine: workers that pick the next file worth converting,
 // and the safe encode → verify → replace pipeline each one runs.
 type Service struct {
-	db       *sql.DB // for the swap journal; sub-stores hold their own handle
+	db       store.Pool // for the swap journal; sub-stores hold their own handle
 	movies   *movies.Service
 	series   *series.Service
 	settings *settings.Service
@@ -253,7 +253,7 @@ func (s *Service) Logs() []LogLine {
 }
 
 // NewService wires the module, verifying which encoders actually work up front.
-func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, ffmpeg, ffprobe, scratchDir, recycleDir string, log *slog.Logger) *Service {
+func NewService(db store.Pool, mv *movies.Service, sr *series.Service, set *settings.Service, ffmpeg, ffprobe, scratchDir, recycleDir string, log *slog.Logger) *Service {
 	_ = os.MkdirAll(scratchDir, 0o755)
 	s := &Service{
 		db:     db,

@@ -1,16 +1,15 @@
 // Package backup keeps regular copies of Arrmada's database: a nightly one on a schedule,
 // a manual one on request, and the safety copies other features take before something
-// they can't undo (deleting a user). Every copy is the store's checked VACUUM INTO
-// snapshot, kept next to the database under <data>/backups with a per-kind retention.
+// they can't undo (deleting a user). Every copy is the store's checked backend-native
+// snapshot, kept under <data>/backups with per-kind, per-backend retention.
 //
-// The copies sit on the database's own disk, so they protect against a bad update,
-// corruption or an accidental delete — not against losing the disk. Nothing here ever
+// The copies sit on the Arrmada server, so keep off-server recovery copies as well.
+// Nothing here ever
 // reads or logs what a backup contains beyond its schema version.
 package backup
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +57,7 @@ type Settings interface {
 
 // Backup is one database copy on disk.
 type Backup struct {
+	Backend       store.Dialect    `json:"backend"`
 	Name          string           `json:"name"`
 	Kind          store.BackupKind `json:"kind"`
 	SizeBytes     int64            `json:"size_bytes"`
@@ -74,14 +74,32 @@ type Service struct {
 	log      *slog.Logger
 	now      func() time.Time
 
-	mu       sync.Mutex
-	versions map[string]string // schema version by file name; backups never change once written
+	mu        sync.Mutex
+	versions  map[string]string // schema version by file name; backups never change once written
+	backend   store.Dialect
+	nativeBin string
 }
 
 // New wires the service for st; its backups live wherever st's snapshots go.
 func New(st *store.Store, set Settings, log *slog.Logger) *Service {
-	return &Service{store: st, dir: st.BackupsDir(), dataDir: st.DataDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Service{store: st, dir: st.BackupsDir(), dataDir: st.DataDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}, backend: st.Backend(), nativeBin: st.PostgresBinDir()}
 }
+
+// Backend is the active backend, not necessarily every retained backup's format.
+func (s *Service) Backend() store.Dialect {
+	if s.backend == "" {
+		return store.SQLite
+	}
+	return s.backend
+}
+
+// CanRestore reports whether in-app staged replacement/upload is supported.
+func (s *Service) CanRestore() bool { return s.Backend() == store.SQLite }
+
+var ErrOfflineRestoreOnly = errors.New("PostgreSQL recovery is offline only: stop Arrmada and use restore-postgres with a new empty schema")
 
 // Dir is the backups folder.
 func (s *Service) Dir() string { return s.dir }
@@ -111,7 +129,7 @@ func (s *Service) Create(ctx context.Context, kind store.BackupKind) (Backup, er
 		return Backup{}, err
 	}
 	s.log.Info("database backup taken", "kind", kind, "name", b.Name, "size_bytes", b.SizeBytes, "duration", time.Since(start).Round(time.Millisecond))
-	if removed, err := store.PruneBackups(s.dir, kind, s.keepFor(ctx, kind)); err != nil {
+	if removed, err := store.PruneBackupsFor(s.Backend(), s.dir, kind, s.keepFor(ctx, kind)); err != nil {
 		s.log.Warn("pruning old backups failed", "kind", kind, "err", err)
 	} else if len(removed) > 0 {
 		s.log.Info("pruned old backups", "kind", kind, "removed", len(removed))
@@ -178,7 +196,7 @@ func (s *Service) describe(ctx context.Context, name string) (Backup, error) {
 	if err != nil {
 		return Backup{}, err
 	}
-	return Backup{Name: name, Kind: kind, SizeBytes: fi.Size(), CreatedAt: at, SchemaVersion: s.schemaVersion(ctx, name)}, nil
+	return Backup{Name: name, Backend: store.BackupBackend(name), Kind: kind, SizeBytes: fi.Size(), CreatedAt: at, SchemaVersion: s.schemaVersion(ctx, name)}, nil
 }
 
 // schemaVersion reads the newest applied migration from a backup, read-only, once per file.
@@ -189,20 +207,14 @@ func (s *Service) schemaVersion(ctx context.Context, name string) string {
 	if ok {
 		return v
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(s.dir, name)+"?mode=ro&immutable=1")
+	ver, err := store.InspectBackupVersion(ctx, filepath.Join(s.dir, name), s.nativeBin)
 	if err != nil {
-		return ""
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	var ver sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&ver); err != nil {
 		return "" // not cached: a transient failure shouldn't stick
 	}
 	s.mu.Lock()
-	s.versions[name] = ver.String
+	s.versions[name] = ver
 	s.mu.Unlock()
-	return ver.String
+	return ver
 }
 
 func (s *Service) forget(names []string) {
@@ -247,6 +259,9 @@ var ErrStaged = errors.New("this backup is staged to be restored at the next sta
 // the next start. Nothing is staged for a backup that fails validation (damaged, not an
 // Arrmada database, or from a newer Arrmada).
 func (s *Service) StageRestore(name, requestedBy string) (store.BackupInfo, error) {
+	if !s.CanRestore() || store.BackupBackend(name) == store.Postgres {
+		return store.BackupInfo{}, ErrOfflineRestoreOnly
+	}
 	if !validName(name) {
 		return store.BackupInfo{}, ErrBadName
 	}
@@ -259,6 +274,9 @@ func (s *Service) StageRestore(name, requestedBy string) (store.BackupInfo, erro
 
 // CancelRestore drops a staged restore that hasn't run. It reports whether there was one.
 func (s *Service) CancelRestore() (bool, error) {
+	if !s.CanRestore() {
+		return false, ErrOfflineRestoreOnly
+	}
 	ok, err := store.CancelRestore(s.dataDir)
 	if ok {
 		s.log.Info("staged database restore cancelled")
@@ -268,11 +286,19 @@ func (s *Service) CancelRestore() (bool, error) {
 
 // PendingRestore is the staged restore, or nil.
 func (s *Service) PendingRestore() (*store.RestoreMarker, error) {
+	if !s.CanRestore() {
+		return nil, nil
+	}
 	return store.PendingRestore(s.dataDir)
 }
 
 // LastRestore is how the last restore at boot went, or nil when none has run.
-func (s *Service) LastRestore() (*store.RestoreResult, error) { return store.LastRestore(s.dataDir) }
+func (s *Service) LastRestore() (*store.RestoreResult, error) {
+	if !s.CanRestore() {
+		return nil, nil
+	}
+	return store.LastRestore(s.dataDir)
+}
 
 // Size limits for a backup brought in from outside: MaxUploadBytes is what an upload may
 // send (a .db.gz, or a .db), MaxImportBytes what the database may be once decompressed.
@@ -285,6 +311,9 @@ const (
 // backup, once it has passed the same validation a restore does. It then shows up in the
 // list and is restored through the normal Restore flow.
 func (s *Service) Import(ctx context.Context, r io.Reader) (Backup, error) {
+	if !s.CanRestore() {
+		return Backup{}, ErrOfflineRestoreOnly
+	}
 	name, _, err := store.ImportBackup(s.dataDir, r, MaxImportBytes)
 	if err != nil {
 		return Backup{}, err
@@ -309,6 +338,13 @@ func ForDataDir(dataDir string, log *slog.Logger) *Service {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Service{dir: store.BackupsDir(dataDir), dataDir: dataDir, log: log, now: time.Now, versions: map[string]string{}}
+}
+
+// ForBackend is the offline listing/maintenance view for a selected backend.
+func ForBackend(dataDir string, backend store.Dialect, binDir string, log *slog.Logger) *Service {
+	s := ForDataDir(dataDir, log)
+	s.backend, s.nativeBin = backend, binDir
+	return s
 }
 
 // StageTarget stages a restore from the command line. target is a backup's name in the
@@ -361,7 +397,7 @@ func (s *Service) Open(name string) (*os.File, Backup, error) {
 		return nil, Backup{}, err
 	}
 	kind, at, _ := store.ParseBackupName(name)
-	b := Backup{Name: name, Kind: kind, CreatedAt: at}
+	b := Backup{Name: name, Backend: store.BackupBackend(name), Kind: kind, CreatedAt: at}
 	if fi, err := f.Stat(); err == nil {
 		b.SizeBytes = fi.Size()
 	}
@@ -401,7 +437,7 @@ func (s *Service) newest(kind store.BackupKind) time.Time {
 	}
 	var latest time.Time
 	for _, e := range entries {
-		if k, at, ok := store.ParseBackupName(e.Name()); ok && k == kind && at.After(latest) {
+		if k, at, ok := store.ParseBackupName(e.Name()); ok && k == kind && store.BackupBackend(e.Name()) == s.Backend() && e.Type().IsRegular() && at.After(latest) {
 			latest = at
 		}
 	}

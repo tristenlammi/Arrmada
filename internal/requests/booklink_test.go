@@ -36,7 +36,7 @@ func bookLinkFixture(t *testing.T, cat catalogue) (*Service, *books.Repo, *sql.D
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.DB().(*sql.DB)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	root := t.TempDir()
 	s := &Service{

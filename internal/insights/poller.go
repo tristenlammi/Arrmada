@@ -2,7 +2,6 @@ package insights
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 	"time"
 
@@ -363,7 +362,7 @@ func (s *Service) finalize(ctx context.Context, ls *liveSession) {
 		return
 	}
 	rec := ls.record(ls.lastSeen)
-	err := store.WithTx(ctx, s.repo.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, s.repo.db, func(tx *store.Transaction) error {
 		id, err := s.repo.insertSessionEx(ctx, tx, rec)
 		if err != nil {
 			return err

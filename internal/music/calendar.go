@@ -1,6 +1,10 @@
 package music
 
-import "context"
+import (
+	"context"
+
+	"github.com/tristenlammi/arrmada/internal/store"
+)
 
 // The Calendar's music (MUS-24): albums of library artists whose first release falls on a
 // day inside the window — the ones the refresh has dated ahead, and the ones just out.
@@ -32,7 +36,7 @@ func (r *Repo) CalendarAlbums(ctx context.Context, start, end string) ([]Calenda
 		  FROM albums al
 		  JOIN artists ar ON ar.id = al.artist_id
 		 WHERE ar.in_library = 1 AND al.stale_since IS NULL
-		   AND length(al.release_date) = 10 AND date(al.release_date) = al.release_date
+		   AND length(al.release_date) = 10 AND `+store.DateText(r.db, "al.release_date")+` = al.release_date
 		   AND al.release_date >= ? AND al.release_date <= ?
 		 ORDER BY al.release_date, al.id
 		 LIMIT ?`, start, end, calendarLimit)

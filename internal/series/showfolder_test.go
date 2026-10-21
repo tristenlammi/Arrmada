@@ -2,7 +2,6 @@ package series
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -24,7 +23,7 @@ import (
 // as there, unless a test says otherwise).
 type folderFixture struct {
 	t   *testing.T
-	db  *sql.DB
+	db  store.Pool
 	svc *Service
 	n   int
 }

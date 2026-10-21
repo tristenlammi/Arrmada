@@ -66,7 +66,7 @@ func openReadOnly(t *testing.T, path string) *sql.DB {
 	return db
 }
 
-func hasTable(t *testing.T, db *sql.DB, name string) bool {
+func hasTable(t *testing.T, db Pool, name string) bool {
 	t.Helper()
 	return count(t, db, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='`+name+`'`) == 1
 }

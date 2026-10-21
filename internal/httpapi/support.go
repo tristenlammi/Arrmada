@@ -27,6 +27,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The support bundle is what an owner attaches to a bug report, so it's written as if it
@@ -317,7 +318,7 @@ func (a *api) bundleScrubber(ctx context.Context) (*bundleScrubber, error) {
 
 // scanStrings runs a query whose columns are all text (NULL reads as "") and hands each
 // row to add.
-func scanStrings(ctx context.Context, db *sql.DB, query string, add func([]string)) error {
+func scanStrings(ctx context.Context, db store.Pool, query string, add func([]string)) error {
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("%s: %w", query, err)

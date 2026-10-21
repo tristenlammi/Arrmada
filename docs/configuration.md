@@ -105,8 +105,13 @@ without a login. A login you set in SABnzbd (Config → General) is yours and ne
 | `TZ` | Timezone. Schedules — the Convert window especially — run on this clock ([list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `COMPOSE_PROFILES` | The optional companions to run, a comma list: `prowlarr` (Prowlarr), `sabnzbd` (SABnzbd, for Usenet), e.g. `prowlarr,sabnzbd`. `update.sh` never changes it |
 | `ARRMADA_RECYCLE_DIR` | Override for the recycle bin (see below) |
-| `ARRMADA_SKIP_MIGRATION_SNAPSHOT` | `1` to upgrade the database without the safety copy (a full disk) |
-| `ARRMADA_ALLOW_NEWER_SCHEMA` | `1` to start an older version on a newer database — last resort |
+| `ARRMADA_DATABASE_BACKEND` | `sqlite` (default) or opt-in `postgres`; no automatic data conversion |
+| `ARRMADA_POSTGRES_URL` | Secret connection URL to an existing PostgreSQL 16–18 UTF8 database; use verified TLS remotely |
+| `ARRMADA_POSTGRES_SCHEMA` | Pre-provisioned dedicated schema owned by the application role; never `public` |
+| `ARRMADA_POSTGRES_MAX_CONNECTIONS` | Application pool limit, 1–100 (default 4); allow extra ownership/backup/CLI connections |
+| `ARRMADA_POSTGRES_BIN` | Optional native client directory for a bare binary; clients are bundled in the image |
+| `ARRMADA_SKIP_MIGRATION_SNAPSHOT` | SQLite only: `1` to upgrade without the safety copy (a full disk) |
+| `ARRMADA_ALLOW_NEWER_SCHEMA` | SQLite only: `1` to start an older version on a newer database — last resort |
 | `ARRMADA_EXTERNAL_HEADER` | The header a tunnel or proxy stamps on outside requests (default `Cf-Connecting-Ip`); such requests are limited to the requester pages |
 | `ARRMADA_LIBRARY_DIR`, `ARRMADA_DOWNLOADS_DIR`, `ARRMADA_MOVIES_DIR`, `ARRMADA_TV_DIR`, `ARRMADA_EBOOKS_DIR`, `ARRMADA_AUDIOBOOKS_DIR`, `ARRMADA_MUSIC_DIR` | Starting values for the library folders. The folders picked in the app win; most people never set these |
 | `ARRMADA_PLEX_URL`, `ARRMADA_PLEX_TOKEN` | An older way to point Insights at Plex — connect Plex in Settings → Connections instead |

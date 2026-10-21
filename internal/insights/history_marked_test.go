@@ -163,7 +163,7 @@ func TestViewingMarksFollowEveryWrite(t *testing.T) {
 // while itemKey is the expression migration 0308 indexed.
 func TestViewingStartIndexMatchesItemKey(t *testing.T) {
 	s := newDataTestService(t)
-	rows, err := s.repo.db.Query(`EXPLAIN QUERY PLAN `+groupedMarkedSQL(" WHERE s.viewing_start = 1"), 0, 50, 0)
+	rows, err := s.repo.db.Query(`EXPLAIN QUERY PLAN `+groupedMarkedSQL(s.repo.db, " WHERE s.viewing_start = 1"), 0, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

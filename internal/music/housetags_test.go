@@ -2,7 +2,6 @@ package music
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"reflect"
@@ -48,7 +47,7 @@ func houseAlbum(t *testing.T, r *Repo, ctx context.Context, va bool) (TagContext
 		t.Fatal(err)
 	}
 	var feat int64
-	if err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	if err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var err error
 		feat, err = ensureCreditTx(ctx, tx, []CreditName{
 			{ArtistID: a.ID, ArtistMBID: artistMBID, Name: artistName, JoinPhrase: " feat. "},

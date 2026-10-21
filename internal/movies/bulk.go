@@ -2,8 +2,9 @@ package movies
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // BulkChange is what the mass editor sets on every selected movie. A nil field is left
@@ -40,7 +41,7 @@ func (s *Service) BulkUpdate(ctx context.Context, ids []int64, ch BulkChange) er
 	if ch.MinAvailability != nil && !ValidAvailability(*ch.MinAvailability) {
 		return fmt.Errorf("invalid availability %q", *ch.MinAvailability)
 	}
-	return s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	return s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		if missing, err := r.missingIDs(ctx, ids); err != nil {
 			return err
 		} else if len(missing) > 0 {

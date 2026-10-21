@@ -23,6 +23,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The library scan, v2 (MUS-37): catalogue music already in the music folder.
@@ -1438,7 +1439,7 @@ func IsLibraryScanReview(r Review) bool { return strings.HasPrefix(r.Hash, scanR
 // pendingScanReviews lists the pending scan reviews by folder.
 func (c *Coordinator) pendingScanReviews(ctx context.Context) (map[string]int64, error) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, content_path FROM import_reviews WHERE status = 'pending' AND hash LIKE ?`, scanReviewPrefix+"%")
+		`SELECT id, content_path FROM import_reviews WHERE status = 'pending' AND `+store.LikeASCII(c.db, "hash", "?", false), scanReviewPrefix+"%")
 	if err != nil {
 		return nil, err
 	}

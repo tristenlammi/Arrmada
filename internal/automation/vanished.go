@@ -2,7 +2,6 @@ package automation
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -79,13 +78,13 @@ const vanishedPurgeKey = "repair:vanished_blocklist_v1"
 // release that disappeared again. A settings key stops it running twice; it is saved after
 // the delete, so a failure in between means the next boot looks again and, since nothing
 // writes that reason any more, finds nothing new.
-func PurgeVanishedBlocks(ctx context.Context, db *sql.DB, set *settings.Service, log *slog.Logger) (int, error) {
+func PurgeVanishedBlocks(ctx context.Context, db store.Pool, set *settings.Service, log *slog.Logger) (int, error) {
 	if _, done := set.Lookup(vanishedPurgeKey); done {
 		return 0, nil
 	}
 	var n int64
 	var releases int
-	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT norm_title) FROM blocklist WHERE reason = ?`,
 			vanishedBlockReason).Scan(&releases); err != nil {
 			return err

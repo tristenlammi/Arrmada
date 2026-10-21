@@ -107,7 +107,7 @@ func (s *Service) Person(ctx context.Context, userID string, windowDays int) (Pe
 	var first, last, secs sql.NullInt64
 	var dp, ds, tc, buffered, events int
 	err = db.QueryRowContext(ctx, `
-		SELECT COUNT(*), MIN(started_at), MAX(started_at), `+watchedSum+`,
+		SELECT COUNT(*), MIN(started_at), MAX(started_at), `+watchedSumFor(db)+`,
 			COALESCE(SUM(CASE WHEN duration_ms > 0 AND view_offset_ms * 10 >= duration_ms * 9 THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN duration_ms > 0 THEN 1 ELSE 0 END),0),
 			COALESCE(SUM(CASE WHEN decision = 'direct_stream' THEN 1 ELSE 0 END),0),
@@ -165,9 +165,10 @@ func (s *Service) Person(ctx context.Context, userID string, windowDays int) (Pe
 	rows, err := db.QueryContext(ctx, `
 		SELECT CASE WHEN media_type = 'episode' AND grandparent_title <> '' THEN grandparent_title ELSE title END AS t,
 			COALESCE(NULLIF(MAX(CASE WHEN media_type = 'episode' THEN grandparent_thumb ELSE '' END),''), MAX(thumb)) AS th,
-			COUNT(*) AS plays, `+watchedSum+` AS secs
+			COUNT(*) AS plays, `+watchedSumFor(db)+` AS secs
 		FROM stream_sessions WHERE user_id = ? AND started_at >= ? AND media_type IN ('movie','episode')
-		GROUP BY t HAVING t <> '' ORDER BY plays DESC, secs DESC LIMIT 12`, userID, since)
+		AND (CASE WHEN media_type = 'episode' AND grandparent_title <> '' THEN grandparent_title ELSE title END) <> ''
+		GROUP BY t ORDER BY plays DESC, secs DESC LIMIT 12`, userID, since)
 	if err != nil {
 		return PersonProfile{}, err
 	}
@@ -229,7 +230,7 @@ func (s *Service) Person(ctx context.Context, userID string, windowDays int) (Pe
 // personNames ranks one person's plays by a column (platform, player).
 func (s *Service) personNames(ctx context.Context, col, userID string, since int64) ([]NameStat, error) {
 	rows, err := s.repo.db.QueryContext(ctx, `
-		SELECT `+col+`, COUNT(*) AS plays, `+watchedSum+` AS secs FROM stream_sessions
+		SELECT `+col+`, COUNT(*) AS plays, `+watchedSumFor(s.repo.db)+` AS secs FROM stream_sessions
 		WHERE user_id = ? AND started_at >= ? AND `+col+` <> ''
 		GROUP BY `+col+` ORDER BY plays DESC LIMIT 10`, userID, since)
 	if err != nil {

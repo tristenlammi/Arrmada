@@ -17,6 +17,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/libroots"
 	"github.com/tristenlammi/arrmada/internal/mediaserver"
 	"github.com/tristenlammi/arrmada/internal/plex"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // The dashboard is one request that fans out over every subsystem, and any of them
@@ -383,7 +384,7 @@ func (a *api) libraryCounts(ctx context.Context) libraryCounts {
 		JOIN series s ON s.id = e.series_id
 		JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
 		WHERE s.monitored = 1 AND sn.monitored = 1 AND e.monitored = 1 AND e.has_file = 0
-		  AND e.season_number > 0 AND e.air_date <> '' AND date(e.air_date) <= date('now')`)
+		AND e.season_number > 0 AND e.air_date <> '' AND `+store.DateText(a.deps.Store.DB(), "e.air_date")+` <= `+store.UTCDateText(a.deps.Store.DB()))
 	count(&lc.Books, `SELECT COUNT(*) FROM books`)
 	count(&lc.BooksMissing, `SELECT COUNT(*) FROM books WHERE monitored = 1 AND has_file = 0`)
 	// Music's counts are dashboardMusic's, sent only while the module is on.

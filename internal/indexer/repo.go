@@ -15,11 +15,11 @@ var ErrNotFound = errors.New("indexer not found")
 
 // Repo persists indexers in SQLite.
 type Repo struct {
-	db *sql.DB
+	db store.Pool
 }
 
 // NewRepo builds a repository over the given pool.
-func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+func NewRepo(db store.Pool) *Repo { return &Repo{db: db} }
 
 const indexerCols = `id, name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types, prowlarr_id, disabled_by, managed_note, caps_json, caps_at`
 
@@ -92,7 +92,7 @@ func createIn(ctx context.Context, ex store.Execer, idx Indexer) (Indexer, error
 	if idx.Priority == 0 {
 		idx.Priority = 25
 	}
-	res, err := ex.ExecContext(ctx,
+	id, err := store.InsertID(ctx, ex,
 		`INSERT INTO indexers (name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types, prowlarr_id, disabled_by, managed_note)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		idx.Name, idx.Kind, idx.URL, idx.APIKey, idx.Username, idx.Password,
@@ -101,7 +101,7 @@ func createIn(ctx context.Context, ex store.Execer, idx Indexer) (Indexer, error
 	if err != nil {
 		return Indexer{}, err
 	}
-	idx.ID, _ = res.LastInsertId()
+	idx.ID = id
 	return idx, nil
 }
 

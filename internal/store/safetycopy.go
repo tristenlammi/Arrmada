@@ -12,8 +12,8 @@ import (
 // history), then keeps only the newest `keep` copies of that kind. Other files in the
 // backups folder are never touched.
 //
-// It is Snapshot plus pruning: the same checked VACUUM INTO copy the pre-migration backup
-// uses, so every copy in the folder is made one way. kind must be one of the BackupKind
+// It is Snapshot plus backend-scoped pruning: the same checked backend-native
+// copy the pre-migration backup uses. kind must be one of the BackupKind
 // names, which keeps it from steering the file name anywhere else. dataDir is kept for
 // callers' sake; the copy always goes next to the database this Store opened.
 func (s *Store) SafetyCopy(ctx context.Context, dataDir, kind string, keep int) (string, error) {
@@ -27,7 +27,7 @@ func (s *Store) SafetyCopy(ctx context.Context, dataDir, kind string, keep int) 
 		return "", err
 	}
 	if keep > 0 {
-		_, _ = PruneBackups(BackupsDir(s.dataDir), k, keep)
+		_, _ = PruneBackupsFor(s.Backend(), BackupsDir(s.dataDir), k, keep)
 	}
 	return path, nil
 }

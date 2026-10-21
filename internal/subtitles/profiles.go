@@ -2,7 +2,6 @@ package subtitles
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,7 +264,7 @@ type profileStore struct {
 	cfg *profileConfig
 }
 
-func (s *Service) profileDB() *sql.DB {
+func (s *Service) profileDB() store.Pool {
 	if s.ledger.ok() {
 		return s.ledger.db
 	}
@@ -304,10 +303,10 @@ func (s *Service) dropProfiles() {
 	s.profiles.mu.Unlock()
 }
 
-func (s *Service) loadProfiles(ctx context.Context, db *sql.DB) (*profileConfig, error) {
+func (s *Service) loadProfiles(ctx context.Context, db store.Pool) (*profileConfig, error) {
 	read := func() ([]Profile, error) {
 		rows, err := db.QueryContext(ctx, `SELECT id, name, items_json, is_default FROM subtitle_profiles
-			ORDER BY is_default DESC, name COLLATE NOCASE`)
+			ORDER BY is_default DESC, `+store.FoldASCII(db, "name"))
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +333,7 @@ func (s *Service) loadProfiles(ctx context.Context, db *sql.DB) (*profileConfig,
 	if len(profiles) == 0 || !profiles[0].IsDefault {
 		// First use: the default profile is the kept languages as they were.
 		items, _ := json.Marshal(plainItems(s.settingsLanguages(ctx)))
-		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO subtitle_profiles (name, items_json, is_default) VALUES ('Default', ?, 1)`, string(items)); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO subtitle_profiles (name, items_json, is_default) VALUES ('Default', ?, 1) ON CONFLICT DO NOTHING`, string(items)); err != nil {
 			return nil, err
 		}
 		if profiles, err = read(); err != nil {
@@ -442,7 +441,7 @@ func cleanName(name string) (string, error) {
 
 // isUniqueErr reports a UNIQUE constraint failure (a taken profile name).
 func isUniqueErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	return store.IsUniqueViolation(err)
 }
 
 // --- reading ---
@@ -696,14 +695,13 @@ func (s *Service) CreateProfile(ctx context.Context, name string, items []Profil
 	}
 	s.profileCfg(ctx) // the default exists before any other profile can take its name
 	raw, _ := json.Marshal(items)
-	res, err := db.ExecContext(ctx, `INSERT INTO subtitle_profiles (name, items_json, is_default) VALUES (?, ?, 0)`, name, string(raw))
+	id, err := store.InsertID(ctx, db, `INSERT INTO subtitle_profiles (name, items_json, is_default) VALUES (?, ?, 0)`, name, string(raw))
 	if isUniqueErr(err) {
 		return Profile{}, ErrProfileNameTaken
 	}
 	if err != nil {
 		return Profile{}, err
 	}
-	id, _ := res.LastInsertId()
 	s.dropProfiles() // nothing uses it yet: no recount
 	p, _ := s.profileCfg(ctx).byID(id)
 	return p, nil
@@ -744,7 +742,7 @@ func (s *Service) UpdateProfile(ctx context.Context, id int64, name *string, ite
 
 // writeProfile saves a profile's name and items (and, for the default, the kept-language
 // setting).
-func (s *Service) writeProfile(ctx context.Context, db *sql.DB, cur Profile, name string, items []ProfileItem) error {
+func (s *Service) writeProfile(ctx context.Context, db store.Pool, cur Profile, name string, items []ProfileItem) error {
 	raw, _ := json.Marshal(items)
 	_, err := db.ExecContext(ctx, `UPDATE subtitle_profiles SET name = ?, items_json = ? WHERE id = ?`, name, string(raw), cur.ID)
 	if isUniqueErr(err) {
@@ -773,7 +771,7 @@ func (s *Service) DeleteProfile(ctx context.Context, id int64) error {
 		return ErrDefaultProfile
 	}
 	before := s.wantsKey(ctx)
-	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, db, func(tx *store.Transaction) error {
 		// The foreign key cascades too; deleting them here doesn't depend on it.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM subtitle_profile_overrides WHERE profile_id = ?`, id); err != nil {
 			return err

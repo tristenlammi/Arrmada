@@ -3,7 +3,6 @@ package movies
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/outbox"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // A rename is planned for every track first and shown to the person; only then does
@@ -424,7 +424,7 @@ func (s *Service) moveTrackFile(ctx context.Context, m Movie, versions []Version
 		}
 		follows = append(follows, follow{v, mediaJSONOf(info), size})
 	}
-	err := s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+	err := s.repo.inTx(ctx, func(tx *store.Transaction, r *Repo) error {
 		for _, f := range follows {
 			if f.v.IsDefault {
 				if err := setDefaultFileIn(ctx, r, m.ID, it.Proposed, f.media); err != nil {

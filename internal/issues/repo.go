@@ -202,7 +202,7 @@ func fixing(ctx context.Context, db store.Execer) ([]Issue, error) {
 }
 
 func insertIssue(ctx context.Context, db store.Execer, i Issue) (int64, error) {
-	res, err := db.ExecContext(ctx, `INSERT INTO issues (media_type, library_id, tmdb_id, title, year, poster_url, season, episode, category,
+	id, err := store.InsertID(ctx, db, `INSERT INTO issues (media_type, library_id, tmdb_id, title, year, poster_url, season, episode, category,
 		note, reported_by, reported_by_name, status, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
 		i.MediaType, i.LibraryID, i.TMDBID, i.Title, i.Year, i.PosterURL, i.Season, i.Episode, i.Category,
@@ -210,5 +210,5 @@ func insertIssue(ctx context.Context, db store.Execer, i Issue) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("record the issue: %w", err)
 	}
-	return res.LastInsertId()
+	return id, nil
 }

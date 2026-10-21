@@ -68,11 +68,15 @@ func restoreCommand(dataDir string, args []string, stdout, stderr io.Writer) int
 
 // backupsCommand is `arrmada backups`: what's in the backups folder, newest first.
 func backupsCommand(dataDir string, args []string, stdout, stderr io.Writer) int {
+	return backupsCommandForBackend(dataDir, args, stdout, stderr, store.SQLite, "")
+}
+
+func backupsCommandForBackend(dataDir string, args []string, stdout, stderr io.Writer, backend store.Dialect, binDir string) int {
 	if len(args) != 0 {
 		fmt.Fprintln(stderr, restoreUsage)
 		return 2
 	}
-	svc := backup.ForDataDir(dataDir, nil)
+	svc := backup.ForBackend(dataDir, backend, binDir, nil)
 	list, err := svc.List(context.Background())
 	if err != nil {
 		fmt.Fprintln(stderr, "arrmada:", err)

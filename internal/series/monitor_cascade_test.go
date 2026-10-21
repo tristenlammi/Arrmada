@@ -15,7 +15,7 @@ func monitorFixture(t *testing.T, seriesMonitored int) (*Repo, *sql.DB, context.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	db := st.DB()
+	db := st.DB().(*sql.DB)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO series (id,tmdb_id,title,monitored) VALUES (1,7,'Dandadan',?)`, seriesMonitored); err != nil {
 		t.Fatal(err)

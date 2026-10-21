@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/tristenlammi/arrmada/internal/displaytitle"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // UpcomingEpisode is one episode with an air date, for the Calendar module.
@@ -38,11 +39,11 @@ func (s *Service) UpcomingEpisodes(ctx context.Context, from, to string) ([]Upco
 	rows, err := s.repo.db.QueryContext(ctx, `
 		SELECT e.air_date, s.id, s.tmdb_id, `+shown+`, s.poster_url, e.season_number, e.episode_number,
 		       e.title, e.has_file, s.monitored, s.title,
-		       e.monitored AND COALESCE(sn.monitored, 1)
+		       CASE WHEN e.monitored = 1 AND COALESCE(sn.monitored, 1) = 1 THEN 1 ELSE 0 END
 		FROM episodes e JOIN series s ON s.id = e.series_id
 		LEFT JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
 		WHERE e.season_number > 0 AND e.air_date <> ''
-		      AND date(e.air_date) BETWEEN date(?) AND date(?)
+		      AND `+store.DateText(s.repo.db, "e.air_date")+` BETWEEN `+store.DateText(s.repo.db, "?")+` AND `+store.DateText(s.repo.db, "?")+`
 		ORDER BY e.air_date, `+shown+`, e.episode_number`, from, to)
 	if err != nil {
 		return nil, err

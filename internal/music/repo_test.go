@@ -17,6 +17,28 @@ func testRepo(t *testing.T) (*Repo, context.Context) {
 	return NewRepo(st.DB()), context.Background()
 }
 
+// An upsert that updates an old row must return that row, not the last insert
+// performed on whichever pooled connection happened to execute it.
+func TestUpsertAlbumReturnsUpdatedRowID(t *testing.T) {
+	r, ctx := testRepo(t)
+	artist, err := r.CreateArtist(ctx, Artist{MBID: "id-artist", Name: "Artist"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := r.UpsertAlbum(ctx, Album{ArtistID: artist.ID, MBID: "first", Title: "First"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.UpsertAlbum(ctx, Album{ArtistID: artist.ID, MBID: "second", Title: "Second"})
+	if err != nil || second == first {
+		t.Fatalf("second album = %d, %v", second, err)
+	}
+	updated, err := r.UpsertAlbum(ctx, Album{ArtistID: artist.ID, MBID: "first", Title: "Updated"})
+	if err != nil || updated != first {
+		t.Fatalf("updated album id = %d, want %d, err %v", updated, first, err)
+	}
+}
+
 // HasArtists is what keeps Music on for an install already using it.
 func TestHasArtists(t *testing.T) {
 	r, ctx := testRepo(t)

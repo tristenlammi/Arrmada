@@ -43,7 +43,7 @@ func (r *Repo) MoveFilePath(ctx context.Context, from, to string) error {
 	if from == to {
 		return nil
 	}
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		var other int64
 		err := tx.QueryRowContext(ctx, `SELECT id FROM music_track_files WHERE path = ?`, to).Scan(&other)
 		if err == nil {

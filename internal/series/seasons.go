@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // SeasonProgress is one regular season's episode counts, for the per-season request
@@ -30,23 +32,25 @@ func (p SeasonProgress) OnDisk() bool { return p.Have > 0 && p.Have >= p.Aired }
 
 // seasonProgressSQL is one row per regular season, announced seasons with no episodes
 // yet included (all zeros). The aired rule is statsAiredSQL, the one the stats use.
-const seasonProgressSQL = `
+func seasonProgressSQL(db store.Execer) string {
+	return `
 	SELECT sn.season_number, sn.monitored,
 	  COUNT(e.id),
 	  COALESCE(SUM(e.has_file), 0),
-	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
-	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND e.monitored = 1 AND sn.monitored = 1 AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
-	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND e.monitored = 1 AND sn.monitored = 1 AND NOT ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR ` + statsAiredSQL(db) + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND e.monitored = 1 AND sn.monitored = 1 AND ` + statsAiredSQL(db) + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND e.monitored = 1 AND sn.monitored = 1 AND NOT ` + statsAiredSQL(db) + ` THEN 1 ELSE 0 END), 0),
 	  COALESCE(SUM(CASE WHEN e.monitored = 1 AND e.has_file = 1 THEN 1 ELSE 0 END), 0),
-	  COALESCE(SUM(CASE WHEN e.monitored = 1 AND (e.has_file = 1 OR ` + statsAiredSQL + `) THEN 1 ELSE 0 END), 0)
+	  COALESCE(SUM(CASE WHEN e.monitored = 1 AND (e.has_file = 1 OR ` + statsAiredSQL(db) + `) THEN 1 ELSE 0 END), 0)
 	FROM seasons sn
 	LEFT JOIN episodes e ON e.series_id = sn.series_id AND e.season_number = sn.season_number
 	WHERE sn.series_id = ? AND sn.season_number > 0
-	GROUP BY sn.season_number`
+	GROUP BY sn.season_number, sn.monitored`
+}
 
 // SeasonProgress returns each regular season's counts by season number, in one query.
 func (r *Repo) SeasonProgress(ctx context.Context, seriesID int64) (map[int]SeasonProgress, error) {
-	rows, err := r.db.QueryContext(ctx, seasonProgressSQL, seriesID)
+	rows, err := r.db.QueryContext(ctx, seasonProgressSQL(r.db), seriesID)
 	if err != nil {
 		return nil, err
 	}

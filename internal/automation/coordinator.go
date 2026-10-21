@@ -7,7 +7,6 @@ package automation
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,6 +32,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // seriesCategory keeps TV downloads in a separate download-client category so the
@@ -45,7 +45,7 @@ type Coordinator struct {
 	indexers     *indexer.Service
 	downloads    *download.Service
 	quality      *quality.Service
-	db           *sql.DB
+	db           store.Pool
 	bus          *eventbus.Bus
 	log          *slog.Logger
 	downloadsDir string          // the startup downloads folder; downloadsPath reads the live one
@@ -352,7 +352,7 @@ func (c *Coordinator) moduleOn(ctx context.Context, module string) bool {
 }
 
 // New wires the coordinator.
-func New(m *movies.Service, ix *indexer.Service, dl *download.Service, q *quality.Service, db *sql.DB, bus *eventbus.Bus, log *slog.Logger, downloadsDir string) *Coordinator {
+func New(m *movies.Service, ix *indexer.Service, dl *download.Service, q *quality.Service, db store.Pool, bus *eventbus.Bus, log *slog.Logger, downloadsDir string) *Coordinator {
 	return &Coordinator{
 		movies: m, indexers: ix, downloads: dl, quality: q, db: db,
 		bus: bus, log: log, downloadsDir: downloadsDir,

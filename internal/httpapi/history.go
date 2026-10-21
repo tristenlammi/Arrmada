@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/displaytitle"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // History is one log of what Arrmada did to every title — grabs, imports, upgrades,
@@ -169,8 +169,8 @@ func (e historyEvent) cursor() eventsCursor {
 const sqliteStamp = "2006-01-02 15:04:05"
 
 // eventsFeed reads the newest events matching f across the four event tables.
-func eventsFeed(ctx context.Context, db *sql.DB, f eventsFilter) ([]historyEvent, error) {
-	q, args := eventsFeedSQL(f)
+func eventsFeed(ctx context.Context, db store.Pool, f eventsFilter) ([]historyEvent, error) {
+	q, args := eventsFeedSQL(db, f)
 	if q == "" {
 		return []historyEvent{}, nil
 	}
@@ -197,7 +197,7 @@ func eventsFeed(ctx context.Context, db *sql.DB, f eventsFilter) ([]historyEvent
 // eventsFeedSQL builds the feed's query; "" when nothing can match. Each branch applies
 // the filters, the keyset and the limit itself, so it walks its own created_at index and
 // stops early; the outer query merges at most Limit rows from each.
-func eventsFeedSQL(f eventsFilter) (string, []any) {
+func eventsFeedSQL(db store.Execer, f eventsFilter) (string, []any) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
@@ -253,9 +253,9 @@ func eventsFeedSQL(f eventsFilter) (string, []any) {
 			// The shown title, the canonical one (a search by either finds it) and the line.
 			alt, n := "", 2
 			if b.alt != "" {
-				alt, n = ` OR `+b.alt+` LIKE ? ESCAPE '\'`, 3
+				alt, n = ` OR `+store.LikeASCII(db, b.alt, "?", true), 3
 			}
-			conds = append(conds, `(`+b.title+` LIKE ? ESCAPE '\'`+alt+` OR e.detail LIKE ? ESCAPE '\')`)
+			conds = append(conds, `(`+store.LikeASCII(db, b.title, "?", true)+alt+` OR `+store.LikeASCII(db, "e.detail", "?", true)+`)`)
 			for range n {
 				bargs = append(bargs, like)
 			}

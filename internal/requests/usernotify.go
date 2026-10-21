@@ -48,7 +48,7 @@ func (r *Repo) addUserNotification(ctx context.Context, userID int64, title, bod
 // and Jellyfin pages).
 func (r *Repo) addUserNotificationLink(ctx context.Context, userID int64, title, body, mediaType, ref string, links []mediaserver.WatchLink, at int64) (inserted bool, err error) {
 	res, err := r.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO user_notifications (user_id, title, body, media_type, ref, plex_url, jellyfin_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO user_notifications (user_id, title, body, media_type, ref, plex_url, jellyfin_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
 		userID, title, body, mediaType, ref, linkOf(links, mediaserver.Plex), linkOf(links, mediaserver.Jellyfin), at)
 	if err != nil {
 		return false, err

@@ -2,8 +2,9 @@ package convert
 
 import (
 	"context"
-	"database/sql"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Skip kinds. These group the Problems list, so they're coarse on purpose — the user cares
@@ -86,7 +87,7 @@ func permanentSkip(kind string) bool {
 
 // skipStore persists why files were skipped, so the reasons survive a restart and can be
 // shown to the user instead of scrolling out of an in-memory job list.
-type skipStore struct{ db *sql.DB }
+type skipStore struct{ db store.Pool }
 
 // Skipped is one skipped file, for the Problems list.
 type Skipped struct {
@@ -140,10 +141,10 @@ func (st *skipStore) recordAt(ctx context.Context, key, kind, reason string, ret
 	}
 	_, _ = st.db.ExecContext(ctx,
 		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, attempts, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+		 VALUES (?, ?, ?, ?, ?, ?, `+store.UTCNowText(st.db, "")+`)
 		 ON CONFLICT(item_key) DO UPDATE SET
 		   kind = excluded.kind, reason = excluded.reason, permanent = excluded.permanent,
-		   retry_after = excluded.retry_after, attempts = excluded.attempts, updated_at = datetime('now')`,
+		   retry_after = excluded.retry_after, attempts = excluded.attempts, updated_at = excluded.updated_at`,
 		key, kind, reason, perm, retry, attempts)
 	return attempts
 }

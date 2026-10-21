@@ -18,6 +18,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jellyfinsvc"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Settings → Connections answers "is everything connected and working?" in one place:
@@ -292,7 +293,7 @@ func (a *api) grabsByIndexer(ctx context.Context) map[string]int {
 		return out
 	}
 	rows, err := a.deps.Store.DB().QueryContext(ctx,
-		`SELECT indexer, COUNT(*) FROM grabs WHERE grabbed_at > datetime('now', '-1 day') GROUP BY indexer`)
+		`SELECT indexer, COUNT(*) FROM grabs WHERE grabbed_at > `+store.UTCNowTimestamp(a.deps.Store.DB(), "'-1 day'")+` GROUP BY indexer`)
 	if err != nil {
 		return out
 	}

@@ -2,16 +2,17 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // SQLStore keeps task history in the scheduled_tasks table (migration 0121). Times are
 // unix milliseconds, 0 for never.
-type SQLStore struct{ db *sql.DB }
+type SQLStore struct{ db store.Pool }
 
 // NewSQLStore wraps the app database.
-func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
+func NewSQLStore(db store.Pool) *SQLStore { return &SQLStore{db: db} }
 
 func msTime(ms int64) time.Time {
 	if ms <= 0 {

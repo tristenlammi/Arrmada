@@ -514,7 +514,7 @@ func (s *Service) EditDetails(ctx context.Context, id int64, req EditRequest) (E
 // Returns the fields whose shown value changed.
 func (r *Repo) applyEdits(ctx context.Context, id int64, set map[string]json.RawMessage, reset []string, resetAll bool) ([]string, error) {
 	var changed []string
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err := store.WithTx(ctx, r.db, func(tx *store.Transaction) error {
 		b, err := getTx(ctx, tx, id)
 		if err != nil {
 			return err
@@ -573,7 +573,7 @@ func (r *Repo) applyEdits(ctx context.Context, id int64, set map[string]json.Raw
 		if err != nil {
 			return err
 		}
-		sets = append(sets, "edits_json = ?", "edited_at = MAX(?, edited_at + 1)")
+		sets = append(sets, "edits_json = ?", "edited_at = "+store.ScalarMax(tx, "?", "edited_at + 1"))
 		args = append(args, raw, time.Now().UnixMilli(), id)
 		_, err = tx.ExecContext(ctx, `UPDATE books SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 		return err
@@ -640,12 +640,12 @@ func setMatched(ctx context.Context, ex store.Execer, id int64, vals map[string]
 
 // SetMatched is setMatched in its own transaction.
 func (r *Repo) SetMatched(ctx context.Context, id int64, vals map[string]any) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error { return setMatched(ctx, tx, id, vals) })
+	return store.WithTx(ctx, r.db, func(tx *store.Transaction) error { return setMatched(ctx, tx, id, vals) })
 }
 
 // clearEditsTx puts every edited field of a book back to the catalogue's value — the
 // "clear my edits" answer to a re-match onto a different book.
-func clearEditsTx(ctx context.Context, tx *sql.Tx, id int64) error {
+func clearEditsTx(ctx context.Context, tx *store.Transaction, id int64) error {
 	b, err := getTx(ctx, tx, id)
 	if err != nil {
 		return err
@@ -661,7 +661,7 @@ func clearEditsTx(ctx context.Context, tx *sql.Tx, id int64) error {
 			args = append(args, f.arg(under))
 		}
 	}
-	sets = append(sets, "edits_json = '{}'", "edited_at = MAX(?, edited_at + 1)")
+	sets = append(sets, "edits_json = '{}'", "edited_at = "+store.ScalarMax(tx, "?", "edited_at + 1"))
 	args = append(args, time.Now().UnixMilli(), id)
 	_, err = tx.ExecContext(ctx, `UPDATE books SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	return err

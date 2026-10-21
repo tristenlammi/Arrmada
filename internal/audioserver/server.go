@@ -6,7 +6,6 @@ package audioserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +25,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/listening"
 	"github.com/tristenlammi/arrmada/internal/netutil"
 	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Settings keys.
@@ -37,7 +37,7 @@ const (
 
 // Server is the Audiobookshelf-compatible API.
 type Server struct {
-	db       *sql.DB
+	db       store.Pool
 	books    *books.Service
 	listen   *listening.Store
 	users    *auth.Service
@@ -59,7 +59,7 @@ type Server struct {
 
 // Options configure a Server.
 type Options struct {
-	DB       *sql.DB
+	DB       store.Pool
 	Books    *books.Service
 	Listen   *listening.Store
 	Users    *auth.Service
