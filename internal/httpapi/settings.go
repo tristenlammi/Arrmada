@@ -32,6 +32,12 @@ const (
 	keyDiskGuard           = download.KeyDiskGuard
 	keyDiskGuardPause      = download.KeyDiskGuardPause
 	keyDiskGuardResume     = download.KeyDiskGuardResum
+	// Global seeding settings (Settings → Downloads)
+	keyGlobalSeedEnabled        = automation.KeyGlobalSeedEnabled
+	keyGlobalSeedRatioLimit     = automation.KeyGlobalSeedRatioLimit
+	keyGlobalMaxSeedingTime     = automation.KeyGlobalMaxSeedingTime
+	keyGlobalSeedingLimitAction = automation.KeyGlobalSeedingLimitAction
+	keyGlobalApplyToExisting    = automation.KeyGlobalApplyToExisting
 )
 
 // booksEnabled reports whether the Books module is turned on (default true). Used to gate
@@ -113,6 +119,12 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// How many upgrades one upgrade sweep may grab (0 = no limit); the rest wait for
 		// the next sweep, so a profile edit can't queue the whole library at once.
 		"upgrade_max_grabs_per_sweep": automation.ParseUpgradeBudget(a.deps.Settings.Get(ctx, automation.KeyUpgradeBudget, "")),
+		// Global seeding limits: defaults for all downloads, with per-indexer overrides.
+		"seeding_global_enabled":              a.deps.Settings.GetBool(ctx, automation.KeyGlobalSeedEnabled, automation.DefaultGlobalSeedEnabled),
+		"seeding_global_ratio_limit":          automation.ParseGlobalSeedRatioLimit(a.deps.Settings.Get(ctx, automation.KeyGlobalSeedRatioLimit, "")),
+		"seeding_global_max_time_hours":       automation.ParseGlobalMaxSeedingTime(a.deps.Settings.Get(ctx, automation.KeyGlobalMaxSeedingTime, "")),
+		"seeding_global_limit_action":         string(automation.ParseGlobalSeedingLimitAction(a.deps.Settings.Get(ctx, automation.KeyGlobalSeedingLimitAction, ""))),
+		"seeding_global_apply_to_existing":    automation.ParseGlobalApplyToExisting(a.deps.Settings.Get(ctx, automation.KeyGlobalApplyToExisting, "")),
 		// Request limits per person, per window of days (0 = unlimited; Settings → Users).
 		"request_quota_days": quota.Days, "request_quota_movies": quota.Movie,
 		"request_quota_seasons": quota.Season, "request_quota_books": quota.Book,
@@ -244,6 +256,12 @@ type settingsUpdate struct {
 	QuotaMovies               *int      `json:"request_quota_movies"`
 	QuotaSeasons              *int      `json:"request_quota_seasons"`
 	QuotaBooks                *int      `json:"request_quota_books"`
+	// Global seeding settings
+	GlobalSeedEnabled        *bool     `json:"seeding_global_enabled"`
+	GlobalSeedRatioLimit     *float64  `json:"seeding_global_ratio_limit"`
+	GlobalMaxSeedingTime     *int      `json:"seeding_global_max_time_hours"`
+	GlobalSeedingLimitAction *string   `json:"seeding_global_limit_action"`
+	GlobalApplyToExisting    *bool     `json:"seeding_global_apply_to_existing"`
 	DefaultCategories         *bool     `json:"indexer_default_categories"`
 	BookLanguages             *[]string `json:"books_languages"`
 	TitleLanguages            *[]string `json:"match_title_languages"`
@@ -317,6 +335,16 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 		return "whether admins must use two-factor sign-in"
 	case boolChanged(req.BooksKepub, st.GetBool(ctx, kepub.KeyEnabled, true)):
 		return "the Kobo (KEPUB) conversion"
+	case boolChanged(req.GlobalSeedEnabled, st.GetBool(ctx, automation.KeyGlobalSeedEnabled, automation.DefaultGlobalSeedEnabled)):
+		return "global seeding limits"
+	case req.GlobalSeedRatioLimit != nil && *req.GlobalSeedRatioLimit != automation.ParseGlobalSeedRatioLimit(st.Get(ctx, automation.KeyGlobalSeedRatioLimit, "")):
+		return "global seed ratio limit"
+	case req.GlobalMaxSeedingTime != nil && *req.GlobalMaxSeedingTime != automation.ParseGlobalMaxSeedingTime(st.Get(ctx, automation.KeyGlobalMaxSeedingTime, "")):
+		return "global max seeding time"
+	case req.GlobalSeedingLimitAction != nil && strings.TrimSpace(strings.ToLower(*req.GlobalSeedingLimitAction)) != string(automation.ParseGlobalSeedingLimitAction(st.Get(ctx, automation.KeyGlobalSeedingLimitAction, ""))):
+		return "global seeding limit action"
+	case boolChanged(req.GlobalApplyToExisting, automation.ParseGlobalApplyToExisting(st.Get(ctx, automation.KeyGlobalApplyToExisting, ""))):
+		return "apply global seeding to existing downloads"
 	}
 	return ""
 }
@@ -410,6 +438,22 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.UpgradeBudget != nil && (*req.UpgradeBudget < 0 || *req.UpgradeBudget > maxUpgradeBudget) {
 		a.writeError(w, http.StatusBadRequest, "upgrades per sweep must be between 0 (no limit) and "+strconv.Itoa(maxUpgradeBudget))
 		return
+	}
+	// Global seeding settings validation
+	if req.GlobalSeedRatioLimit != nil && *req.GlobalSeedRatioLimit < 0 {
+		a.writeError(w, http.StatusBadRequest, "global seed ratio limit must be >= 0")
+		return
+	}
+	if req.GlobalMaxSeedingTime != nil && *req.GlobalMaxSeedingTime < 0 {
+		a.writeError(w, http.StatusBadRequest, "global max seeding time must be >= 0")
+		return
+	}
+	if req.GlobalSeedingLimitAction != nil {
+		v := strings.TrimSpace(strings.ToLower(*req.GlobalSeedingLimitAction))
+		if v != "pause" && v != "stop" && v != "remove" {
+			a.writeError(w, http.StatusBadRequest, "seeding limit action must be pause, stop, or remove")
+			return
+		}
 	}
 	// Blank isn't "unlimited": the bin reads anything unparseable as 0, so an emptied field
 	// would quietly lift the cap. 0 has to be said.
@@ -610,6 +654,21 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.UpgradeBudget != nil && !save(a.deps.Settings.Set(ctx, automation.KeyUpgradeBudget, strconv.Itoa(*req.UpgradeBudget))) {
+		return
+	}
+	if req.GlobalSeedEnabled != nil && !save(a.deps.Settings.SetBool(ctx, automation.KeyGlobalSeedEnabled, *req.GlobalSeedEnabled)) {
+		return
+	}
+	if req.GlobalSeedRatioLimit != nil && !save(a.deps.Settings.Set(ctx, automation.KeyGlobalSeedRatioLimit, strconv.FormatFloat(*req.GlobalSeedRatioLimit, 'f', -1, 64))) {
+		return
+	}
+	if req.GlobalMaxSeedingTime != nil && !save(a.deps.Settings.Set(ctx, automation.KeyGlobalMaxSeedingTime, strconv.Itoa(*req.GlobalMaxSeedingTime))) {
+		return
+	}
+	if req.GlobalSeedingLimitAction != nil && !save(a.deps.Settings.Set(ctx, automation.KeyGlobalSeedingLimitAction, strings.TrimSpace(strings.ToLower(*req.GlobalSeedingLimitAction)))) {
+		return
+	}
+	if req.GlobalApplyToExisting != nil && !save(a.deps.Settings.SetBool(ctx, automation.KeyGlobalApplyToExisting, *req.GlobalApplyToExisting)) {
 		return
 	}
 	if req.BookLanguages != nil && !save(a.deps.Settings.Set(ctx, automation.KeyBookLanguages, bookLangs)) {

@@ -34,6 +34,7 @@ export function DownloadsSettings() {
       <DiskGuardSection />
       <StallSection />
       <UpgradeBudgetSection />
+      <GlobalSeedingSection />
       <RecycleBin />
     </div>
   );
@@ -578,5 +579,168 @@ function UpgradeBudgetSection() {
         <span className="text-xs text-ink-faint">0 = no limit. Each episode counts as one.</span>
       </AutoNumber>
     </Section>
+  );
+}
+
+// Global seeding limits: defaults for all downloads, with per-indexer overrides.
+// When enabled, completed downloads exceeding these limits are paused/stopped/removed.
+function GlobalSeedingSection() {
+  const enabled = useSetting("seeding_global_enabled");
+  const ratioLimit = useSetting("seeding_global_ratio_limit", { validate: nonNegativeNumber("Seed ratio limit") });
+  const maxTimeHours = useSetting("seeding_global_max_time_hours", { validate: nonNegativeNumber("Max seeding time (hours)") });
+  const action = useSetting("seeding_global_limit_action", { validate: seedingActionValidator });
+  const applyToExisting = useSetting("seeding_global_apply_to_existing");
+
+  return (
+    <Section
+      id="global-seeding-limits"
+      title="Global seeding limits"
+      subtitle="Default seeding limits for all downloads. Per-indexer settings on Settings → Connections override these. When enabled, Arrmada checks completed downloads against these limits and can automatically pause, stop, or remove torrents that exceed them."
+    >
+      <AutoToggle
+        label="Enable global seeding limits"
+        hint="When on, the limits below apply to all downloads unless an indexer has its own explicit seed ratio or seed time set."
+        save={enabled}
+      />
+      {enabled.value && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <AutoNumber
+              label="Default seed ratio limit"
+              save={ratioLimit}
+              min={0}
+              max={9999}
+              placeholder="2.0"
+            >
+              <span className="text-xs text-ink-faint">0 = no ratio limit (seed forever by ratio). Indexers with their own setting override this.</span>
+            </AutoNumber>
+            <AutoNumber
+              label="Default max seeding time (hours)"
+              save={maxTimeHours}
+              min={0}
+              max={87600}
+              placeholder="168"
+            >
+              <span className="text-xs text-ink-faint">0 = no time limit (seed forever by time). Indexers with their own setting override this.</span>
+            </AutoNumber>
+          </div>
+          <AutoSelect
+            label="When a download exceeds either limit"
+            save={action}
+            options={[
+              { value: "pause", label: "Pause" },
+              { value: "stop", label: "Stop (pause, don't auto-resume)" },
+              { value: "remove", label: "Remove (delete torrent + data)" },
+            ]}
+          >
+            <span className="text-xs text-ink-faint">Pause = client pauses it. Stop = pause and mark not to auto-resume. Remove = delete from client and disk.</span>
+          </AutoSelect>
+          <AutoToggle
+            label="Apply to existing downloads with per-indexer overrides"
+            hint="When on, downloads that already have indexer-specific seed settings are also checked against global limits. When off, only downloads using the global defaults are affected."
+            save={applyToExisting}
+          />
+          <GlobalSeedingActions />
+        </>
+      )}
+    </Section>
+  );
+}
+
+const nonNegativeNumber = (label: string) => (v: string): string | null => {
+  const n = Number(v);
+  if (isNaN(n) || n < 0) return `${label} must be a number >= 0`;
+  return null;
+};
+
+const seedingActionValidator = (v: string): string | null => {
+  const valid = ["pause", "stop", "remove"];
+  if (!valid.includes(v)) return "Action must be pause, stop, or remove";
+  return null;
+};
+
+// Actions to verify and apply global seeding limits
+function GlobalSeedingActions() {
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [verifyData, setVerifyData] = useState<{ verifications: any[]; count: number } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const verify = async () => {
+    setVerifyBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/v1/downloads/seeding/verify", { method: "GET" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setVerifyData(data);
+      setMsg(`Found ${data.count} download${data.count === 1 ? "" : "s"} exceeding limits.`);
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    setApplyBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/v1/downloads/seeding/apply", { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      setMsg(`Applied limits to ${data.affected} download${data.affected === 1 ? "" : "s"}.`);
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setApplyBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: "0.5rem" }}>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={verify} disabled={verifyBusy} className="rounded-lg px-4 py-2 text-base font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>
+          {verifyBusy ? "Verifying…" : "Verify limits"}
+        </button>
+        <button onClick={apply} disabled={applyBusy || !verifyData?.count} className="rounded-lg px-4 py-2 text-base font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent-text)" }}>
+          {applyBusy ? "Applying…" : "Apply limits"}
+        </button>
+        {msg && <span className="self-center text-sm text-ink-dim">{msg}</span>}
+      </div>
+      {verifyData && verifyData.count > 0 && (
+        <details className="mt-2" style={{ border: "1px solid var(--line)", borderRadius: "0.5rem" }}>
+          <summary className="p-3 cursor-pointer text-sm font-medium">Exceeding downloads ({verifyData.count})</summary>
+          <div className="p-3 max-h-64 overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--line)" }}>
+                  <th className="text-left p-2">Title</th>
+                  <th className="text-left p-2">Ratio</th>
+                  <th className="text-left p-2">Limit</th>
+                  <th className="text-left p-2">Time (h)</th>
+                  <th className="text-left p-2">Limit</th>
+                  <th className="text-left p-2">Action</th>
+                  <th className="text-left p-2">Override</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verifyData.verifications.map((v, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--line-soft)" }}>
+                    <td className="p-2 truncate max-w-xs" title={v.Title}>{v.Title}</td>
+                    <td className="p-2 font-mono">{v.SeedRatio?.toFixed(2) ?? "—"}</td>
+                    <td className="p-2 font-mono">{v.SeedRatioLimit > 0 ? v.SeedRatioLimit.toFixed(1) : "—"}</td>
+                    <td className="p-2 font-mono">{v.SeedingTimeHours}</td>
+                    <td className="p-2 font-mono">{v.MaxSeedingTime > 0 ? v.MaxSeedingTime : "—"}</td>
+                    <td className="p-2 capitalize">{v.Action}</td>
+                    <td className="p-2">{v.HasOverride ? "Yes" : "No"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+    </div>
   );
 }

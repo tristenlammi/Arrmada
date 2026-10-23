@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -318,26 +319,199 @@ func (c *Coordinator) grabPolicy(ctx context.Context, indexerName, key string) (
 	return transport, seedEnabled, seedRatio, seedHours
 }
 
-// seedRules returns the seed policy of the named indexer.
+// Global seeding setting keys (Settings → Downloads)
+const (
+	KeyGlobalSeedEnabled        = "seeding_global_enabled"
+	KeyGlobalSeedRatioLimit     = "seeding_global_ratio_limit"
+	KeyGlobalMaxSeedingTime     = "seeding_global_max_time_hours"
+	KeyGlobalSeedingLimitAction = "seeding_global_limit_action"
+	KeyGlobalApplyToExisting    = "seeding_global_apply_to_existing"
+)
+
+// SeedingLimitAction is what to do when a global seeding limit is reached.
+type SeedingLimitAction string
+
+const (
+	SeedingLimitActionPause SeedingLimitAction = "pause"
+	SeedingLimitActionStop  SeedingLimitAction = "stop"
+	SeedingLimitActionRemove SeedingLimitAction = "remove"
+)
+
+// DefaultGlobalSeedEnabled is true: global seeding limits apply by default.
+const DefaultGlobalSeedEnabled = true
+
+// DefaultGlobalSeedRatioLimit is 0 (no ratio limit).
+const DefaultGlobalSeedRatioLimit = 0.0
+
+// DefaultGlobalMaxSeedingTime is 0 (no time limit, in hours).
+const DefaultGlobalMaxSeedingTime = 0
+
+// DefaultGlobalSeedingLimitAction is "pause".
+const DefaultGlobalSeedingLimitAction = SeedingLimitActionPause
+
+// DefaultGlobalApplyToExisting is false: new settings don't affect existing downloads.
+const DefaultGlobalApplyToExisting = false
+
+// ParseGlobalSeedRatioLimit reads the global seed ratio limit setting.
+func ParseGlobalSeedRatioLimit(raw string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v < 0 {
+		return DefaultGlobalSeedRatioLimit
+	}
+	return v
+}
+
+// ParseGlobalMaxSeedingTime reads the global max seeding time (hours) setting.
+func ParseGlobalMaxSeedingTime(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return DefaultGlobalMaxSeedingTime
+	}
+	return n
+}
+
+// ParseGlobalSeedingLimitAction reads the global seeding limit action setting.
+func ParseGlobalSeedingLimitAction(raw string) SeedingLimitAction {
+	v := strings.TrimSpace(strings.ToLower(raw))
+	switch v {
+	case "pause", "stop", "remove":
+		return SeedingLimitAction(v)
+	default:
+		return DefaultGlobalSeedingLimitAction
+	}
+}
+
+// ParseGlobalApplyToExisting reads the apply-to-existing setting.
+func ParseGlobalApplyToExisting(raw string) bool {
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return DefaultGlobalApplyToExisting
+	}
+	return v
+}
+
+// seedRules returns the seed policy for a download, combining global settings with
+// per-indexer overrides.
 //
-// An unknown indexer must NOT mean "don't seed". A manual torrent upload is recorded
-// with indexer "manual", and an indexer can be renamed or removed after a grab — in
-// both cases the lookup misses. Returning seed-disabled made cleanup delete the torrent
-// AND its data the moment it imported, which is a hit-and-run on whatever private
-// tracker the file actually came from. Default to seeding for the standard window; the
-// user can still stop or delete it from the Downloads page.
+// Priority (highest to lowest):
+// 1. Indexer's explicit settings (if indexer is found and has non-zero values)
+// 2. Global settings (if enabled)
+// 3. Default fallback (seed for DefaultSeedHours)
 func (c *Coordinator) seedRules(ctx context.Context, name string) (enabled bool, ratio float64, hours int) {
+	// First, read global settings
+	globalEnabled := c.getGlobalSeedEnabled(ctx)
+	globalRatio := c.getGlobalSeedRatioLimit(ctx)
+	globalHours := c.getGlobalMaxSeedingTime(ctx)
+
+	// Try to find the indexer
 	idxs, err := c.indexers.List(ctx)
 	if err != nil {
+		// On error, use global settings if enabled, else default
+		if globalEnabled {
+			return true, globalRatio, globalHours
+		}
 		return true, 0, indexer.DefaultSeedHours
 	}
+
 	for _, ix := range idxs {
 		if ix.Name == name {
-			return ix.SeedEnabled, ix.SeedRatio, ix.SeedHours
+			// Indexer found - use its settings, but fall back to global for zero values
+			enabled = ix.SeedEnabled
+			ratio = ix.SeedRatio
+			hours = ix.SeedHours
+
+			// If indexer has seeding disabled, respect that (don't seed)
+			if !enabled {
+				return false, 0, 0
+			}
+
+			// If indexer has explicit ratio/time set (non-zero), use those
+			// Otherwise fall back to global settings if enabled
+			if ratio == 0 && globalEnabled && globalRatio > 0 {
+				ratio = globalRatio
+			}
+			if hours == 0 && globalEnabled && globalHours > 0 {
+				hours = globalHours
+			}
+
+			// If still both zero, use default
+			if ratio == 0 && hours == 0 {
+				hours = indexer.DefaultSeedHours
+			}
+			return enabled, ratio, hours
 		}
+	}
+
+	// Indexer not found (manual, renamed, removed) - use global if enabled, else default
+	if globalEnabled {
+		return true, globalRatio, globalHours
 	}
 	return true, 0, indexer.DefaultSeedHours
 }
+
+// getGlobalSeedEnabled returns whether global seeding limits are enabled.
+func (c *Coordinator) getGlobalSeedEnabled(ctx context.Context) bool {
+	if c.settings == nil {
+		return DefaultGlobalSeedEnabled
+	}
+	v := c.settings.Get(ctx, KeyGlobalSeedEnabled, "")
+	if v == "" {
+		return DefaultGlobalSeedEnabled
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return DefaultGlobalSeedEnabled
+	}
+	return b
+}
+
+// getGlobalSeedRatioLimit returns the global seed ratio limit.
+func (c *Coordinator) getGlobalSeedRatioLimit(ctx context.Context) float64 {
+	if c.settings == nil {
+		return DefaultGlobalSeedRatioLimit
+	}
+	v := c.settings.Get(ctx, KeyGlobalSeedRatioLimit, "")
+	return ParseGlobalSeedRatioLimit(v)
+}
+
+// getGlobalMaxSeedingTime returns the global max seeding time in hours.
+func (c *Coordinator) getGlobalMaxSeedingTime(ctx context.Context) int {
+	if c.settings == nil {
+		return DefaultGlobalMaxSeedingTime
+	}
+	v := c.settings.Get(ctx, KeyGlobalMaxSeedingTime, "")
+	return ParseGlobalMaxSeedingTime(v)
+}
+
+// getGlobalSeedingLimitAction returns the action to take when a limit is reached.
+func (c *Coordinator) getGlobalSeedingLimitAction(ctx context.Context) SeedingLimitAction {
+	if c.settings == nil {
+		return DefaultGlobalSeedingLimitAction
+	}
+	v := c.settings.Get(ctx, KeyGlobalSeedingLimitAction, "")
+	return ParseGlobalSeedingLimitAction(v)
+}
+
+// getGlobalApplyToExisting returns whether global limits apply to existing downloads.
+func (c *Coordinator) getGlobalApplyToExisting(ctx context.Context) bool {
+	if c.settings == nil {
+		return DefaultGlobalApplyToExisting
+	}
+	v := c.settings.Get(ctx, KeyGlobalApplyToExisting, "")
+	return ParseGlobalApplyToExisting(v)
+}
+
+// SetSettings wires the settings service for reading global seeding config.
+func (c *Coordinator) SetSettings(s interface{ Get(context.Context, string, string) string }) {
+	c.settings = s
+}
+
+// settingsStore is the slice of the settings service this package uses.
+type settingsStore interface {
+	Get(ctx context.Context, key, def string) string
+}
+
+var cSettings settingsStore
 
 func boolToInt(b bool) int {
 	if b {

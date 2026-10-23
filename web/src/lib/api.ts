@@ -1254,6 +1254,16 @@ export interface AppSettings {
   downloads_stall_minutes: number;
   /** How many upgrades one upgrade sweep may grab; 0 = no limit. Default 10. */
   upgrade_max_grabs_per_sweep: number;
+  /** Global seeding limits: when enabled, these become the default for all downloads, with per-indexer overrides allowed. */
+  seeding_global_enabled: boolean;
+  /** Global default seed ratio limit (0 = off). */
+  seeding_global_ratio_limit: string;
+  /** Global default maximum seeding time in hours (0 = off). */
+  seeding_global_max_time_hours: string;
+  /** Global default action when limits are exceeded: "pause", "stop", or "remove". */
+  seeding_global_limit_action: "pause" | "stop" | "remove";
+  /** When true, apply global limits to downloads with per-indexer seeding overrides. */
+  seeding_global_apply_to_existing: boolean;
   /** Languages automatic book grabs accept (canonical codes); [] = any. Default ["en"]. */
   books_languages: string[];
   /** Extra languages whose translated titles scans and imports match (canonical codes); [] = English and original titles only. */

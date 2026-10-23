@@ -133,6 +133,7 @@ GET /api/v1/downloadclients/{id}/settings staff -
 GET /api/v1/downloadclients/{id}/status staff -
 GET /api/v1/downloads staff -
 GET /api/v1/downloads/disk-guard staff -
+GET /api/v1/downloads/seeding/verify admin -
 GET /api/v1/downloads/unmanaged staff -
 GET /api/v1/files/info staff -
 GET /api/v1/flaresolverr/status staff -
@@ -379,6 +380,7 @@ POST /api/v1/downloadclients staff -
 POST /api/v1/downloadclients/restore-bundled staff -
 POST /api/v1/downloadclients/{id}/categories staff -
 POST /api/v1/downloadclients/{id}/test staff -
+POST /api/v1/downloads/seeding/apply admin -
 POST /api/v1/grab staff -
 POST /api/v1/grab/preview staff -
 POST /api/v1/import/arr/preview admin -

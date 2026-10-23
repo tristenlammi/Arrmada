@@ -748,6 +748,8 @@ func main() {
 	coordinator.SetUpgradeBudget(func(ctx context.Context) int {
 		return automation.ParseUpgradeBudget(settingsSvc.Get(ctx, automation.KeyUpgradeBudget, ""))
 	})
+	// Global seeding settings for the coordinator to read at each check.
+	coordinator.SetSettings(settingsSvc)
 	// The languages automatic book grabs accept (Settings → Library), read per search.
 	coordinator.SetBookLanguages(func(ctx context.Context) []string {
 		return automation.ParseBookLanguages(settingsSvc.Get(ctx, automation.KeyBookLanguages, automation.DefaultBookLanguages))

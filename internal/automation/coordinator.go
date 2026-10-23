@@ -221,6 +221,8 @@ type Coordinator struct {
 	// handoffs are usenet grabs whose NZB SABnzbd was handed the link to fetch, waiting for
 	// their grab to be recorded (nzbhandoff.go).
 	handoffs handoffNotes
+	// settings is the settings service for reading global seeding config.
+	settings settingsStore
 }
 
 // SetOutbox installs where series and book imports queue their side effects.
@@ -2552,6 +2554,202 @@ func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 		out[normRelease(g.Title)] = p
 	}
 	return out
+}
+
+// SeedingVerification is the result of checking a download against global seeding limits.
+type SeedingVerification struct {
+	Title            string             `json:"title"`
+	SeedRatio        float64            `json:"seed_ratio"`
+	SeedRatioLimit   float64            `json:"seed_ratio_limit"`
+	SeedingTimeHours int                `json:"seeding_time_hours"`
+	MaxSeedingTime   int                `json:"max_seeding_time_hours"`
+	ExceedsRatio     bool               `json:"exceeds_ratio"`
+	ExceedsTime      bool               `json:"exceeds_time"`
+	Action           SeedingLimitAction `json:"action"`
+	HasOverride      bool               `json:"has_override"`
+	OverrideReason   string             `json:"override_reason,omitempty"`
+}
+
+// VerifyGlobalSeedingLimits checks all completed downloads against the configured global
+// seeding limits. It reports which downloads exceed the limits and what action would be taken.
+func (c *Coordinator) VerifyGlobalSeedingLimits(ctx context.Context) ([]SeedingVerification, error) {
+	if c.settings == nil {
+		return nil, fmt.Errorf("settings not configured")
+	}
+
+	globalEnabled := c.getGlobalSeedEnabled(ctx)
+	if !globalEnabled {
+		return nil, nil // Global seeding limits are disabled
+	}
+
+	globalRatio := c.getGlobalSeedRatioLimit(ctx)
+	globalHours := c.getGlobalMaxSeedingTime(ctx)
+	globalAction := c.getGlobalSeedingLimitAction(ctx)
+
+	if globalRatio <= 0 && globalHours <= 0 {
+		return nil, nil // No limits configured
+	}
+
+	// Get all completed/seeding downloads from the queue
+	queue, _, err := c.downloads.QueueComplete(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get download queue: %w", err)
+	}
+
+	// Get live grabs to match downloads with their seed policies
+	grabs, err := c.liveGrabs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get live grabs: %w", err)
+	}
+
+	// Build a map of grab policies by hash
+	grabByHash := make(map[string]grab)
+	for _, g := range grabs {
+		if g.InfoHash != "" {
+			grabByHash[strings.ToLower(g.InfoHash)] = g
+		}
+	}
+
+	var results []SeedingVerification
+
+	for _, item := range queue {
+		// Only check completed/seeding torrents
+		if !item.Complete() || item.UploadedBytes <= 0 {
+			continue
+		}
+
+		hash := strings.ToLower(item.Hash)
+		if hash == "" {
+			continue
+		}
+
+		g, found := grabByHash[hash]
+		if !found {
+			// No grab record - skip or use default
+			continue
+		}
+
+		// Check if this download has an explicit per-download override
+		// (i.e., the indexer had explicit non-zero settings)
+		hasOverride := g.SeedRatio > 0 || g.SeedHours > 0
+		overrideReason := ""
+		if hasOverride {
+			if g.SeedRatio > 0 && g.SeedHours > 0 {
+				overrideReason = "per-indexer seed ratio and time override"
+			} else if g.SeedRatio > 0 {
+				overrideReason = "per-indexer seed ratio override"
+			} else {
+				overrideReason = "per-indexer seed time override"
+			}
+		}
+
+		// Use the grab's policy (which already includes global fallback from seedRules)
+		ratioLimit := g.SeedRatio
+		timeLimitHours := g.SeedHours
+
+		// If no limits at all (seed forever), skip
+		if ratioLimit <= 0 && timeLimitHours <= 0 {
+			continue
+		}
+
+		exceedsRatio := ratioLimit > 0 && item.SeedRatio() >= 0 && item.SeedRatio() >= ratioLimit
+		exceedsTime := timeLimitHours > 0 && item.SeedingTime >= int64(timeLimitHours)*3600
+
+		if exceedsRatio || exceedsTime {
+			results = append(results, SeedingVerification{
+				Title:            item.Name,
+				SeedRatio:        item.SeedRatio(),
+				SeedRatioLimit:   ratioLimit,
+				SeedingTimeHours: int(item.SeedingTime / 3600),
+				MaxSeedingTime:   timeLimitHours,
+				ExceedsRatio:     exceedsRatio,
+				ExceedsTime:      exceedsTime,
+				Action:           globalAction,
+				HasOverride:      hasOverride,
+				OverrideReason:   overrideReason,
+			})
+		}
+	}
+
+	return results, nil
+}
+
+// ApplyGlobalSeedingLimits applies the global seeding limits to downloads that exceed them.
+// If applyToExisting is true, it also applies to downloads that were completed before the
+// global limits were configured (based on the global setting).
+func (c *Coordinator) ApplyGlobalSeedingLimits(ctx context.Context) (int, error) {
+	verifications, err := c.VerifyGlobalSeedingLimits(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if verifications == nil {
+		return 0, nil
+	}
+
+	applyToExisting := c.getGlobalApplyToExisting(ctx)
+	action := c.getGlobalSeedingLimitAction(ctx)
+
+	affected := 0
+
+	// Build a name-to-hash map once for efficiency
+	queue, _, err := c.downloads.QueueComplete(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get download queue: %w", err)
+	}
+	nameToHash := make(map[string]string)
+	for _, item := range queue {
+		if item.Complete() && item.Hash != "" {
+			nameToHash[item.Name] = strings.ToLower(item.Hash)
+		}
+	}
+
+	// Build a hash-to-imported-status map for Remove action
+	grabs, _ := c.liveGrabs(ctx)
+	hashToImported := make(map[string]bool)
+	for _, g := range grabs {
+		if g.InfoHash != "" && g.Status == grabStatusImported {
+			hashToImported[strings.ToLower(g.InfoHash)] = true
+		}
+	}
+
+	for _, v := range verifications {
+		// Skip if this has an override and we're not applying to existing
+		if v.HasOverride && !applyToExisting {
+			continue
+		}
+
+		targetHash := nameToHash[v.Title]
+		if targetHash == "" {
+			continue
+		}
+
+		switch action {
+		case SeedingLimitActionPause:
+			if err := c.downloads.Pause(ctx, targetHash); err != nil {
+				c.log.Warn("failed to pause seeding torrent", "title", v.Title, "err", err)
+			} else {
+				affected++
+			}
+		case SeedingLimitActionStop:
+			// Stop = pause + don't resume automatically
+			if err := c.downloads.Pause(ctx, targetHash); err != nil {
+				c.log.Warn("failed to stop seeding torrent", "title", v.Title, "err", err)
+			} else {
+				affected++
+			}
+		case SeedingLimitActionRemove:
+			// Remove the torrent and its data
+			// Use pre-built map for efficiency
+			deleteData := hashToImported[targetHash]
+			if err := c.dropTorrent(ctx, targetHash, deleteData); err != nil {
+				c.log.Warn("failed to remove seeding torrent", "title", v.Title, "err", err)
+			} else {
+				affected++
+			}
+		}
+	}
+
+	return affected, nil
 }
 
 // NormReleaseKey normalizes a download name to the key used by SeedPolicies.

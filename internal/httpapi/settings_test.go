@@ -362,6 +362,9 @@ func TestUpdateSettingsSingleKey(t *testing.T) {
 		"quality_ranking":                    `"v2"`,
 		"download_network_preference":        `"usenet"`,
 		"app_public_url":                     `"https://arrmada.example.com"`,
+		"seeding_global_ratio_limit":         `2.5`,
+		"seeding_global_max_time_hours":      `168`,
+		"seeding_global_limit_action":        `"stop"`,
 	}
 	// The legacy all-types switch and the per-type list are two views of one setting.
 	linked := map[string]string{"plex_login_auto_approve": "plex_login_auto_approve_types", "plex_login_auto_approve_types": "plex_login_auto_approve"}

@@ -373,3 +373,45 @@ func (a *api) sharedWithDownloads(ctx context.Context, downloads string) []healt
 	}
 	return shared
 }
+
+// handleVerifySeedingLimits returns all completed downloads that exceed the
+// configured global seeding limits, showing what action would be taken.
+func (a *api) handleVerifySeedingLimits(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Automation == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "automation isn't running")
+		return
+	}
+	ctx := r.Context()
+	verifications, err := a.deps.Automation.VerifyGlobalSeedingLimits(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if verifications == nil {
+		verifications = []automation.SeedingVerification{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"verifications": verifications,
+		"count":         len(verifications),
+	})
+}
+
+// handleApplySeedingLimits applies the global seeding limits to downloads that
+// exceed them. If apply_to_existing_downloads is enabled, it also applies to
+// downloads that have per-indexer overrides.
+func (a *api) handleApplySeedingLimits(w http.ResponseWriter, r *http.Request) {
+	if a.deps.Automation == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "automation isn't running")
+		return
+	}
+	ctx := r.Context()
+	affected, err := a.deps.Automation.ApplyGlobalSeedingLimits(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "applied",
+		"affected": affected,
+	})
+}

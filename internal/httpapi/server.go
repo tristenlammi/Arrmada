@@ -562,6 +562,10 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/queue/{hash}/targets", a.requireRole(auth.RoleManager, a.handleUnmanagedTargets))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/import", a.requireRole(auth.RoleManager, a.handleImportUnmanaged))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/ignore", a.requireRole(auth.RoleManager, a.handleIgnoreDownload))
+	// Global seeding limits: verify and apply actions (admin-only, they change
+	// download client state globally).
+	mux.HandleFunc("GET /api/v1/downloads/seeding/verify", a.requireRole(auth.RoleAdmin, a.handleVerifySeedingLimits))
+	mux.HandleFunc("POST /api/v1/downloads/seeding/apply", a.requireRole(auth.RoleAdmin, a.handleApplySeedingLimits))
 
 	// Grab: search result → download client (closes the acquisition loop).
 	mux.HandleFunc("POST /api/v1/grab", a.requireRole(auth.RoleManager, a.handleGrab))
