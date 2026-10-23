@@ -1659,6 +1659,58 @@ func (r *Repo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// DeleteSeasons deletes the given season numbers of a series with their episodes.
+// It returns the seasons the series actually had, so callers report what went rather
+// than what they asked for (a season number the scan already dropped is not an error).
+func (r *Repo) DeleteSeasons(ctx context.Context, seriesID int64, seasons []int) ([]int, error) {
+	if len(seasons) == 0 {
+		return []int{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(seasons)), ",")
+	args := []any{seriesID}
+	for _, n := range seasons {
+		args = append(args, n)
+	}
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT season_number FROM seasons WHERE series_id = ? AND season_number IN (`+placeholders+`) ORDER BY season_number`, args...)
+	if err != nil {
+		return []int{}, err
+	}
+	defer rows.Close()
+	deleted := []int{}
+	for rows.Next() {
+		var sn int
+		if err := rows.Scan(&sn); err != nil {
+			return []int{}, err
+		}
+		deleted = append(deleted, sn)
+	}
+	if err := rows.Err(); err != nil {
+		return []int{}, err
+	}
+	if len(deleted) == 0 {
+		return deleted, nil
+	}
+
+	placeholders = strings.TrimSuffix(strings.Repeat("?,", len(deleted)), ",")
+	args = make([]any, 0, len(deleted)+1)
+	args = append(args, seriesID)
+	for _, n := range deleted {
+		args = append(args, n)
+	}
+	// Episodes first: the season rows are what lists the seasons, so they go last.
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM episodes WHERE series_id = ? AND season_number IN (`+placeholders+`)`, args...); err != nil {
+		return []int{}, err
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM seasons WHERE series_id = ? AND season_number IN (`+placeholders+`)`, args...); err != nil {
+		return []int{}, err
+	}
+	return deleted, nil
+}
+
 // Event is one entry in a series' activity timeline.
 type Event struct {
 	Event     string `json:"event"`

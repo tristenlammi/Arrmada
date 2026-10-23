@@ -3,6 +3,7 @@ package series
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -71,15 +72,34 @@ func (f *deleteFixture) file(t *testing.T, rel, body string) string {
 	return p
 }
 
+// addSeason adds a season row with the given (not yet imported) episode rows.
+func (f *deleteFixture) addSeason(t *testing.T, season int, episodes ...int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := f.svc.repo.db.ExecContext(ctx, `INSERT INTO seasons (series_id, season_number, monitored) VALUES (?, ?, 1)`, f.id, season); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range episodes {
+		if _, err := f.svc.repo.db.ExecContext(ctx, `INSERT INTO episodes (series_id, season_number, episode_number, monitored) VALUES (?, ?, ?, 1)`, f.id, season, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // episode gives episode e of season 1 a video file (plus the named subtitle suffixes).
 func (f *deleteFixture) episode(t *testing.T, e int, subs ...string) string {
+	return f.episodeIn(t, 1, e, subs...)
+}
+
+// episodeIn is episode for any season.
+func (f *deleteFixture) episodeIn(t *testing.T, season, e int, subs ...string) string {
 	t.Helper()
-	base := filepath.Join("Season 1", "The Bear - S01E0"+string(rune('0'+e)))
+	base := filepath.Join(fmt.Sprintf("Season %d", season), fmt.Sprintf("The Bear - S%02dE%02d", season, e))
 	v := f.file(t, base+".mkv", "video")
 	for _, s := range subs {
 		f.file(t, base+s, "subs")
 	}
-	if err := f.svc.MarkEpisodeImported(context.Background(), f.id, 1, e, v, 5); err != nil {
+	if err := f.svc.MarkEpisodeImported(context.Background(), f.id, season, e, v, 5); err != nil {
 		t.Fatal(err)
 	}
 	return v
@@ -426,5 +446,134 @@ func TestSupersedeKeepsOldOnRecycleFailure(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no file.kept event in %+v", evs)
+	}
+}
+
+// A bulk season delete recycles only the selected seasons' files, removes their rows and
+// folders, and leaves every other season of the show alone — the show itself stays.
+func TestDeleteSeasonsRecyclesOnlyTheSelectedSeasons(t *testing.T) {
+	f := newDeleteFixture(t)
+	ctx := context.Background()
+	f.addSeason(t, 2, 1, 2)
+	v1 := f.episode(t, 1, ".en.srt")
+	v2 := f.episode(t, 2)
+	kept := f.episodeIn(t, 2, 1)
+
+	plan, err := f.svc.SeasonsDeletePlan(ctx, f.id, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Files != 2 || plan.Sidecars != 1 || plan.Bytes != 2*5+4 {
+		t.Fatalf("plan = %+v, want the two season 1 videos and their subtitle", plan)
+	}
+	if all, _ := f.svc.DeletePlan(ctx, f.id); all.Files != 3 {
+		t.Fatalf("whole-show plan = %+v, want three files", all)
+	}
+
+	sum, err := f.svc.DeleteSeasons(ctx, f.id, []int{1}, true)
+	if err != nil {
+		t.Fatalf("delete seasons: %v (summary %+v)", err, sum)
+	}
+	if len(sum.DeletedSeasons) != 1 || sum.DeletedSeasons[0] != 1 {
+		t.Errorf("deleted seasons = %v, want [1]", sum.DeletedSeasons)
+	}
+	// Bytes counts the videos, as in Delete; the subtitles are reported by the plan.
+	if sum.DeletedFiles != 2 || sum.Bytes != 10 || len(sum.Errors) != 0 {
+		t.Errorf("summary = %+v, want two files and 10 bytes", sum)
+	}
+	want := []string{"The Bear - S01E01.en.srt", "The Bear - S01E01.mkv", "The Bear - S01E02.mkv"}
+	if got := binFiles(t, f.bin); len(got) != len(want) || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("bin = %v, want %v", got, want)
+	}
+	for _, p := range []string{v1, v2} {
+		if exists(p) {
+			t.Errorf("%s is still in the library", filepath.Base(p))
+		}
+	}
+	if !exists(kept) {
+		t.Error("a file in another season was deleted")
+	}
+	if exists(filepath.Dir(v1)) {
+		t.Error("the emptied season folder should be pruned")
+	}
+	if !f.seriesExists(t) {
+		t.Error("deleting seasons must keep the show")
+	}
+	left, err := f.svc.repo.SeasonsFor(ctx, f.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].SeasonNumber != 2 {
+		t.Errorf("seasons left = %+v, want only season 2", left)
+	}
+}
+
+// Without delete_files the rows go and the files stay, bin untouched.
+func TestDeleteSeasonsKeepsFilesByDefault(t *testing.T) {
+	f := newDeleteFixture(t)
+	v1 := f.episode(t, 1)
+	sum, err := f.svc.DeleteSeasons(context.Background(), f.id, []int{1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.DeletedSeasons) != 1 || sum.DeletedFiles != 0 {
+		t.Errorf("summary = %+v", sum)
+	}
+	if !exists(v1) {
+		t.Error("rows-only season delete must keep the files")
+	}
+	if !f.seriesExists(t) {
+		t.Error("the show must be kept")
+	}
+	if left, _ := f.svc.repo.SeasonsFor(context.Background(), f.id); len(left) != 0 {
+		t.Errorf("seasons left = %+v, want none", left)
+	}
+	if got := binFiles(t, f.bin); len(got) != 0 {
+		t.Errorf("bin = %v, want nothing moved", got)
+	}
+}
+
+// A season number the show no longer has is not an error, and reports nothing deleted.
+func TestDeleteSeasonsUnknownSeasonIsNoOp(t *testing.T) {
+	f := newDeleteFixture(t)
+	sum, err := f.svc.DeleteSeasons(context.Background(), f.id, []int{99}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.DeletedSeasons) != 0 {
+		t.Errorf("deleted seasons = %v, want none", sum.DeletedSeasons)
+	}
+	if left, _ := f.svc.repo.SeasonsFor(context.Background(), f.id); len(left) != 1 {
+		t.Errorf("seasons left = %+v, want season 1 untouched", left)
+	}
+}
+
+// A bin failure part-way stops the bulk delete, keeps the seasons and marks only the
+// episodes already moved as missing.
+func TestDeleteSeasonsPartialFailureKeepsSeasonsAndMarksMovedMissing(t *testing.T) {
+	f := newDeleteFixture(t)
+	ctx := context.Background()
+	v1 := f.episode(t, 1)
+	v2 := f.episode(t, 2)
+	f.svc.bin = &stingyBin{dir: f.bin}
+
+	sum, err := f.svc.DeleteSeasons(ctx, f.id, []int{1}, true)
+	if !errors.Is(err, ErrFilesNotRemoved) {
+		t.Fatalf("err = %v, want ErrFilesNotRemoved", err)
+	}
+	if sum.DeletedFiles != 1 || len(sum.Errors) != 1 {
+		t.Errorf("summary = %+v, want one moved and one failed", sum)
+	}
+	if exists(v1) || !exists(v2) {
+		t.Fatalf("v1 should be in the bin and v2 untouched (v1 exists=%v, v2 exists=%v)", exists(v1), exists(v2))
+	}
+	if left, _ := f.svc.repo.SeasonsFor(ctx, f.id); len(left) != 1 {
+		t.Errorf("seasons left = %+v, the season must be kept after a partial failure", left)
+	}
+	if p, _ := f.svc.repo.EpisodeFilePath(ctx, f.id, 1, 1); p != "" {
+		t.Errorf("E01 was moved but still claims %s", p)
+	}
+	if p, _ := f.svc.repo.EpisodeFilePath(ctx, f.id, 1, 2); p != v2 {
+		t.Errorf("E02 wasn't moved but reads %q", p)
 	}
 }

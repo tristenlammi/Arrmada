@@ -668,18 +668,95 @@ func (a *api) handleDeleteSeries(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type bulkDeleteSeasonsRequest struct {
+	Seasons     []int  `json:"seasons"`
+	DeleteFiles bool   `json:"delete_files"`
+	Confirm     string `json:"confirm,omitempty"`
+}
+
+type bulkDeleteSeasonsReply struct {
+	DeletedSeasons []int    `json:"deleted_seasons"`
+	DeletedFiles   int      `json:"deleted_files"`
+	Bytes          int64    `json:"bytes"`
+	Errors         []string `json:"errors,omitempty"`
+}
+
+// handleDeleteSeasonsBulk deletes multiple seasons of a series at once.
+// If delete_files is true, episode files and sidecars are moved to the recycle bin (or hard-deleted).
+func (a *api) handleDeleteSeasonsBulk(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req bulkDeleteSeasonsRequest
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Seasons) == 0 {
+		a.writeError(w, http.StatusBadRequest, "no seasons specified")
+		return
+	}
+	ctx := r.Context()
+	// A bulk delete of many seasons can still be huge, so the same "type the title"
+	// guard as a whole-series delete applies to the bytes actually selected.
+	if req.DeleteFiles {
+		sr, err := a.deps.Series.Get(ctx, id)
+		if err != nil {
+			a.writeError(w, http.StatusNotFound, "series not found")
+			return
+		}
+		plan, err := a.deps.Series.SeasonsDeletePlan(ctx, id, req.Seasons)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not list the seasons' files")
+			return
+		}
+		if plan.Bytes > bigSeriesDeleteBytes && req.Confirm != sr.Title {
+			a.writeError(w, http.StatusBadRequest, "this deletes over 100 GB — type the series title to confirm")
+			return
+		}
+	}
+	res, err := a.deps.Series.DeleteSeasons(context.WithoutCancel(ctx), id, req.Seasons, req.DeleteFiles)
+	if errors.Is(err, series.ErrFilesNotRemoved) {
+		a.writeJSON(w, http.StatusConflict, map[string]any{
+			"status": "error", "message": err.Error(), "deleted_seasons": res.DeletedSeasons, "deleted_files": res.DeletedFiles, "bytes": res.Bytes, "errors": res.Errors,
+		})
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not delete seasons")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, bulkDeleteSeasonsReply{
+		DeletedSeasons: res.DeletedSeasons,
+		DeletedFiles:   res.DeletedFiles,
+		Bytes:          res.Bytes,
+		Errors:         res.Errors,
+	})
+}
+
 // bigSeriesDeleteBytes is where deleting a show's files needs its title typed (100 GiB).
 // A var only so tests can lower it.
 var bigSeriesDeleteBytes int64 = 100 << 30
 
-// handleSeriesDeletePreview says what deleting a series with its files would move and
-// where it would go, so the dialog can state it before anything happens.
+// handleSeriesDeletePreview answers what deleting the show (or the seasons named in
+// ?seasons=1,2, for a bulk season delete) would move, and where it would go.
 func (a *api) handleSeriesDeletePreview(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
-	plan, err := a.deps.Series.DeletePlan(r.Context(), id)
+	var seasons []int
+	if q := r.URL.Query().Get("seasons"); q != "" {
+		for _, part := range strings.Split(q, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil {
+				a.writeError(w, http.StatusBadRequest, "seasons must be a comma-separated list of numbers")
+				return
+			}
+			seasons = append(seasons, n)
+		}
+	}
+	plan, err := a.deps.Series.SeasonsDeletePlan(r.Context(), id, seasons)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not list the series' files")
 		return

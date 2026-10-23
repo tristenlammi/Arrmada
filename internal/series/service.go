@@ -1559,6 +1559,23 @@ type DeleteSummary struct {
 
 // DeletePlan lists a series' episode files and their subtitles without changing anything.
 func (s *Service) DeletePlan(ctx context.Context, id int64) (DeletePlan, error) {
+	return s.deletePlan(ctx, id, nil)
+}
+
+// SeasonsDeletePlan is DeletePlan limited to the given seasons, so a bulk season delete
+// can state its size before anything happens. An empty filter means the whole series.
+func (s *Service) SeasonsDeletePlan(ctx context.Context, id int64, seasons []int) (DeletePlan, error) {
+	if len(seasons) == 0 {
+		return s.deletePlan(ctx, id, nil)
+	}
+	want := make(map[int]bool, len(seasons))
+	for _, sn := range seasons {
+		want[sn] = true
+	}
+	return s.deletePlan(ctx, id, want)
+}
+
+func (s *Service) deletePlan(ctx context.Context, id int64, only map[int]bool) (DeletePlan, error) {
 	seasons, err := s.repo.SeasonsFor(ctx, id)
 	if err != nil {
 		return DeletePlan{}, err
@@ -1566,6 +1583,9 @@ func (s *Service) DeletePlan(ctx context.Context, id int64) (DeletePlan, error) 
 	var plan DeletePlan
 	seen := map[string]bool{}
 	for _, sn := range seasons {
+		if only != nil && !only[sn.SeasonNumber] {
+			continue
+		}
 		for _, e := range sn.Episodes {
 			if !e.HasFile || e.FilePath == "" || seen[e.FilePath] {
 				continue
@@ -1694,6 +1714,142 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) (Delet
 		return sum, fmt.Errorf("%w: %v", ErrFilesNotRemoved, failure)
 	}
 	return sum, s.repo.Delete(ctx, id)
+}
+
+// DeleteSeasons deletes the given seasons of a series and, with deleteFiles, every episode
+// video and subtitle in them (to the recycle bin, or hard-deleted when it's off). The rows
+// go only once all files have moved: on the first file the bin refuses it stops, marks the
+// episodes already moved as missing, keeps the seasons and returns ErrFilesNotRemoved — the
+// same contract as Delete.
+func (s *Service) DeleteSeasons(ctx context.Context, id int64, seasons []int, deleteFiles bool) (DeleteSeasonsSummary, error) {
+	res := DeleteSeasonsSummary{DeletedSeasons: []int{}, Errors: []string{}}
+	if len(seasons) == 0 {
+		return res, nil
+	}
+
+	// One entry per episode file, so an episode can be marked missing if the delete stops.
+	type episodeFile struct {
+		season, episode int
+		path            string
+		size            int64
+	}
+	var files []episodeFile
+	if deleteFiles {
+		all, err := s.repo.SeasonsFor(ctx, id)
+		if err != nil {
+			return res, err
+		}
+		want := make(map[int]bool, len(seasons))
+		for _, sn := range seasons {
+			want[sn] = true
+		}
+		for _, sn := range all {
+			if !want[sn.SeasonNumber] {
+				continue
+			}
+			for _, ep := range sn.Episodes {
+				if ep.HasFile && ep.FilePath != "" {
+					files = append(files, episodeFile{sn.SeasonNumber, ep.EpisodeNumber, ep.FilePath, ep.SizeBytes})
+				}
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		// Nothing on disk to move: the rows are all there is to delete.
+		deleted, err := s.repo.DeleteSeasons(ctx, id, seasons)
+		if err != nil {
+			return res, err
+		}
+		res.DeletedSeasons = deleted
+		return res, nil
+	}
+
+	bin := s.bin
+	if bin == nil {
+		bin = library.SingleBin("")
+	}
+	// Pre-flight: a bin that can't even be created fails before a single file moves.
+	dir, err := bin.For(files[0].path)
+	if err == nil {
+		err = os.MkdirAll(dir, 0o755)
+	}
+	if err != nil && !errors.Is(err, library.ErrRecycleDisabled) {
+		res.Errors = append(res.Errors, filepath.Base(files[0].path))
+		s.repo.AddEvent(ctx, id, "delete.failed", "Couldn't use the recycle bin, so nothing was deleted: "+err.Error())
+		return res, fmt.Errorf("%w: %v", ErrFilesNotRemoved, err)
+	}
+
+	dirs := map[string]bool{}
+	var movedVideos []string
+	var failure error
+	for _, ep := range files {
+		subs := library.Sidecars(ep.path)
+		if _, err := library.RemoveToBin(bin, ep.path); err != nil {
+			res.Errors = append(res.Errors, filepath.Base(ep.path))
+			failure = err
+			break
+		}
+		movedVideos = append(movedVideos, ep.path)
+		res.DeletedFiles++
+		res.Bytes += ep.size
+		s.fileRemoved(ep.path)
+		dirs[filepath.Dir(ep.path)] = true // season folder
+		for _, sub := range subs {
+			if _, err := library.RemoveToBin(bin, sub); err != nil {
+				res.Errors = append(res.Errors, filepath.Base(sub))
+				failure = err
+				break
+			}
+			s.fileRemoved(sub)
+		}
+		if failure != nil {
+			break
+		}
+	}
+	s.pruneEmptyDirs(dirs)
+	// Plex drops what went, even when the delete stopped partway.
+	shows := map[string]bool{}
+	for _, v := range movedVideos {
+		shows[s.ShowFolderFor(v)] = true
+	}
+	for d := range shows {
+		s.changed(d)
+	}
+
+	if failure != nil {
+		// The moved videos are in the bin now; their episodes must read as missing.
+		moved := map[string]bool{}
+		for _, v := range movedVideos {
+			moved[v] = true
+		}
+		for _, ep := range files {
+			if !moved[ep.path] {
+				continue
+			}
+			if err := s.repo.ClearEpisodeFile(ctx, id, ep.season, ep.episode); err != nil {
+				s.log.Warn("series: couldn't mark a moved episode missing", "err", err)
+			}
+		}
+		s.repo.AddEvent(ctx, id, "delete.failed", fmt.Sprintf("Stopped deleting after %d file(s): %v", len(movedVideos), failure))
+		return res, fmt.Errorf("%w: %v", ErrFilesNotRemoved, failure)
+	}
+
+	deleted, err := s.repo.DeleteSeasons(ctx, id, seasons)
+	if err != nil {
+		return res, err
+	}
+	res.DeletedSeasons = deleted
+	return res, nil
+}
+
+// DeleteSeasonsSummary is the result of a bulk season delete: which seasons went, how
+// many files moved, how much that was, and the files that couldn't be moved.
+type DeleteSeasonsSummary struct {
+	DeletedSeasons []int    `json:"deleted_seasons"`
+	DeletedFiles   int      `json:"deleted_files"`
+	Bytes          int64    `json:"bytes"`
+	Errors         []string `json:"errors,omitempty"`
 }
 
 // pruneEmptyDirs removes folders a delete emptied, deepest first so a season folder goes

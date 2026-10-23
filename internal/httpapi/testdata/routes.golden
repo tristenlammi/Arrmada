@@ -37,6 +37,7 @@ DELETE /api/v1/series/{id}/blocklist/{bid} staff -
 DELETE /api/v1/series/{id}/duplicates staff -
 DELETE /api/v1/series/{id}/numbering/pending staff -
 DELETE /api/v1/series/{id}/scene-map/{season} staff -
+DELETE /api/v1/series/{id}/seasons staff -
 DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
 DELETE /api/v1/settings/smtp admin -
 DELETE /api/v1/subtitles/file staff -

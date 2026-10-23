@@ -22,6 +22,10 @@ export interface MisplacedResult { moved: number; recycled: number; skipped: Ren
 /** PUT /series/{id}/monitor's answer. resumed: this change turned the show's searching on. */
 export interface MonitorReply { monitored: boolean; monitor_new_seasons: boolean; monitor_preset?: string; resumed?: boolean }
 
+/** DELETE /series/{id}/seasons's answer: which seasons went, how many files moved, and the
+ * files the recycle bin refused (empty on success). */
+export interface BulkDeleteSeasonsReply { deleted_seasons: number[]; deleted_files: number; bytes: number; errors?: string[] }
+
 // Series management calls (manual import, renames, numbering, monitoring, scene overrides,
 // deletes). They live here rather than in api.ts so they only download with the staff
 // pages that use them, not with a requester's first load.
@@ -83,13 +87,20 @@ export const seriesApi = {
     const qs = q.toString();
     return req<void>(`/api/v1/series/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
   },
-  seriesDeletePreview: (id: number) => req<DeletePreview>(`/api/v1/series/${id}/delete-preview`),
+  // seasons narrows the preview to a bulk season delete; omitted, it's the whole show.
+  seriesDeletePreview: (id: number, seasons?: number[]) =>
+    req<DeletePreview>(`/api/v1/series/${id}/delete-preview${seasons?.length ? `?seasons=${seasons.join(",")}` : ""}`),
   seriesBlocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/series/${id}/blocklist`).then((r) => r.blocklist),
   unblockSeries: (id: number, bid: number) => req<void>(`/api/v1/series/${id}/blocklist/${bid}`, { method: "DELETE" }),
   regrabEpisode: (id: number, season: number, episode: number) =>
     req<{ status: string } & JobRef>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/regrab`, { method: "POST" }),
   deleteEpisodeFile: (id: number, season: number, episode: number) =>
     req<void>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/file`, { method: "DELETE" }),
+  bulkDeleteSeasons: (id: number, seasons: number[], deleteFiles: boolean, confirm?: string) =>
+    req<BulkDeleteSeasonsReply>(`/api/v1/series/${id}/seasons`, {
+      method: "DELETE",
+      body: JSON.stringify({ seasons, delete_files: deleteFiles, confirm }),
+    }),
 
   // Books
 };

@@ -685,6 +685,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file", a.requireRole(auth.RoleManager, a.handleDeleteEpisodeFile))
 	mux.HandleFunc("GET /api/v1/series/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeriesDeletePreview))
 	mux.HandleFunc("DELETE /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
+	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons", a.requireRole(auth.RoleManager, a.handleDeleteSeasonsBulk))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.
 	mux.HandleFunc("GET /api/v1/requests", a.signedIn(a.handleListRequests).ext())

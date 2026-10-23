@@ -27,8 +27,18 @@ export const PAGE = 50;
 const MAX_BULK_SEARCH = 200;
 
 // SeasonRail is the row of season chips under the hero: poster, name and progress. It
-// scrolls sideways on a phone and keeps the chosen season in view.
-export function SeasonRail({ seasons, selected, onSelect }: { seasons: Season[]; selected?: number; onSelect: (n: number) => void }) {
+// scrolls sideways on a phone and keeps the chosen season in view. In select mode a chip
+// picks its season instead of opening it, so the page can act on several at once (GH-80);
+// the pick itself lives in the page, because the bulk bar and its dialog do.
+export function SeasonRail({ seasons, selected, onSelect, selecting = false, picked, onToggleSelecting, onTogglePick }: {
+  seasons: Season[];
+  selected?: number;
+  onSelect: (n: number) => void;
+  selecting?: boolean;
+  picked?: Set<number>;
+  onToggleSelecting?: () => void;
+  onTogglePick?: (n: number) => void;
+}) {
   const row = useRef<HTMLDivElement>(null);
   const chips = useRef(new Map<number, HTMLButtonElement>());
   useEffect(() => {
@@ -40,42 +50,60 @@ export function SeasonRail({ seasons, selected, onSelect }: { seasons: Season[];
   }, [selected]);
 
   return (
-    <div ref={row} role="group" aria-label="Seasons" className="thin-scroll -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
-      {seasons.map((sn) => {
-        const c = seasonCounts(sn);
-        const active = sn.season_number === selected;
-        const done = c.counted > 0 && c.have >= c.counted;
-        const pct = c.counted ? Math.round((c.have / c.counted) * 100) : 0;
-        const thumb = posterThumb(sn.poster_url);
-        return (
-          <button
-            key={sn.id}
-            ref={(el) => { if (el) chips.current.set(sn.season_number, el); else chips.current.delete(sn.season_number); }}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onSelect(sn.season_number)}
-            className="flex w-[156px] flex-none items-center gap-2.5 rounded-xl p-1.5 pr-3 text-left"
-            style={{ background: active ? "var(--accent-soft)" : "var(--panel)", border: `1px solid ${active ? "var(--accent)" : "var(--line)"}` }}
-          >
-            {/* An unreleased season fades its artwork only: fading the card took its words
-                below a readable contrast. */}
-            <span className="h-[54px] w-[36px] flex-none overflow-hidden rounded-md" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))", opacity: c.total === 0 ? 0.65 : 1 }}>
-              {thumb && <img src={thumb} alt="" loading="lazy" className="h-full w-full object-cover" />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-base font-semibold" style={{ color: active ? "var(--accent-text)" : "var(--ink)" }}>{seasonName(sn.season_number)}</span>
-              <span className={`block font-mono text-xs ${active ? "text-ink-dim" : "text-ink-faint"}`}>
-                {c.total === 0 ? "Not yet released" : c.airedCount === 0 ? "Upcoming" : `${c.have}/${c.counted}`}
+    <div>
+      {onToggleSelecting && (
+        <div className="mb-2 flex items-center justify-end">
+          <Button size="sm" variant={selecting ? "primary" : "ghost"} aria-pressed={selecting} onClick={onToggleSelecting}>
+            {selecting ? "Done" : "Select seasons"}
+          </Button>
+        </div>
+      )}
+      <div ref={row} role="group" aria-label={selecting ? "Seasons to delete" : "Seasons"} className="thin-scroll -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
+        {seasons.map((sn) => {
+          const c = seasonCounts(sn);
+          const active = !selecting && sn.season_number === selected;
+          const isPicked = selecting && !!picked?.has(sn.season_number);
+          const done = c.counted > 0 && c.have >= c.counted;
+          const pct = c.counted ? Math.round((c.have / c.counted) * 100) : 0;
+          const thumb = posterThumb(sn.poster_url);
+          const lit = active || isPicked;
+          return (
+            <button
+              key={sn.id}
+              ref={(el) => { if (el) chips.current.set(sn.season_number, el); else chips.current.delete(sn.season_number); }}
+              type="button"
+              aria-pressed={selecting ? isPicked : active}
+              onClick={() => (selecting ? onTogglePick?.(sn.season_number) : onSelect(sn.season_number))}
+              className="flex w-[156px] flex-none items-center gap-2.5 rounded-xl p-1.5 pr-3 text-left"
+              style={{ background: lit ? "var(--accent-soft)" : "var(--panel)", border: `1px solid ${lit ? "var(--accent)" : "var(--line)"}` }}
+            >
+              {/* An unreleased season fades its artwork only: fading the card took its words
+                  below a readable contrast. In select mode the artwork carries the tick. */}
+              <span className="relative h-[54px] w-[36px] flex-none overflow-hidden rounded-md" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))", opacity: c.total === 0 ? 0.65 : 1 }}>
+                {thumb && <img src={thumb} alt="" loading="lazy" className="h-full w-full object-cover" />}
+                {selecting && (
+                  <span className="absolute inset-0 flex items-center justify-center" style={{ background: isPicked ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.45)" }}>
+                    <span aria-hidden className="flex h-[18px] w-[18px] items-center justify-center rounded-full text-xs font-bold" style={{ border: "1px solid #fff", color: "#fff", background: isPicked ? "var(--accent)" : "transparent" }}>
+                      {isPicked ? "✓" : ""}
+                    </span>
+                  </span>
+                )}
               </span>
-              {c.total > 0 && c.airedCount > 0 && (
-                <span className="mt-1 block h-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: done ? "var(--good)" : "var(--accent)" }} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-base font-semibold" style={{ color: lit ? "var(--accent-text)" : "var(--ink)" }}>{seasonName(sn.season_number)}</span>
+                <span className={`block font-mono text-xs ${lit ? "text-ink-dim" : "text-ink-faint"}`}>
+                  {c.total === 0 ? "Not yet released" : c.airedCount === 0 ? "Upcoming" : `${c.have}/${c.counted}`}
                 </span>
-              )}
-            </span>
-          </button>
-        );
-      })}
+                {c.total > 0 && c.airedCount > 0 && (
+                  <span className="mt-1 block h-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
+                    <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: done ? "var(--good)" : "var(--accent)" }} />
+                  </span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -263,7 +291,8 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
 
 // BulkBar is select mode's action bar, held at the bottom of the screen while the season is
 // in view: how many are picked, Monitor, Unmonitor, Search (one scoped search of exactly
-// those episodes) and Clear.
+// those episodes), Delete files (their videos and subtitles, through the one confirm
+// dialog) and Clear.
 function BulkBar({ series, season, picked, setPicked, onDone, onSearch, onChange, flash }: {
   series: SeriesT;
   season: Season;
@@ -274,7 +303,7 @@ function BulkBar({ series, season, picked, setPicked, onDone, onSearch, onChange
   onChange: () => void;
   flash: Flash;
 }) {
-  const [busy, setBusy] = useState<null | "on" | "off" | "search">(null);
+  const [busy, setBusy] = useState<null | "on" | "off" | "search" | "delete">(null);
   const eps = (season.episodes ?? []).filter((e) => picked.has(e.id));
   const n = eps.length;
   const all = (season.episodes ?? []).length;
@@ -282,6 +311,11 @@ function BulkBar({ series, season, picked, setPicked, onDone, onSearch, onChange
   const searchable = eps.filter((e) => !e.has_file && aired(e));
   const tooMany = searchable.length > MAX_BULK_SEARCH;
   const words = `${n} episode${n === 1 ? "" : "s"}`;
+  const binMode = useRecycleMode();
+  const deletable = eps.filter((e) => e.has_file);
+  const deletableCount = deletable.length;
+  const totalBytes = deletable.reduce((a, e) => a + (e.size_bytes || 0), 0);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const act = async (key: NonNullable<typeof busy>, fn: () => Promise<void>) => {
     setBusy(key);
     try { await fn(); } catch (e) { flash((e as Error).message, true); } finally { setBusy(null); }
@@ -298,30 +332,68 @@ function BulkBar({ series, season, picked, setPicked, onDone, onSearch, onChange
     flash(`Searching for ${searchable.length} episode${searchable.length === 1 ? "" : "s"}…`);
     onDone();
   });
+  // One request per episode (the endpoint deletes one file), and every refusal is reported
+  // rather than swallowed: a bin that took four of five files must not read as a success.
+  const deletePicked = async () => {
+    setBusy("delete");
+    let deleted = 0;
+    const failed: string[] = [];
+    for (const e of deletable) {
+      try {
+        await seriesApi.deleteEpisodeFile(series.id, e.season_number, e.episode_number);
+        deleted++;
+      } catch (err) {
+        failed.push(`${sxe(e)}: ${(err as Error).message}`);
+      }
+    }
+    setBusy(null);
+    setConfirmOpen(false);
+    onChange();
+    onDone();
+    if (failed.length) {
+      flash(`Deleted ${deleted} of ${deletableCount} files. Still there: ${failed.join("; ")}`, true);
+      return;
+    }
+    flash(`Deleted the files for ${words}.`);
+  };
   return (
-    <div
-      role="region"
-      aria-label="Selected episodes"
-      className="sticky z-20 mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5"
-      style={{ bottom: "calc(var(--bottom-chrome) + 12px)", background: "var(--panel)", border: "1px solid var(--accent-line)", boxShadow: "var(--shadow)" }}
-    >
-      <span className="mr-auto text-base font-semibold" aria-live="polite">{n} selected</span>
-      {n < all && <Button size="sm" variant="ghost" onClick={() => setPicked(new Set((season.episodes ?? []).map((e) => e.id)))}>All</Button>}
-      <Button size="sm" onClick={() => setMonitored(true)} disabled={n === 0 || busy !== null} busy={busy === "on"} busyLabel="Saving…">Monitor</Button>
-      <Button size="sm" onClick={() => setMonitored(false)} disabled={n === 0 || busy !== null} busy={busy === "off"} busyLabel="Saving…">Unmonitor</Button>
-      <Button
-        size="sm"
-        variant="primary"
-        onClick={searchPicked}
-        disabled={searchable.length === 0 || tooMany || busy !== null}
-        busy={busy === "search"}
-        busyLabel="Starting…"
-        title={tooMany ? `Pick at most ${MAX_BULK_SEARCH} episodes to search at once` : searchable.length === 0 ? "None of these is missing — there is nothing to search for" : "One search for exactly these episodes; ones already here are left out"}
+    <>
+      <div
+        role="region"
+        aria-label="Selected episodes"
+        className="sticky z-20 mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5"
+        style={{ bottom: "calc(var(--bottom-chrome) + 12px)", background: "var(--panel)", border: "1px solid var(--accent-line)", boxShadow: "var(--shadow)" }}
       >
-        Search
-      </Button>
-      <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())} disabled={n === 0}>Clear</Button>
-    </div>
+        <span className="mr-auto text-base font-semibold" aria-live="polite">{n} selected</span>
+        {n < all && <Button size="sm" variant="ghost" onClick={() => setPicked(new Set((season.episodes ?? []).map((e) => e.id)))}>All</Button>}
+        <Button size="sm" onClick={() => setMonitored(true)} disabled={n === 0 || busy !== null} busy={busy === "on"} busyLabel="Saving…">Monitor</Button>
+        <Button size="sm" onClick={() => setMonitored(false)} disabled={n === 0 || busy !== null} busy={busy === "off"} busyLabel="Saving…">Unmonitor</Button>
+        <Button
+          size="sm"
+          variant="primary"
+          onClick={searchPicked}
+          disabled={searchable.length === 0 || tooMany || busy !== null}
+          busy={busy === "search"}
+          busyLabel="Starting…"
+          title={tooMany ? `Pick at most ${MAX_BULK_SEARCH} episodes to search at once` : searchable.length === 0 ? "None of these is missing — there is nothing to search for" : "One search for exactly these episodes; ones already here are left out"}
+        >
+          Search
+        </Button>
+        <Button size="sm" variant="danger" onClick={() => setConfirmOpen(true)} disabled={deletableCount === 0 || busy !== null} busy={busy === "delete"} busyLabel="Deleting…">Delete files…</Button>
+        <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())} disabled={n === 0}>Clear</Button>
+      </div>
+      {confirmOpen && (
+        <ConfirmDialog
+          title={`Delete files for ${deletableCount} episode${deletableCount === 1 ? "" : "s"}?`}
+          body={<>{disposalLine(totalBytes, binMode)}, with their subtitles. The episodes become wanted again.</>}
+          confirmLabel="Delete files"
+          busyLabel="Deleting…"
+          busy={busy === "delete"}
+          onConfirm={deletePicked}
+          onCancel={() => setConfirmOpen(false)}
+        />
+      )}
+    </>
   );
 }
 

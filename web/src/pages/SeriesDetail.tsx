@@ -26,6 +26,7 @@ import { invalidate, useQuery } from "../lib/query";
 import { useTabParam } from "../lib/useTabParam";
 import { defaultSeason, sortSeasons } from "./series/util";
 import { SeasonPanel, SeasonRail } from "./series/SeasonRail";
+import { DeleteSeasonsDialog } from "./series/DeleteSeasonsDialog";
 import { Page } from "../ui/Page";
 
 // What the page listens for besides the queue (see SeriesDetail).
@@ -99,6 +100,12 @@ export function SeriesDetail() {
   ], [numberingTab, numbering.data?.pending, unplaced.length]);
   const [tab, setTab] = useTabParam(tabs.map((t) => t.key), "episodes");
 
+  // Season mass edit (GH-80): the picked seasons live here rather than in the rail,
+  // because the bulk bar and its delete dialog act on them.
+  const [seasonSelecting, setSeasonSelecting] = useState(false);
+  const [pickedSeasons, setPickedSeasons] = useState<Set<number>>(() => new Set());
+  const [seasonsToDelete, setSeasonsToDelete] = useState<number[] | null>(null);
+
   // While any episode is downloading its bar moves from queue.progress (by the torrent's
   // hash), and a queue.changed naming one of its torrents reads the light downloads
   // endpoint — not the whole show. That endpoint is also the slow backstop (quick only
@@ -144,18 +151,56 @@ export function SeriesDetail() {
   });
   useEffect(() => () => window.clearTimeout(grabLook.current), []);
 
-  if (notFound) return <Shell><div className="py-10 text-center text-md text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent-text)" }}>Back to Series</Link></div></Shell>;
-  if (!s) return <Shell><p className="text-base text-ink-dim">{error ?? "Loading…"}</p></Shell>;
-
-  const ex = s.extra;
-  const seasons = sortSeasons(s.seasons);
-  // Every regular episode, for the show-wide upgrade-hold chip.
-  const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
+  const seasons = useMemo(() => (s ? sortSeasons(s.seasons) : []), [s]);
   // The season shown: the one in the address (so a reload stays put), else where there's
   // something to do (see defaultSeason).
   const asked = Number(params.get("season"));
   const current = seasons.find((sn) => params.has("season") && sn.season_number === asked) ?? seasons.find((sn) => sn.season_number === defaultSeason(seasons));
 
+  const toggleSeasonPicked = useCallback((n: number) => {
+    setPickedSeasons((cur) => {
+      const next = new Set(cur);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  }, []);
+
+  // Leaving select mode drops the pick, so re-entering never starts from a stale choice.
+  const stopSelectingSeasons = useCallback(() => {
+    setSeasonSelecting(false);
+    setPickedSeasons(new Set());
+  }, []);
+
+  const toggleSeasonSelecting = useCallback(() => {
+    if (seasonSelecting) stopSelectingSeasons();
+    else setSeasonSelecting(true);
+  }, [seasonSelecting, stopSelectingSeasons]);
+
+  const seasonsDeleted = useCallback((deleted: number[], files: number) => {
+    setSeasonsToDelete(null);
+    stopSelectingSeasons();
+    // The season on screen may be one that just went: the address must not point at it.
+    if (current && deleted.includes(current.season_number)) {
+      const left = seasons.filter((sn) => !deleted.includes(sn.season_number));
+      setParams((p) => {
+        const q = new URLSearchParams(p);
+        if (left.length) q.set("season", String(left[0].season_number));
+        else q.delete("season");
+        return q;
+      }, { replace: true });
+    }
+    void load();
+    const gone = deleted.length === 1 ? "1 season" : `${deleted.length} seasons`;
+    toast(files > 0 ? `${gone} deleted with ${files} file${files === 1 ? "" : "s"}.` : `${gone} deleted.`, { tone: "info", ms: 4000 });
+  }, [current, seasons, load, setParams, stopSelectingSeasons, toast]);
+
+  if (notFound) return <Shell><div className="py-10 text-center text-md text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent-text)" }}>Back to Series</Link></div></Shell>;
+  if (!s) return <Shell><p className="text-base text-ink-dim">{error ?? "Loading…"}</p></Shell>;
+
+  const ex = s.extra;
+  // Every regular episode, for the show-wide upgrade-hold chip.
+  const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
   return (
     <>
       <PageHeader title={shownTitle(s)} />
@@ -174,7 +219,42 @@ export function SeriesDetail() {
           <TabPanel idPrefix="series" value="episodes">
             <NumberingBanner seriesId={s.id} refreshKey={numberingKey} onApplied={settleNumbering} />
             <div className="mt-4">
-              <SeasonRail seasons={seasons} selected={current?.season_number} onSelect={pickSeason} />
+              <SeasonRail
+                seasons={seasons}
+                selected={current?.season_number}
+                onSelect={pickSeason}
+                selecting={seasonSelecting}
+                picked={pickedSeasons}
+                onToggleSelecting={toggleSeasonSelecting}
+                onTogglePick={toggleSeasonPicked}
+              />
+              {seasonSelecting && (
+                <div
+                  role="region"
+                  aria-label="Selected seasons"
+                  className="sticky z-20 mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5"
+                  style={{ bottom: "calc(var(--bottom-chrome) + 12px)", background: "var(--panel)", border: "1px solid var(--accent-line)", boxShadow: "var(--shadow)" }}
+                >
+                  <span className="mr-auto text-base font-semibold" aria-live="polite">
+                    {pickedSeasons.size} season{pickedSeasons.size === 1 ? "" : "s"} selected
+                  </span>
+                  {pickedSeasons.size < seasons.length && (
+                    <Button size="sm" variant="ghost" onClick={() => setPickedSeasons(new Set(seasons.map((sn) => sn.season_number)))}>All</Button>
+                  )}
+                  <Button size="sm" variant="danger" onClick={() => setSeasonsToDelete([...pickedSeasons].sort((a, b) => a - b))} disabled={pickedSeasons.size === 0}>
+                    Delete seasons…
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={stopSelectingSeasons}>Cancel</Button>
+                </div>
+              )}
+              {seasonsToDelete && (
+                <DeleteSeasonsDialog
+                  series={s}
+                  seasons={seasonsToDelete}
+                  onClose={() => setSeasonsToDelete(null)}
+                  onDeleted={seasonsDeleted}
+                />
+              )}
               {current && <SeasonPanel key={current.season_number} series={s} season={current} fits={fits} onChange={load} flash={say} />}
             </div>
             {/* Without a Numbering tab (a standard show with nothing to decide) the
