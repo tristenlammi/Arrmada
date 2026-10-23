@@ -1,5 +1,5 @@
 import type { MediaRequest } from "./api";
-import { formatAgo, formatEta } from "./format";
+import { formatAgo, formatEta, formatPercent } from "./format";
 import { searchingDetail } from "./requestSearch";
 import { STAGE } from "./stages";
 import type { Tone } from "../ui";
@@ -43,7 +43,7 @@ export function requestStage(rq: StagedRequest, queueKnown = true): RequestStage
   }
   const ready = rq.media_type === "book" ? "Ready" : "Ready to watch";
   const eps = tr?.total ? `${tr.have ?? 0} of ${tr.total} episodes` : "";
-  const pct = Math.round((tr?.progress ?? 0) * 100);
+  const pct = formatPercent(tr?.progress ?? 0);
   switch (tr?.stage) {
     case "available":
       return { badge: "Ready", tone: "good", detail: ready, detailTone: "var(--good-text)" };
@@ -52,7 +52,7 @@ export function requestStage(rq: StagedRequest, queueKnown = true): RequestStage
       // here: the server's "Ebook ready · audiobook on the way".
       return { badge: "Partly ready", tone: "good", detail: eps ? `${eps} ready` : tr.note || "Partly ready", detailTone: "var(--good-text)" };
     case "downloading": {
-      const parts = [`${pct}%`];
+      const parts = [pct];
       if (tr.eta_seconds) parts.push(`${formatEta(tr.eta_seconds)} left`);
       else if (tr.note) parts.push(tr.note.toLowerCase());
       if (eps) parts.push(eps);
@@ -71,7 +71,7 @@ export function requestStage(rq: StagedRequest, queueKnown = true): RequestStage
     case "queued":
       return { badge: STAGE.queued.label, tone: "accent", detail: tr.note || "Starting the download" };
     case "paused":
-      return { badge: STAGE.paused.label, tone: "faint", detail: `Paused at ${pct}%` };
+      return { badge: STAGE.paused.label, tone: "faint", detail: `Paused at ${pct}` };
     case "failed":
       return { badge: STAGE.failed.label, tone: "avoid", detail: tr.note || "The download failed" };
     case "searching":

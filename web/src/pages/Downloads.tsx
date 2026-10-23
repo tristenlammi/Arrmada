@@ -19,6 +19,7 @@ import { isUsenetDownload, leftLine, usenetFailLine, usenetFailed } from "../lib
 import { inClient, isStalled, queueClients, showClientNames, stalledMinutes } from "../lib/queueFilter";
 import { CardActions, ItemChips, TransferPoster, TransferTitle } from "./activity/transfer";
 import { EmptyState, ErrorState, IconButton, Skeleton, StatusChip, useToast } from "../ui";
+import { formatPercent } from "../lib/format";
 
 type MediaFilter = "all" | "movie" | "series" | "book" | "music";
 const MEDIA_FILTERS: readonly MediaFilter[] = ["all", "movie", "series", "book", "music"];
@@ -657,7 +658,7 @@ function DownloadCard({ it, guard, busy, act, onRemoved, onNote, showClient, sea
         <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
           <div className="h-full rounded-full" style={{ width: `${Math.round(it.progress * 100)}%`, background: paused || failed ? "var(--ink-faint)" : "var(--accent)" }} />
         </div>
-        <span className="w-10 text-right font-mono text-xs text-ink-dim">{Math.round(it.progress * 100)}%</span>
+        <span className="w-10 text-right font-mono text-xs text-ink-dim">{formatPercent(it.progress)}</span>
       </div>
       {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={(r) => { setRemoving(false); onRemoved(removedMessage(r)); }} />}
     </div>

@@ -12,6 +12,7 @@ import { Menu, StatusChip, useConfirm, type MenuItem, type Tone } from "../../ui
 import { MENU_ITEM, type Flash } from "./HeroActions";
 import { aired, fmtAirDay, sxe } from "./util";
 import { EpisodeSubChip } from "./EpisodeSubs";
+import { formatPercent } from "../../lib/format";
 
 // What a card asks its season to open. The dialogs live outside the cards: a card is
 // paint-contained (content-visibility) while off screen, which would clip a fixed overlay.
@@ -29,7 +30,7 @@ export function episodeStatus(series: SeriesT, ep: Episode, seasonMonitored = tr
     if (st.label === STATUS_LABEL.searchingOff) return { label: st.label, tone: st.tone, title: SEARCHING_OFF_HINT };
     return { label: st.label, tone: st.tone };
   }
-  if (dl) return { label: `↓ ${Math.round(dl.progress * 100)}%`, tone: "accent" };
+  if (dl) return { label: `↓ ${formatPercent(dl.progress)}`, tone: "accent" };
   return { label: "Unaired", tone: "faint" };
 }
 

@@ -3,6 +3,7 @@ import { api, ApiError, type MovieBulkDeleteReply, type MovieDeletePreview } fro
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { shownTitle } from "../lib/displayTitle";
+import { formatPercent } from "../lib/format";
 
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -104,7 +105,7 @@ export function DeleteMovieDialog({ movie, onClose, onDeleted }: {
               <input type="checkbox" checked={cancelDownloads} disabled={busy} onChange={(e) => setCancelDownloads(e.target.checked)} className="mt-0.5" />
               <span className="min-w-0">
                 <span className="font-semibold" style={{ color: cancelDownloads ? "var(--reject-text)" : "var(--ink)" }}>Cancel the download in progress and delete its partial data</span>
-                <span className="mt-0.5 block break-all text-xs text-ink-faint">{d.title} · {Math.round(d.progress * 100)}%</span>
+                <span className="mt-0.5 block break-all text-xs text-ink-faint">{d.title} · {formatPercent(d.progress)}</span>
                 {!cancelDownloads && <span className="mt-0.5 block text-xs text-ink-faint">Left running, it waits in Activity → Needs you when it finishes instead of coming back into the library.</span>}
               </span>
             </label>

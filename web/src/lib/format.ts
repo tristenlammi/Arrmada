@@ -62,6 +62,15 @@ export function formatEta(sec: number): string {
   return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+// formatPercent formats a 0..1 progress as a percentage: one decimal, kept only
+// when it says something (12.3%), dropped when it doesn't (42%). 100 is whole,
+// however the float rounded its way there.
+export function formatPercent(p: number): string {
+  const v = Math.max(0, Math.min(1, p)) * 100;
+  const s = v.toFixed(1);
+  return `${s.endsWith(".0") ? s.slice(0, -2) : s}%`;
+}
+
 // formatCheckDay is the day a book's next search falls on, in the viewer's own locale
 // ("Tue 14 Oct" in en-GB). The server only ever sends the time; the words are ours.
 // A time already passed — the book is due and waiting for the sweep — or no time at

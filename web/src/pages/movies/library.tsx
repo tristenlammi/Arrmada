@@ -7,6 +7,7 @@ import { STATUS_LABEL } from "../../lib/status";
 import type { LibraryConfig } from "../../features/library/types";
 import { shortDate } from "../../features/library/format";
 import { POSTER_CHIP_BG, type MenuItem } from "../../ui";
+import { formatPercent } from "../../lib/format";
 
 // The Movies library as LibraryGrid config: its filters, card slots and table columns.
 
@@ -48,15 +49,16 @@ function YesNo({ on, label }: { on: boolean; label?: string }) {
 // upgrade or an extra version rather than the film's own missing file.
 function DownloadBar({ d }: { d: MovieDownload }) {
   const label = downloadLabel(d);
-  const pct = Math.round(d.progress * 100);
+  const pctNum = Math.min(100, Math.max(0, d.progress * 100));
+  const pctText = formatPercent(d.progress);
   return (
     <div className="absolute inset-x-0 bottom-0 p-1.5">
       <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1" style={{ background: "rgba(20,12,7,.82)" }} title={label ? `Downloading: ${label}` : "Downloading"}>
         {label && <span className="max-w-[60px] truncate font-mono text-2xs font-bold uppercase" style={{ color: "var(--accent-text)" }}>{label}</span>}
         <div className="h-1 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.25)" }}>
-          <div className="h-full rounded-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
+          <div className="h-full rounded-full" style={{ width: `${Math.round(pctNum)}%`, background: "var(--accent)" }} />
         </div>
-        <span className="font-mono text-xs font-bold" style={{ color: "#fff" }}>{pct}%</span>
+        <span className="font-mono text-xs font-bold" style={{ color: "#fff" }}>{pctText}</span>
       </div>
     </div>
   );

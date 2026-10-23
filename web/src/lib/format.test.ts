@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAgo, formatBytes, formatCheckDay, formatDuration, formatEta, formatReleaseAge, notFoundYet } from "./format";
+import { formatAgo, formatBytes, formatCheckDay, formatDuration, formatEta, formatPercent, formatReleaseAge, notFoundYet } from "./format";
 
 describe("formatReleaseAge", () => {
   const now = Date.parse("2026-10-09T12:00:00Z");
@@ -94,5 +94,25 @@ describe("formatEta", () => {
     expect(formatEta(3600)).toBe("1h 0m");
     expect(formatEta(3600 * 23 + 59 * 60)).toBe("23h 59m");
     expect(formatEta(86400 * 2 + 3600 * 4)).toBe("2d 4h");
+  });
+});
+
+describe("formatPercent", () => {
+  it("rounds to integer when whole", () => {
+    expect(formatPercent(0)).toBe("0%");
+    expect(formatPercent(0.5)).toBe("50%");
+    expect(formatPercent(1)).toBe("100%");
+    expect(formatPercent(0.9999)).toBe("100%");
+    expect(formatPercent(0.42)).toBe("42%"); // 0.42 * 100 lands on 42.000…1
+  });
+  it("shows one decimal otherwise", () => {
+    expect(formatPercent(0.123)).toBe("12.3%");
+    expect(formatPercent(0.001)).toBe("0.1%");
+    expect(formatPercent(0.004)).toBe("0.4%");
+    expect(formatPercent(0.615)).toBe("61.5%");
+  });
+  it("clamps", () => {
+    expect(formatPercent(-0.1)).toBe("0%");
+    expect(formatPercent(1.2)).toBe("100%");
   });
 });
