@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -40,6 +41,7 @@ import (
 // titlekey_test.go; separate copies of this rule drifting apart is how 'Love & Death'
 // stopped showing its download when the torrent was named 'Love.and.Death'.
 func TitleKey(s string) string {
+	s = stripEpisodeSuffix(s)
 	lower := FoldTitle(stripAltTitles(s))
 	// Split on everything that isn't a letter or digit, so "and" is only recognised as a
 	// whole word. Doing this after the "&" expansion means the symbol and the spelled-out
@@ -114,6 +116,7 @@ func stripAltTitles(s string) string {
 // of "bleachers" once the gaps are gone, but ["bleach"] is not a prefix of
 // ["bleachers"]. Anything doing prefix work has to use this.
 func TitleWords(s string) []string {
+	s = stripEpisodeSuffix(s)
 	lower := FoldTitle(s)
 	words := strings.FieldsFunc(lower, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
@@ -199,6 +202,14 @@ func SplitCountry(title string) (base, cc string) {
 // no release carries, so it is no use as a release title; its romaji form ("Sousou no
 // Frieren") is. Digits and punctuation don't count either way; a title with no letters
 // at all is not Latin.
+// stripEpisodeSuffix removes trailing " Episode [Roman numeral]" from a title for normalization.
+// The title itself is kept intact; only the comparison key is affected.
+var episodeSuffixRe = regexp.MustCompile(`(?i)\s+episode\s+[ivxlcdm]+\s*$`)
+
+func stripEpisodeSuffix(s string) string {
+	return episodeSuffixRe.ReplaceAllString(s, "")
+}
+
 func IsLatin(title string) bool {
 	letters := 0
 	for _, r := range title {
