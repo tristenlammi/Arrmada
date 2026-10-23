@@ -581,6 +581,47 @@ func (s *Service) existingClients(ctx context.Context) ([]Client, error) {
 	return s.repo.List(ctx)
 }
 
+// SavePaths returns a unique list of local save paths for all enabled download clients that
+// report a default save path (torrent clients). The paths are mapped from the client's view
+// to Arrmada's view via PathMaps.ToLocal, so the disk guard can measure the correct
+// volume per-client. Usenet clients are ignored (they have no local save folder).
+func (s *Service) SavePaths(ctx context.Context) ([]string, error) {
+	clients, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range clients {
+		impl, ok := s.registry.For(c.Kind)
+		if !ok {
+			continue
+		}
+		spr, ok := impl.(savePathReader)
+		if !ok {
+			continue
+		}
+		save, err := spr.DefaultSavePath(ctx, c)
+		if err != nil {
+			// a client that's down can't give its save path; skip it for now
+			continue
+		}
+		local := c.PathMaps.ToLocal(save)
+		if local == "" {
+			continue
+		}
+		local = strings.TrimSpace(local)
+		if local == "" {
+			continue
+		}
+		if !seen[local] {
+			seen[local] = true
+			out = append(out, local)
+		}
+	}
+	return out, nil
+}
+
 // Test checks connectivity + auth for a stored client.
 func (s *Service) Test(ctx context.Context, id int64) error {
 	c, err := s.repo.Get(ctx, id)

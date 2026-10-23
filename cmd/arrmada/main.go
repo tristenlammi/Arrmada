@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -857,10 +858,29 @@ func main() {
 	diskGuard := download.NewDiskGuard(downloads, settingsSvc, modLog(log, "download"), cfg.DownloadsDir)
 	diskGuard.SetDirFunc(libroots.Func(roots.Downloads)) // watches the folder in use now
 	// ...and every library folder's own downloads folder, each volume on its own.
+	// Also watch each download client's save path so the guard is per-client, not just
+	// per-library-folder (GitHub #70: multiple download clients on different volumes).
 	diskGuard.SetDirsFunc(func() []string {
 		var out []string
+		seen := map[string]bool{}
+		add := func(p string) {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				return
+			}
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
 		for _, d := range roots.DownloadFolders(context.Background()) {
-			out = append(out, d.Path)
+			add(d.Path)
+		}
+		// add each enabled client's save path
+		if paths, err := downloads.SavePaths(context.Background()); err == nil {
+			for _, p := range paths {
+				add(p)
+			}
 		}
 		return out
 	})
