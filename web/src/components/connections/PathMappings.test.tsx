@@ -70,6 +70,29 @@ describe("path mappings", () => {
     expect(upd).toHaveBeenCalledWith(7, expect.objectContaining({ path_maps: [{ remote: "/downloads", local: "/media/downloads" }] }));
   });
 
+  it("shows qBittorrent's incomplete folder as information, never as a failure", async () => {
+    // Imports wait for a torrent to leave the incomplete folder, so Arrmada needn't see it:
+    // the line is advisory (ⓘ, no "can't see it"), the report is OK, and the summary names
+    // the qBittorrent setting that turns it off.
+    vi.spyOn(downloadClientApi, "testDownloadClient").mockResolvedValue({
+      ok: true,
+      paths: {
+        ok: true,
+        checks: [
+          { what: "save_folder", remote: "/completed", local: "/completed", visible: true },
+          { what: "incomplete_folder", remote: "/incomplete", local: "/incomplete", visible: false, advisory: true },
+        ],
+        summary: "Seedbox saves to /completed, which Arrmada can see ✓. Seedbox downloads into /incomplete first and moves each torrent to its save folder when it finishes. Arrmada waits for that move before importing, so it needn't see /incomplete — but turning off \"Default Download Path (incomplete torrents)\" in Seedbox's Downloads settings means there's no move to wait for, and finished downloads aren't copied a second time.",
+      },
+    });
+    show(seedbox());
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Check paths" })); });
+    const line = screen.getByText(/Incomplete folder:/).parentElement?.textContent ?? "";
+    expect(line).toMatch(/ⓘ.*\/incomplete.*doesn't need to see it/);
+    expect(line).not.toMatch(/✕|can't see it/);
+    expect(screen.getByText(/Default Download Path \(incomplete torrents\)/)).toBeTruthy();
+  });
+
   it("the bundled client gets the check but no mapping editor", async () => {
     vi.spyOn(downloadClientApi, "testDownloadClient").mockResolvedValue({ ok: false, error: "connection refused" });
     show(seedbox({ bundled: true }));

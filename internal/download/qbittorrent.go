@@ -531,6 +531,28 @@ func (q *QBittorrent) DefaultSavePath(ctx context.Context, dc Client) (string, e
 	return p.SavePath, nil
 }
 
+// IncompletePath reports qBittorrent's "Default Download Path (incomplete torrents)" — the
+// folder a torrent downloads into before it's moved to its save folder — and whether it's
+// switched on. The bundled qBittorrent has it off (SetSavePath); an external one may not.
+func (q *QBittorrent) IncompletePath(ctx context.Context, dc Client) (string, bool, error) {
+	resp, err := q.getAuthed(ctx, dc, "/api/v2/app/preferences")
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("qbittorrent: preferences HTTP %d", resp.StatusCode)
+	}
+	var p struct {
+		TempPath        string `json:"temp_path"`
+		TempPathEnabled bool   `json:"temp_path_enabled"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&p); err != nil {
+		return "", false, fmt.Errorf("qbittorrent: preferences: %w", err)
+	}
+	return p.TempPath, p.TempPathEnabled && strings.TrimSpace(p.TempPath) != "", nil
+}
+
 // List returns the current torrents. It intentionally does NOT filter by the
 // client's category: Arrmada manages several internal categories on the bundled
 // client (movies use "arrmada", series use "arrmada-tv"), and callers that need a

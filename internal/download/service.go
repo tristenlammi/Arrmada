@@ -1119,6 +1119,11 @@ func (s *Service) ClientStates(ctx context.Context) ([]ClientState, error) {
 
 // CompletedInCategory returns finished (100%) downloads in the given category
 // (empty = any) — the candidates for import.
+//
+// Only downloads ReadyToImport are listed: one its client is still moving out of an
+// incomplete folder is left out until the move is done, and comes back on the next sweep
+// with its final content path. Every caller is an import sweep (or records an import), so
+// none of them may read the files mid-move.
 func (s *Service) CompletedInCategory(ctx context.Context, category string) ([]Item, error) {
 	all, err := s.Queue(ctx)
 	if err != nil {
@@ -1126,7 +1131,7 @@ func (s *Service) CompletedInCategory(ctx context.Context, category string) ([]I
 	}
 	var out []Item
 	for _, it := range all {
-		if it.Complete() && (category == "" || it.Category == category) {
+		if it.ReadyToImport() && (category == "" || it.Category == category) {
 			out = append(out, it)
 		}
 	}

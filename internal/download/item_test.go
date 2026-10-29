@@ -84,3 +84,35 @@ func TestItemPartiallySelected(t *testing.T) {
 		t.Error("a client that reports no total must not read as partial")
 	}
 }
+
+// A torrent qBittorrent is moving out of its incomplete folder is finished — every byte is
+// down — but its files aren't where they'll stay: its content path still names the
+// incomplete folder, which Arrmada usually can't see. Importers must wait for the move;
+// everything else (stall checks, in-flight guards, the queue pages) still reads it as
+// complete.
+func TestItemReadyToImport(t *testing.T) {
+	cases := []struct {
+		name         string
+		it           Item
+		complete     bool
+		readyForImpt bool
+	}{
+		{"seeding", Item{Progress: 1, RawState: "stalledUP", State: "seeding"}, true, true},
+		{"still downloading", Item{Progress: 0.5, RemainingBytes: 1 << 20, RawState: "downloading"}, false, false},
+		// The case behind a season pack blocklisted as "no video": the move from
+		// /incomplete to the save folder takes minutes when the two are separate mounts.
+		{"moving to its save folder", Item{Progress: 1, RawState: "moving", State: normalizeState("moving"), ContentPath: "/incomplete/Show.S01"}, true, false},
+		// SABnzbd's own "Moving" is post-processing (Phase reads it as unpacking), and a
+		// usenet job isn't Complete until its client says so; a finished job is ready.
+		{"usenet job finished", Item{Transport: TransportUsenet, State: StateCompleted, Progress: 1, RawState: "Completed"}, true, true},
+		{"usenet job moving", Item{Transport: TransportUsenet, State: PhaseUnpacking, Progress: 1, RawState: "Moving"}, false, false},
+	}
+	for _, tc := range cases {
+		if got := tc.it.Complete(); got != tc.complete {
+			t.Errorf("%s: Complete() = %v, want %v", tc.name, got, tc.complete)
+		}
+		if got := tc.it.ReadyToImport(); got != tc.readyForImpt {
+			t.Errorf("%s: ReadyToImport() = %v, want %v", tc.name, got, tc.readyForImpt)
+		}
+	}
+}

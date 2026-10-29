@@ -827,6 +827,14 @@ func (c *Coordinator) importContentInto(ctx context.Context, r Review, dest int6
 			case failed > 0:
 				return fmt.Errorf("%w: %d file(s) matched an episode of %q but could not be moved into the library — check the folder is writable", ErrNothingToImport, failed, s.Title)
 			}
+			// A folder that can't be read reports nothing found, the same as one with no
+			// video in it. Say which: "no video files" for a folder Arrmada simply can't see
+			// (not mounted, a missing path mapping, or still in qBittorrent's incomplete
+			// folder) sends the user looking at the release instead of the mount.
+			if _, scanErr := library.FindVideos(r.ContentPath); scanErr != nil {
+				return fmt.Errorf("%w: Arrmada can't read the download folder %s (%v) — check it's mounted in the Arrmada container, or add a path mapping",
+					ErrNothingToImport, r.ContentPath, scanErr)
+			}
 			return fmt.Errorf("%w: no video files were found in that download to import into %q", ErrNothingToImport, s.Title)
 		}
 		// Files it couldn't place stay only in the download: seed cleanup must keep it.

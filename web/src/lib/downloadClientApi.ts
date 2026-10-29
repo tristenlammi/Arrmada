@@ -5,7 +5,7 @@ import { req, type DownloadClient, type DownloadClientList, type NewDownloadClie
  * or its completed folder or a category's own folder (SABnzbd).
  */
 export interface PathCheck {
-  what: "save_folder" | "newest_download" | "complete_folder" | "category_folder";
+  what: "save_folder" | "newest_download" | "complete_folder" | "category_folder" | "incomplete_folder";
   remote: string;
   local: string;
   visible: boolean;
@@ -13,6 +13,11 @@ export interface PathCheck {
   gone?: boolean;
   /** The category a "category_folder" check is for. */
   category?: string;
+  /**
+   * A path Arrmada doesn't need to see (qBittorrent's incomplete folder: imports wait for
+   * the move out of it). Shown for information; it never fails the check.
+   */
+  advisory?: boolean;
 }
 
 /** A client Test's path check: which paths Arrmada can see, and a mapping that would fix the rest. */

@@ -13,7 +13,7 @@ import { Button } from "../../ui";
 const field = "w-full min-w-0 rounded-lg px-3 py-2 font-mono text-sm";
 const fieldStyle = { background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" } as const;
 
-const WHAT: Record<string, string> = { save_folder: "Save folder", newest_download: "Newest finished download", complete_folder: "Completed folder", category_folder: "Category folder" };
+const WHAT: Record<string, string> = { save_folder: "Save folder", newest_download: "Newest finished download", complete_folder: "Completed folder", category_folder: "Category folder", incomplete_folder: "Incomplete folder" };
 
 /** A path check's name: "Completed folder", or "Category folder arrmada-tv". */
 export function pathCheckName(c: PathCheck): string {
@@ -22,9 +22,22 @@ export function pathCheckName(c: PathCheck): string {
 }
 
 // PathCheckLine is one path a client reported and whether Arrmada sees it: ✓ where it is,
-// – for a download that's gone, ✕ for a folder Arrmada can't see. The usenet card's
+// – for a download that's gone, ✕ for a folder Arrmada can't see. An advisory path
+// (qBittorrent's incomplete folder) is only information — imports wait for the move out
+// of it — so it never reads as a failure: ⓘ in the caution colour, whether or not
+// Arrmada can see it, and the report's summary says what to change. The usenet card's
 // completed folder uses it too (seesAt: "Arrmada sees it at …"), so both say it alike.
 export function PathCheckLine({ c, seesAt }: { c: PathCheck; seesAt?: boolean }) {
+  if (c.advisory) {
+    return (
+      <div className="break-all text-sm" style={{ color: "var(--avoid-text)" }}>
+        ⓘ <span className="text-ink-dim">{pathCheckName(c)}:</span>{" "}
+        <span className="font-mono">{c.remote}</span>
+        {c.local !== c.remote && <> <span className="text-ink-faint">→</span> <span className="font-mono">{c.local}</span></>}
+        <span className="text-ink-dim"> (Arrmada doesn't need to see it — imports wait until a torrent leaves it)</span>
+      </div>
+    );
+  }
   const tone = c.visible ? "var(--good-text)" : c.gone ? "var(--avoid-text)" : "var(--reject-text)";
   const mark = c.visible ? "✓" : c.gone ? "–" : "✕";
   if (seesAt) {

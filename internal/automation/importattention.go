@@ -59,6 +59,30 @@ func (c *Coordinator) noteSeriesImportFail(hash, name string, failed int) {
 		" — the log names the folder and the error"
 }
 
+// noteSeriesImportUnreadable counts another sweep in which a download's folder couldn't be
+// read at all (contentPath, err): not a release with no video, but one Arrmada can't see.
+// It shares the failing map with noteSeriesImportFail, so it reaches Needs you the same
+// way; only the reason differs, and it names the folder, since the fix is almost always
+// on that side (a mount, a path mapping, or qBittorrent's incomplete folder).
+func (c *Coordinator) noteSeriesImportUnreadable(hash, name, contentPath string, err error) {
+	n := &c.importNotes
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.failing == nil {
+		n.failing = map[string]*seriesImportFail{}
+	}
+	h := strings.ToLower(hash)
+	f := n.failing[h]
+	if f == nil {
+		f = &seriesImportFail{since: c.clock()}
+		n.failing[h] = f
+	}
+	f.name = name
+	f.sweeps++
+	f.lastErr = "Arrmada can't read the download folder " + contentPath + " (" + err.Error() +
+		") — check it's mounted in the Arrmada container, or add a path mapping"
+}
+
 // clearSeriesImportFail forgets a download once a sweep has handled it.
 func (c *Coordinator) clearSeriesImportFail(hash string) {
 	n := &c.importNotes

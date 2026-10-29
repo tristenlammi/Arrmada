@@ -465,6 +465,26 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Fixed
 
+- **A season pack is no longer blocklisted and grabbed twice when qBittorrent uses an
+  incomplete folder.** With qBittorrent's **Default Download Path (incomplete torrents)**
+  on, a finished torrent is moved from that folder to its save folder, and until the move
+  is done its content path still names the incomplete folder, which Arrmada usually doesn't
+  mount. If the TV import ran during the move, it found no folder, took that for a release
+  with no video, blocklisted it and failed its grab. The next search then grabbed another
+  copy of the same season, which could go the same way. Now:
+  - Imports (films, TV, books and music) wait while qBittorrent is moving a torrent, and
+    pick it up from its final folder once the move is done.
+  - A TV download whose folder Arrmada can't read is retried every sweep, never
+    blocklisted. If it stays unreadable it shows in **Needs you** with the folder and the
+    error. Only a folder that was read and holds no video is blocklisted as junk, as before.
+  - Importing such a download from **Review** says Arrmada can't read the folder, instead of
+    "no video files were found".
+  - **Check paths** on a qBittorrent with an incomplete folder lists that folder for
+    information (it doesn't fail the check) and names the setting to turn off, so torrents
+    finish where Arrmada imports from.
+
+  A release already blocklisted this way stays blocklisted: remove it from the show's
+  blocklist and, if its torrent is still in qBittorrent, the next import picks it up.
 - **Convert and imports no longer remove a video Arrmada doesn't track.**
   - Converting `Heat (1995).mp4` writes `Heat (1995).mkv`. A file you kept under that name
     (a remux beside the film, say) used to be moved into the originals hold with the

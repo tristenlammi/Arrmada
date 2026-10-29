@@ -65,6 +65,10 @@ type PathCheck struct {
 	// Category names the category a "category_folder" check is for (a usenet client can
 	// give a category a folder of its own, outside its completed folder).
 	Category string `json:"category,omitempty"`
+	// Advisory marks a path Arrmada doesn't need to see — qBittorrent's incomplete folder
+	// ("incomplete_folder"): imports wait for the move out of it. Shown for information,
+	// it never makes the report not OK, and the page doesn't draw it as a failure.
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // PathReport is the path check's answer.
@@ -115,6 +119,14 @@ func (s *Service) TestPaths(ctx context.Context, id int64, env PathEnv) (PathRep
 		newest = newestFinished(items)
 	}
 	rep := checkPaths(c, save, newest, env)
+	// qBittorrent can download into an incomplete folder and move each torrent to its save
+	// folder when it finishes. Said in the report, with the setting to change; a client
+	// that can't say only costs the report that line.
+	if ipr, ok := impl.(incompletePathReader); ok {
+		if temp, on, err := ipr.IncompletePath(ctx, c); err == nil && on {
+			addIncompleteFolder(&rep, c, temp)
+		}
+	}
 	// SABnzbd saves into its completed folder (save above), except for categories given a
 	// folder of their own: each of Arrmada's must be visible too.
 	if cfr, ok := impl.(categoryFolderReader); ok {
@@ -125,6 +137,35 @@ func (s *Service) TestPaths(ctx context.Context, id int64, env PathEnv) (PathRep
 		addCategoryFolders(&rep, c, folders)
 	}
 	return rep, nil
+}
+
+// incompletePathReader is a client that can download into a folder of its own before
+// moving each finished download to its save folder (qBittorrent's "Default Download Path
+// (incomplete torrents)"): the folder as the client names it, and whether it's on.
+type incompletePathReader interface {
+	IncompletePath(ctx context.Context, dc Client) (path string, on bool, err error)
+}
+
+// addIncompleteFolder adds the client's incomplete folder to the report, and says what it
+// means for imports.
+//
+// It's advisory, not a failure: Arrmada never reads a download until its client has moved
+// it out (download.Item.ReadyToImport), so the folder needn't be mounted. But it's worth
+// saying. Until that wait existed, a season pack imported mid-move was read from a folder
+// Arrmada couldn't see, blocklisted as "no video", and grabbed again. The move is also a
+// full copy of every finished download whenever the two folders are separate mounts, and
+// it's the setup the bundled qBittorrent avoids (SetSavePath turns it off). So the report
+// names the setting that turns it off.
+func addIncompleteFolder(rep *PathReport, c Client, temp string) {
+	pc := folderCheck(c, "incomplete_folder", temp)
+	pc.Advisory = true
+	rep.Checks = append(rep.Checks, pc)
+	rep.Summary = strings.TrimSuffix(rep.Summary, ".") + fmt.Sprintf(
+		". %s downloads into %s first and moves each torrent to its save folder when it finishes."+
+			" Arrmada waits for that move before importing, so it needn't see %s — but turning off"+
+			" \"Default Download Path (incomplete torrents)\" in %s's Downloads settings means there's no move"+
+			" to wait for, and finished downloads aren't copied a second time.",
+		c.Name, pc.Remote, pc.Remote, c.Name)
 }
 
 // categoryFolderReader is a client whose categories can have folders of their own
@@ -160,12 +201,14 @@ func addCategoryFolders(rep *PathReport, c Client, folders map[string]string) {
 }
 
 // newestFinished is the most recently added complete torrent with a content path, leaving
-// out ones the client itself says have lost their files.
+// out ones the client itself says have lost their files, and ones it's still moving out of
+// its incomplete folder: their content path names that folder until the move is done, and
+// reporting it as a download Arrmada "can't see" would be a false failure.
 func newestFinished(items []Item) *Item {
 	var best *Item
 	for i := range items {
 		it := &items[i]
-		if !it.Complete() || it.ContentPath == "" || it.RawState == "missingFiles" {
+		if !it.ReadyToImport() || it.ContentPath == "" || it.RawState == "missingFiles" {
 			continue
 		}
 		if best == nil || it.AddedOn > best.AddedOn {

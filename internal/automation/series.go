@@ -1307,6 +1307,34 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			c.noteSeriesImportFail(it.Hash, it.Name, importFailed)
 			continue
 		}
+		if matched == 0 && unresolved == 0 {
+			// Nothing placed, matched or unresolved: either the release holds no video, or
+			// its folder couldn't be read at all. importSeriesInto reports both the same way,
+			// so the folder is read once more here to tell them apart — the branch below
+			// blocklists the release as junk, and that must only ever happen to a folder that
+			// was read and found empty.
+			//
+			// A folder that can't be read isn't a release with no video in it; it's one
+			// Arrmada can't see right now. The usual cause is a qBittorrent with an
+			// incomplete folder still moving the torrent out of it (its content path names a
+			// folder Arrmada doesn't mount), or a share that dropped for a moment. Both clear
+			// up on their own, so the download is left for the next sweep, like a file that
+			// couldn't be placed. It used to fall through to the junk branch: the release was
+			// blocklisted, its grab failed, and the next search grabbed another copy of the
+			// same season — which could then meet the same fate. Movies already worked this
+			// way (HandleMovieImportFailure treats "can't tell" as transient), as does
+			// removeIfNoVideo.
+			//
+			// If the folder never becomes readable (a missing path mapping, a mount that
+			// isn't there), it shows in Needs you with the path and the error, so it isn't
+			// retried in silence forever.
+			if _, scanErr := library.FindVideos(it.ContentPath); scanErr != nil {
+				c.log.Warn("series import: can't read the download folder — will retry next sweep, not blocklisting",
+					"series", s.Title, "release", it.Name, "content_path", it.ContentPath, "err", scanErr)
+				c.noteSeriesImportUnreadable(it.Hash, it.Name, it.ContentPath, scanErr)
+				continue
+			}
+		}
 		c.clearSeriesImportFail(it.Hash)
 		if matched > 0 {
 			// Every file mapped to a known episode (some newly placed, some already
@@ -1363,7 +1391,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				"series", s.Title, "release", it.Name, "video_files", unresolved)
 		} else {
 			// No video at all: junk, a fake, or an archive set that won't unpack. This one
-			// can never import, so blocklist it and stop re-scanning.
+			// can never import, so blocklist it and stop re-scanning. The folder was read
+			// before the clear above (one that can't be read is retried, never blocklisted),
+			// so "no video" here is what it holds.
 			reason := "downloaded but contained no video"
 			if hasExecutable(it.ContentPath) {
 				reason = "download contained executables and no video (possible fake/malware)"
