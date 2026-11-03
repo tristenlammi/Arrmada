@@ -73,6 +73,23 @@ test.describe("audiobook player at 375px", () => {
     expect(api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/close")[0].body).toMatchObject({ current_time: expect.any(Number), time_listened: expect.any(Number) });
   });
 
+  test("Continue listening: remove a book, then Undo", async ({ page, api }) => {
+    await mockAudio(page, api);
+    await page.clock.install({ time: NOW });
+    await page.goto("/audiobooks");
+    const row = page.getByRole("region", { name: "Continue listening" });
+    await expect(row.getByRole("button", { name: /^Dungeon Crawler Carl/ })).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath("continue-listening.png") });
+    await row.getByRole("button", { name: "Remove Dungeon Crawler Carl from Continue listening" }).tap();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/items/b12/hide").length).toBe(1);
+    await expect(row.getByRole("button", { name: /^Dungeon Crawler Carl/ })).toHaveCount(0);
+    await expect(row.getByRole("status")).toContainText("Your place is kept");
+    await page.screenshot({ path: test.info().outputPath("continue-listening-removed.png") });
+    await row.getByRole("button", { name: "Undo" }).tap();
+    await expect.poll(() => api.callsTo("DELETE", "/api/v1/me/audio/items/b12/hide").length).toBe(1);
+    await expect(row.getByRole("button", { name: /^Dungeon Crawler Carl/ })).toBeVisible();
+  });
+
   test("Listen tab: shelves, the book sheet, play from a chapter (APP-10)", async ({ page, api }) => {
     await mockAudio(page, api);
     await page.clock.install({ time: NOW });
@@ -84,7 +101,7 @@ test.describe("audiobook player at 375px", () => {
     const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, vp: document.documentElement.clientWidth }));
     expect(w.doc).toBeLessThanOrEqual(w.vp);
 
-    await page.getByRole("region", { name: "Continue listening" }).getByRole("button", { name: /Dungeon Crawler Carl/ }).tap();
+    await page.getByRole("region", { name: "Continue listening" }).getByRole("button", { name: /^Dungeon Crawler Carl/ }).tap();
     await expect(page).toHaveURL(/[?&]book=b12/);
     const sheet = page.getByRole("dialog", { name: "Dungeon Crawler Carl" });
     await expect(sheet.getByRole("button", { name: /Resume at 0:01/ })).toBeVisible();

@@ -3298,6 +3298,9 @@ export const api = {
     req<AudioBookmark>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks`, { method: "POST", body: JSON.stringify({ time, title }) }),
   deleteAudioBookmark: (key: string, time: number) =>
     req<void>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/bookmarks/${Math.floor(time)}`, { method: "DELETE" }),
+  // Off (or back on) the signed-in person's Continue listening; their place is kept.
+  hideAudio: (key: string, hidden: boolean) =>
+    req<void>(`/api/v1/me/audio/items/${encodeURIComponent(key)}/hide`, { method: hidden ? "POST" : "DELETE" }),
   undiscardAudio: (item: string) => req<{ position: number }>("/api/v1/me/audio/undiscard", { method: "POST", body: JSON.stringify({ item }) }),
   dismissAudioOffer: (item: string, historyId: number) => req<void>("/api/v1/me/audio/dismiss", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
   audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,

@@ -43,6 +43,8 @@ import (
 //	GET    /api/v1/me/audio/items/{key}/bookmarks         → {bookmarks}
 //	POST   /api/v1/me/audio/items/{key}/bookmarks         {time, title} → bookmark
 //	DELETE /api/v1/me/audio/items/{key}/bookmarks/{time}  → 204
+//	POST   /api/v1/me/audio/items/{key}/hide              → 204, off Continue listening
+//	DELETE /api/v1/me/audio/items/{key}/hide              → 204, back on it
 //
 // The contract the player keeps: start a session with play and play from start_time
 // (tracks[].url, each starting at start_offset in the book). While playing, sync every
@@ -292,6 +294,30 @@ func (a *api) handleDeleteAudioBookmark(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := a.deps.AudioServer.Listen().DeleteBookmark(r.Context(), u.ID, key, t); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not remove the bookmark")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleHideAudio — POST /api/v1/me/audio/items/{key}/hide: takes the book off the
+// person's Continue listening without touching their place, as an app's "Remove from
+// Continue Listening" does. Playing on from a new place puts it back.
+func (a *api) handleHideAudio(w http.ResponseWriter, r *http.Request) { a.hideAudio(w, r, true) }
+
+// handleUnhideAudio — DELETE /api/v1/me/audio/items/{key}/hide: puts it back (Undo).
+func (a *api) handleUnhideAudio(w http.ResponseWriter, r *http.Request) { a.hideAudio(w, r, false) }
+
+func (a *api) hideAudio(w http.ResponseWriter, r *http.Request, hidden bool) {
+	u, ok := a.audioListener(w, r)
+	if !ok {
+		return
+	}
+	key, ok := a.audioBookItem(w, r)
+	if !ok {
+		return
+	}
+	if err := a.deps.AudioServer.Listen().HideProgress(r.Context(), u.ID, key, hidden); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not change Continue listening")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

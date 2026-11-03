@@ -14,6 +14,7 @@ DELETE /api/v1/jellyfin admin -
 DELETE /api/v1/me/api-keys/{id} user ext
 DELETE /api/v1/me/audio/devices/{family} user ext
 DELETE /api/v1/me/audio/items/{key}/bookmarks/{time} user ext
+DELETE /api/v1/me/audio/items/{key}/hide user ext
 DELETE /api/v1/me/audio/password user ext
 DELETE /api/v1/me/calendar-feed user -
 DELETE /api/v1/me/jellyfin/link user ext
@@ -418,6 +419,7 @@ POST /api/v1/me/api-keys user ext
 POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/dismiss user ext
 POST /api/v1/me/audio/items/{key}/bookmarks user ext
+POST /api/v1/me/audio/items/{key}/hide user ext
 POST /api/v1/me/audio/items/{key}/play user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/audio/sessions/{sid}/close user ext

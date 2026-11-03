@@ -374,6 +374,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/me/audio/items/{key}/bookmarks", a.signedIn(a.handleAudioBookmarks).ext())
 	mux.HandleFunc("POST /api/v1/me/audio/items/{key}/bookmarks", a.signedIn(a.handleAddAudioBookmark).ext())
 	mux.HandleFunc("DELETE /api/v1/me/audio/items/{key}/bookmarks/{time}", a.signedIn(a.handleDeleteAudioBookmark).ext())
+	mux.HandleFunc("POST /api/v1/me/audio/items/{key}/hide", a.signedIn(a.handleHideAudio).ext())
+	mux.HandleFunc("DELETE /api/v1/me/audio/items/{key}/hide", a.signedIn(a.handleUnhideAudio).ext())
 	mux.HandleFunc("GET /api/v1/books/{id}/audiobook", a.signedIn(a.handleBookAudiobook).ext())
 
 	// Auth

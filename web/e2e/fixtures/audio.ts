@@ -107,7 +107,7 @@ export async function mockAudio(page: Page, api: MockedApi, opts: Partial<AudioM
       return route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64") });
     }
     // Anything else under /me/audio/ that this mock doesn't know goes to the default table.
-    const known = /\/(shelves|library|accept|items\/[^/]+(\/play|\/bookmarks(\/[\d.]+)?)?|sessions\/[^/]+\/(sync|close))$/.test(path);
+    const known = /\/(shelves|library|accept|items\/[^/]+(\/play|\/hide|\/bookmarks(\/[\d.]+)?)?|sessions\/[^/]+\/(sync|close))$/.test(path);
     if (!known) return route.fallback();
     api.calls.push({ method, path: path + url.search, body });
     if (m.status !== 200) return json(m.status, { message: m.status === 403 ? "Audiobooks are switched off" : "nope" });
@@ -125,6 +125,7 @@ export async function mockAudio(page: Page, api: MockedApi, opts: Partial<AudioM
       const start: AudioPlayStart = { session_id: `s-${play[1]}`, start_time: m.restart ? 0 : m.startAt, duration: DURATION, tracks: detail().tracks.map((t) => ({ ...t, url: t.url.replace("b12", play[1]) })), chapters, restart: m.restart };
       return json(200, start);
     }
+    if (path.endsWith("/hide")) return route.fulfill({ status: 204 });
     const bm = path.match(/\/items\/([^/]+)\/bookmarks(?:\/([\d.]+))?$/);
     if (bm) {
       if (method === "DELETE") return route.fulfill({ status: 204 });

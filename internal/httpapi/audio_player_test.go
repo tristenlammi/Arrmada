@@ -477,6 +477,56 @@ func TestWebPlayerCannotTouchOthersSessions(t *testing.T) {
 	}
 }
 
+// Remove from Continue listening: off the shelf for that person only, the place kept,
+// back with Undo or by listening on.
+func TestWebPlayerHideFromContinueListening(t *testing.T) {
+	h := newAudioHarness(t)
+	kid, kidC := h.rs.user(t, "kid", auth.RoleRequester)
+	mom, momC := h.rs.user(t, "mom", auth.RoleRequester)
+	ctx := context.Background()
+	for _, u := range []*auth.User{kid, mom} {
+		if _, err := h.srv.Listen().SetProgress(ctx, u.ID, h.key, 1200, 0, nil, "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	continuing := func(c *http.Cookie) bool {
+		for _, s := range h.ok("GET", "/api/v1/me/audio/shelves", nil, c)["shelves"].([]any) {
+			if s.(map[string]any)["id"] == "continue-listening" {
+				return true
+			}
+		}
+		return false
+	}
+	hide := "/api/v1/me/audio/items/" + h.key + "/hide"
+	if rec := h.req("POST", hide, nil, kidC, true); rec.Code != http.StatusNoContent {
+		t.Fatalf("hide from outside the network: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if continuing(kidC) {
+		t.Fatal("the hidden book is still on Continue listening")
+	}
+	if !continuing(momC) {
+		t.Fatal("hiding it took it off another account's shelf too")
+	}
+	if p, _, _ := h.srv.Listen().Progress(ctx, kid.ID, h.key); p.Position != 1200 {
+		t.Fatalf("place after hiding = %v, want 1200 kept", p.Position)
+	}
+	if rec := h.req("DELETE", hide, nil, kidC, false); rec.Code != http.StatusNoContent || !continuing(kidC) {
+		t.Fatalf("undo: HTTP %d, back on the shelf %v", rec.Code, continuing(kidC))
+	}
+	if rec := h.req("POST", hide, nil, kidC, false); rec.Code != http.StatusNoContent {
+		t.Fatalf("hide again: HTTP %d", rec.Code)
+	}
+	if _, err := h.srv.Listen().SetProgress(ctx, kid.ID, h.key, 1500, 0, nil, "web"); err != nil {
+		t.Fatal(err)
+	}
+	if !continuing(kidC) {
+		t.Fatal("listening on didn't put it back")
+	}
+	if rec := h.req("POST", "/api/v1/me/audio/items/b999/hide", nil, kidC, false); rec.Code != http.StatusNotFound {
+		t.Fatalf("hide an unknown item: HTTP %d", rec.Code)
+	}
+}
+
 // Bookmarks: add (a second one at the same second renames it), list, remove.
 func TestWebPlayerBookmarks(t *testing.T) {
 	h := newAudioHarness(t)
