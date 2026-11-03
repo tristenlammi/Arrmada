@@ -145,6 +145,8 @@ func (c *Coordinator) failUsenet(ctx context.Context, g grab, item download.Item
 	switch {
 	case repl != "":
 		what = "replaced by " + repl
+	case t.unsearched != "":
+		what = t.unsearched + " — not replaced"
 	case outage:
 		what = "indexers unavailable, searching again later"
 	}

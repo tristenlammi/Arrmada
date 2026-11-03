@@ -11,6 +11,14 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+### Fixed
+
+- **A show with searching off no longer grabs replacements for stalled downloads.** Turning
+  searching off stopped new searches, but a download already in flight that stalled, failed
+  in SABnzbd or disappeared from the client was still replaced with a fresh search and grab
+  every stall window. Now nothing is searched for: a stalled torrent is left in the client
+  to wait, and the show's history says "searching is off for this show — not replaced".
+
 ## [0.4.0] - 2026-10-31
 
 ### Highlights

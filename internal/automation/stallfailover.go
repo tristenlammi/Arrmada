@@ -196,6 +196,10 @@ type stallTarget struct {
 	// library has is closed as imported, never failed over. Kinds whose detectStalled*
 	// already tests this before judging leave it nil.
 	landed func(ctx context.Context) bool
+	// unsearched, when set, is why replace grabs nothing on purpose ("searching is off
+	// for this show"): the history says it instead of "no other release found", so a
+	// paused show's stalled download doesn't read as a search that came up empty.
+	unsearched string
 }
 
 // errSearchUnavailable marks a replacement search that couldn't run for a reason the
@@ -312,14 +316,18 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		again := len(before) > 0
 		c.log.Info("automation: download disappeared from the client, failing over",
 			"kind", t.kind, "title", t.name, "release", g.Title, "again", again)
-		what := " disappeared from the download client — searching for another"
+		next := "searching for another"
+		if t.unsearched != "" {
+			next = t.unsearched + " — not replaced"
+		}
+		what := " disappeared from the download client — " + next
 		if again {
 			if err := t.block(ctx, vanishedAgainBlockReason); err != nil {
 				// Without the blocklist row the next sweep could grab it straight back.
 				c.log.Warn("automation: stall blocklist failed — leaving the grab for the next check", "release", g.Title, "err", err)
 				return "", false, false
 			}
-			what = " disappeared from the download client again — blocklisted, searching for another"
+			what = " disappeared from the download client again — blocklisted, " + next
 		}
 		c.closeVanished(ctx, g)
 		t.event(ctx, g.Title+what)
@@ -350,7 +358,10 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		c.holdStallClock(ctx, g.ID, item.Progress)
 		c.markStillWaiting(ctx, g.ID)
 		what := "no other release found"
-		if outage {
+		switch {
+		case t.unsearched != "":
+			what = t.unsearched + " — not replaced"
+		case outage:
 			what = "indexers unavailable"
 		}
 		c.log.Info("automation: stalled download kept — nothing to replace it with",
@@ -483,8 +494,12 @@ func (c *Coordinator) seriesStallTarget(ctx context.Context, g grab) (stallTarge
 	if err != nil {
 		return stallTarget{}, false
 	}
+	unsearched := ""
+	if !s.Monitored {
+		unsearched = "searching is off for this show"
+	}
 	return stallTarget{
-		kind: "series", id: s.ID, name: s.Title,
+		kind: "series", id: s.ID, name: s.Title, unsearched: unsearched,
 		block: func(ctx context.Context, reason string) error {
 			c.addBlockSeries(ctx, s.ID, g.Title, g.Indexer, reason)
 			return nil
@@ -502,6 +517,13 @@ func (c *Coordinator) seriesStallTarget(ctx context.Context, g grab) (stallTarge
 // still wanted. A replacement for one stalled S03 pack must not also grab S04 episodes:
 // those have their own grabs (or sweep) to come from.
 func (c *Coordinator) replaceSeriesGrab(ctx context.Context, s series.Series, g grab, exclude map[string]bool) (string, error) {
+	if !s.Monitored {
+		// Searching is off for the show ("Turn searching off"): the sweep skips it, and so
+		// does the fail-over. Nothing is searched or grabbed; the stalled download is left
+		// waiting, as when nothing it covers is still wanted. wantedEpisodes can't say
+		// this — it reads only the season and episode flags, for previews of paused shows.
+		return "", nil
+	}
 	wanted, _ := wantedEpisodes(s)
 	scope := c.coveredByFor(ctx, s, parser.Parse(g.Title), setOf(wanted))
 	if len(scope) == 0 {
