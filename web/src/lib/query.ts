@@ -155,6 +155,9 @@ export function useQuery<T>(key: string, fetcher: () => Promise<T>, { enabled = 
   useEffect(() => {
     if (!enabled) return;
     const hit = cache.get(key);
+    // Mounted disabled, the state never read the cache: show what's there now, or a
+    // fresh answer would never be fetched nor shown.
+    if (hit) setState((s) => (s.key === key && s.data === undefined ? { ...s, data: hit.data as T } : s));
     if (!hit || Date.now() - hit.at >= staleMs) run(false);
     const onEvent = (e: QueryEvent) => {
       if (e.kind === "stale") { run(false); return; }

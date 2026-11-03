@@ -163,4 +163,18 @@ describe("useQuery", () => {
     await flush();
     expect(result.current.data).toBe(1);
   });
+
+  // The Series page's subtitle chips: mounted disabled, enabled once the cards are seen.
+  // Coming back within staleMs found the answer cached, didn't ask again, and so never
+  // showed it — the chips were missing until the cache aged out.
+  it("shows a fresh cached answer once enabled, without asking again", async () => {
+    await fetchQuery("late", async () => "cached");
+    const fetcher = vi.fn(async () => "new");
+    const { result, rerender } = renderHook(({ on }: { on: boolean }) => useQuery("late", fetcher, { enabled: on, staleMs: 60_000 }), { initialProps: { on: false } });
+    expect(result.current.data).toBeUndefined();
+    rerender({ on: true });
+    await flush();
+    expect(result.current.data).toBe("cached");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });
