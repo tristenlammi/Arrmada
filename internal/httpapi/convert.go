@@ -217,7 +217,14 @@ func (a *api) handleConvertCompareFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`"`)
+	// Sanitize the client-supplied name for the Content-Disposition header so a
+	// crafted name cannot inject extra headers or break out of the quoted value.
+	name := r.PathValue("name")
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, "", "")
+	name = strings.ReplaceAll(name, "
+", "")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	http.ServeFile(w, r, path)
 }
 
