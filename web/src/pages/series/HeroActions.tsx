@@ -11,7 +11,7 @@ import { api, type Series as SeriesT } from "../../lib/api";
 import { seriesApi, type MonitorReply } from "../../lib/seriesApi";
 import { jobFailed, jobToast, useJob } from "../../lib/useJob";
 import { searchJobLine } from "../../lib/searchOutcome";
-import { Button, Menu, type MenuItem } from "../../ui";
+import { Button, ConfirmDialog, Menu, type MenuItem } from "../../ui";
 import { RenameModal } from "./RenameModal";
 import { MONITOR_PRESETS } from "./presets";
 import { waitingOnSearch } from "./util";
@@ -70,7 +70,9 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
   useJob(importJob, {
     onDone: (j) => { setImportJob(null); flash(jobToast(j, "Import finished."), jobFailed(j)); onChange(); },
   });
-  const [open, setOpen] = useState<null | "import" | "choose" | "upload" | "rename" | "delete" | "move" | "title">(null);
+  const [open, setOpen] = useState<null | "import" | "choose" | "upload" | "rename" | "delete" | "move" | "title" | "forget">(null);
+  const [forgetting, setForgetting] = useState(false);
+  const [forgetError, setForgetError] = useState<string | null>(null);
   const name = shownTitle(series);
   const close = () => setOpen(null);
   // More than one TV folder: the show's folder shows, and it can move to another one.
@@ -102,6 +104,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
         catch (e) { flash((e as Error).message, true); }
       },
     },
+    { label: "Forget missing files…", onSelect: () => { setForgetError(null); setOpen("forget"); } },
     { label: "Rename…", onSelect: () => setOpen("rename") },
     { label: "Manual import…", onSelect: () => setOpen("import") },
     { label: "Upload .torrent or .nzb…", onSelect: () => setOpen("upload") },
@@ -171,6 +174,35 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
           fetchReleases={() => api.seriesReleases(series.id)}
           onGrab={async (rel) => { await api.grabSeries(series.id, { token: rel.token ?? "" }); onChange(); }}
           onClose={close}
+        />
+      )}
+      {open === "forget" && (
+        <ConfirmDialog
+          title={<>Forget missing files for “{name}”?</>}
+          body={
+            <p className="m-0">
+              For files you deleted on purpose, outside Arrmada. Episodes whose files are gone go back to missing, even if the show's whole folder is gone. Nothing on disk is touched.
+              {series.monitored ? " Searching is on for this show, so Arrmada will look for those episodes again." : ""}
+            </p>
+          }
+          confirmLabel="Forget missing files"
+          busyLabel="Checking…"
+          busy={forgetting}
+          error={forgetError}
+          onConfirm={async () => {
+            setForgetting(true); setForgetError(null);
+            try {
+              const { cleared } = await seriesApi.forgetMissingEpisodes(series.id);
+              close();
+              onChange();
+              flash(cleared === 0 ? "No missing files: every recorded file is still there." : `Forgot ${cleared} missing ${cleared === 1 ? "file" : "files"}.`);
+            } catch (e) {
+              setForgetError((e as Error).message);
+            } finally {
+              setForgetting(false);
+            }
+          }}
+          onCancel={close}
         />
       )}
       {open === "delete" && <DeleteSeriesDialog series={series} onClose={close} onDeleted={() => navigate("/series")} />}

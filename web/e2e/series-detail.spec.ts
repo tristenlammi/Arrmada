@@ -12,7 +12,7 @@ async function fitsScreen(page: Page) {
   expect(w.doc, "document width").toBeLessThanOrEqual(w.viewport);
 }
 
-const OVERFLOW = ["Refresh & rescan", "Rename…", "Manual import…", "Upload .torrent or .nzb…", "Switch to anime numbering", "Delete…"];
+const OVERFLOW = ["Refresh & rescan", "Forget missing files…", "Rename…", "Manual import…", "Upload .torrent or .nzb…", "Switch to anime numbering", "Delete…"];
 
 test.describe("desktop", () => {
   test.skip(({ isMobile }) => isMobile, "desktop project only");
@@ -42,7 +42,7 @@ test.describe("desktop", () => {
     for (const label of OVERFLOW) await expect(menu.getByRole("menuitem", { name: label })).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Refresh & rescan" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
-    await expect(menu.getByRole("menuitem", { name: "Rename…" })).toBeFocused();
+    await expect(menu.getByRole("menuitem", { name: "Forget missing files…" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
     await expect(more).toBeFocused();
@@ -77,6 +77,37 @@ test.describe("desktop", () => {
     await page.getByRole("menuitem", { name: "Refresh & rescan" }).click();
     await expect(page.getByText(reason)).toBeVisible();
     await expect(page.getByText("Refreshed metadata and rescanned disk.")).toHaveCount(0);
+  });
+
+  // Files deleted on purpose (#97): the dialog says what happens, then what it did.
+  test("Forget missing files asks first, then says how many it cleared", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/v1/series/1/forget-missing", (route) => {
+      posts++;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ cleared: 3 }) });
+    });
+    await page.goto("/series/1");
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Forget missing files…" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Nothing on disk is touched.");
+    expect(posts).toBe(0);
+    await dialog.getByRole("button", { name: "Forget missing files" }).click();
+    await expect(page.getByText("Forgot 3 missing files.")).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    expect(posts).toBe(1);
+  });
+
+  test("Forget missing files shows why it was refused and stays open", async ({ page }) => {
+    const reason = "The TV folder isn't reachable (/tv is missing or empty) — nothing was changed. Check the share or array is mounted, then try again.";
+    await page.route("**/api/v1/series/1/forget-missing", (route) =>
+      route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ status: "error", message: reason }) }));
+    await page.goto("/series/1");
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Forget missing files…" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Forget missing files" }).click();
+    await expect(dialog).toContainText(reason);
   });
 
   test("the Searching menu turns searching off, applies a preset and toggles new seasons", async ({ page, api }) => {

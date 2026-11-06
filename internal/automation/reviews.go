@@ -504,6 +504,14 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 		// found by its info hash — the importer places the file by hash, so a grab known
 		// only by its name would pass here and then land nowhere. When the names can't be
 		// read it's held for review as before.
+		if bare, ok := movies.SagaBareName(expected, parsed.Title, parsed.Year); ok {
+			// Not when that name is another library film's: the person decides.
+			if other, named := c.movies.Match(ctx, bare, parsed.Year); !named || other.ID == expected.ID {
+				c.log.Info("movie import: download is the film's own name with a saga number",
+					"movie", expected.Title, "release", name)
+				return "", false
+			}
+		}
 		ok, err := c.movies.KnownAs(ctx, expected, parsed.Title, parsed.Year)
 		if ok {
 			c.log.Info("movie import: download is named by one of the film's other titles",

@@ -196,6 +196,18 @@ type stallTarget struct {
 	// library has is closed as imported, never failed over. Kinds whose detectStalled*
 	// already tests this before judging leave it nil.
 	landed func(ctx context.Context) bool
+	// unsearched, when set, is why a stalled, failed or vanished download gets no replacement
+	// on its own ("searching is off for this show"). Someone asking for one from Needs you
+	// (why) still gets it: that's a person's choice, not a search running behind their back.
+	unsearched string
+}
+
+// noReplacement says why this fail-over won't search ("" when it will).
+func (t stallTarget) noReplacement() string {
+	if t.why != "" {
+		return ""
+	}
+	return t.unsearched
 }
 
 // errSearchUnavailable marks a replacement search that couldn't run for a reason the
@@ -312,14 +324,18 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		again := len(before) > 0
 		c.log.Info("automation: download disappeared from the client, failing over",
 			"kind", t.kind, "title", t.name, "release", g.Title, "again", again)
-		what := " disappeared from the download client — searching for another"
+		next := "searching for another"
+		if why := t.noReplacement(); why != "" {
+			next = why + ", not replaced"
+		}
+		what := " disappeared from the download client — " + next
 		if again {
 			if err := t.block(ctx, vanishedAgainBlockReason); err != nil {
 				// Without the blocklist row the next sweep could grab it straight back.
 				c.log.Warn("automation: stall blocklist failed — leaving the grab for the next check", "release", g.Title, "err", err)
 				return "", false, false
 			}
-			what = " disappeared from the download client again — blocklisted, searching for another"
+			what = " disappeared from the download client again — blocklisted, " + next
 		}
 		c.closeVanished(ctx, g)
 		t.event(ctx, g.Title+what)
@@ -352,6 +368,9 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		what := "no other release found"
 		if outage {
 			what = "indexers unavailable"
+		}
+		if why := t.noReplacement(); why != "" {
+			what = why
 		}
 		c.log.Info("automation: stalled download kept — nothing to replace it with",
 			"kind", t.kind, "title", t.name, "release", g.Title, "reason", what)
@@ -483,8 +502,12 @@ func (c *Coordinator) seriesStallTarget(ctx context.Context, g grab) (stallTarge
 	if err != nil {
 		return stallTarget{}, false
 	}
+	unsearched := ""
+	if !s.Monitored {
+		unsearched = "searching is off for this show"
+	}
 	return stallTarget{
-		kind: "series", id: s.ID, name: s.Title,
+		kind: "series", id: s.ID, name: s.Title, unsearched: unsearched,
 		block: func(ctx context.Context, reason string) error {
 			c.addBlockSeries(ctx, s.ID, g.Title, g.Indexer, reason)
 			return nil

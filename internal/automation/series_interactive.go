@@ -608,12 +608,29 @@ func (c *Coordinator) reopenImportedRelease(ctx context.Context, seriesID int64,
 // clearly there; when they aren't it changes nothing at all and returns a
 // *RescanRefusedError saying why.
 func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) error {
+	_, err := c.rescanSeries(ctx, seriesID, false)
+	return err
+}
+
+// ForgetMissingEpisodes is RescanSeries for someone who says the files are gone on purpose
+// (#97): the show's folder being missing, or every file having gone at once, no longer stops
+// the episodes clearing. It deletes nothing, and clears only records whose file is definitely
+// gone. An unmounted TV folder still refuses: nobody meant that. It returns how many it cleared.
+func (c *Coordinator) ForgetMissingEpisodes(ctx context.Context, seriesID int64) (int, error) {
+	n, err := c.rescanSeries(ctx, seriesID, true)
+	if err == nil && n > 0 && c.series != nil {
+		c.series.AddEvent(ctx, seriesID, "removed", fmt.Sprintf("Forgot %d missing file(s), asked for by hand. Nothing on disk was touched", n))
+	}
+	return n, err
+}
+
+func (c *Coordinator) rescanSeries(ctx context.Context, seriesID int64, confirmedGone bool) (int, error) {
 	if c.series == nil || c.imp == nil {
-		return nil
+		return 0, nil
 	}
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Before anything reads as missing: a file an interrupted rename left under its
 	// temporary name would otherwise be cleared below and downloaded again.
@@ -625,12 +642,12 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) error {
 	// of its own are followed there, then the show is judged again.
 	if ferr != nil && c.series.FollowMovedEpisodeFiles(ctx, seriesID) > 0 {
 		if s, err = c.series.Get(ctx, seriesID); err != nil {
-			return err
+			return 0, err
 		}
 		imp, folder, ferr = c.seriesPlacement(ctx, s)
 	}
 	if ferr != nil {
-		return &RescanRefusedError{Reason: ferr.Error(), Cause: ferr}
+		return 0, &RescanRefusedError{Reason: ferr.Error(), Cause: ferr}
 	}
 
 	// Group by resolved episode first, rather than marking as we walk. Several files on
@@ -669,14 +686,20 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) error {
 		}
 	}
 	if len(gone) > 0 {
-		if reason := rescanRefusal(imp.TVRoot(), s.Title, gone, recorded, c.series.ShowFolderFor); reason != "" {
+		var reason string
+		if confirmedGone {
+			reason = forgetRefusal(c.series.TVRootOf, gone)
+		} else {
+			reason = rescanRefusal(imp.TVRoot(), s.Title, gone, recorded, c.series.ShowFolderFor)
+		}
+		if reason != "" {
 			c.log.Warn("series rescan: the files' folders don't look mounted — nothing was changed",
 				"series", s.Title, "would_clear", len(gone), "reason", reason)
-			return &RescanRefusedError{Reason: reason}
+			return 0, &RescanRefusedError{Reason: reason}
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return err // a rescan cut short writes nothing
+		return 0, err // a rescan cut short writes nothing
 	}
 
 	// Which file an episode keeps (keptEpisodeFile): its recorded one, unless a file named as
@@ -713,10 +736,16 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) error {
 	if dupes > 0 {
 		c.log.Warn("series rescan: duplicate episode files on disk", "series", s.Title, "extra_files", dupes)
 	}
+	cleared := 0
 	for _, e := range gone {
-		_ = c.series.MarkEpisodeMissing(ctx, seriesID, e.SeasonNumber, e.EpisodeNumber)
+		err := c.series.MarkEpisodeMissing(ctx, seriesID, e.SeasonNumber, e.EpisodeNumber)
+		if err == nil {
+			cleared++
+		} else if confirmedGone {
+			return cleared, err // someone is waiting to be told how many
+		}
 	}
-	return nil
+	return cleared, nil
 }
 
 // showEpisodeVideos is the show's episode videos for a rescan or the duplicate check, which
@@ -794,34 +823,64 @@ func (e *RescanRefusedError) Error() string { return e.Reason }
 // more often than a deliberate deletion, and clearing them all would download the whole
 // show again.
 func rescanRefusal(root, title string, gone []series.Episode, recorded int, showFolder func(string) string) string {
-	root = strings.TrimSpace(root)
-	inRoot := false
+	if reason := rootRefusal(root, gone); reason != "" {
+		return reason
+	}
+	const onPurpose = " If you deleted them on purpose, choose Forget missing files in the show's ⋯ menu."
 	var shows []string
 	seen := map[string]bool{}
 	for _, e := range gone {
 		if e.FilePath == "" {
 			continue // a row with no path has no folder to judge
 		}
-		p := filepath.Clean(e.FilePath)
-		if root != "" && pathguard.Under(p, root) {
-			inRoot = true
-		}
-		if dir := showFolder(p); dir != "" && !seen[dir] {
+		if dir := showFolder(filepath.Clean(e.FilePath)); dir != "" && !seen[dir] {
 			seen[dir] = true
 			shows = append(shows, dir)
 		}
 	}
-	if inRoot && !library.FolderLooksMounted(root) {
-		return fmt.Sprintf("The TV folder isn't reachable (%s is missing or empty) — nothing was changed. Check the share or array is mounted, then try again.", root)
-	}
 	sort.Strings(shows)
 	for _, dir := range shows {
 		if !library.FolderLooksMounted(dir) {
-			return fmt.Sprintf("The folder for %s isn't reachable (%s is missing or empty) — nothing was changed. A disk or share may be down; check it, then try again.", title, dir)
+			return fmt.Sprintf("The folder for %s isn't reachable (%s is missing or empty) — nothing was changed. A disk or share may be down; check it, then try again."+onPurpose, title, dir)
 		}
 	}
 	if recorded > 1 && len(gone) == recorded {
-		return fmt.Sprintf("None of the %d files for %s are where they were — nothing was changed. A whole show vanishing at once usually means a disk or share is down; check it, then try again.", recorded, title)
+		return fmt.Sprintf("None of the %d files for %s are where they were — nothing was changed. A whole show vanishing at once usually means a disk or share is down; check it, then try again."+onPurpose, recorded, title)
+	}
+	return ""
+}
+
+// forgetRefusal is what someone saying the files are gone on purpose can't wave through: a gone
+// file whose own TV folder looks unmounted, or that's in no TV folder Arrmada knows, so nothing
+// can tell a deletion from a dead disk. A show's files can be split across TV folders, so each
+// file is judged by its own.
+func forgetRefusal(rootOf func(string) (string, bool), gone []series.Episode) string {
+	for _, e := range gone {
+		if e.FilePath == "" {
+			continue
+		}
+		p := filepath.Clean(e.FilePath)
+		root, ok := rootOf(p)
+		if !ok {
+			return fmt.Sprintf("%s isn't in any of your TV folders, so Arrmada can't tell whether its disk is down — nothing was changed.", p)
+		}
+		if !library.FolderLooksMounted(root) {
+			return fmt.Sprintf("The TV folder isn't reachable (%s is missing or empty) — nothing was changed. Check the share or array is mounted, then try again.", root)
+		}
+	}
+	return ""
+}
+
+// rootRefusal is gone files inside a TV folder that itself looks unmounted.
+func rootRefusal(root string, gone []series.Episode) string {
+	root = strings.TrimSpace(root)
+	if root == "" || library.FolderLooksMounted(root) {
+		return ""
+	}
+	for _, e := range gone {
+		if e.FilePath != "" && pathguard.Under(filepath.Clean(e.FilePath), root) {
+			return fmt.Sprintf("The TV folder isn't reachable (%s is missing or empty) — nothing was changed. Check the share or array is mounted, then try again.", root)
+		}
 	}
 	return ""
 }

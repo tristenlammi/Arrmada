@@ -145,6 +145,8 @@ func (c *Coordinator) failUsenet(ctx context.Context, g grab, item download.Item
 	switch {
 	case repl != "":
 		what = "replaced by " + repl
+	case t.noReplacement() != "":
+		what = t.noReplacement()
 	case outage:
 		what = "indexers unavailable, searching again later"
 	}
