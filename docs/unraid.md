@@ -329,6 +329,10 @@ Label or Device** for each line:
 
 ## Troubleshooting
 
+- **The Open Prowlarr or SABnzbd link goes to the wrong port.** Arrmada can't see the port you
+  published, only what the template tells it. Make the **web UI port** and the **web UI host
+  port** settings the same number, for example both 9696 for Prowlarr, then apply. For Prowlarr
+  you can instead save the right address under Settings, Connections, Prowlarr.
 - **The container won't start: "port is already allocated".** Something else has that host
   port. Edit Arrmada and change it ([A port that's taken](#install-from-community-apps)).
   That includes the SABnzbd (8085) and Prowlarr (9697) ports, which are taken even while
