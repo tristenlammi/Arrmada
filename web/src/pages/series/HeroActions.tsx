@@ -130,6 +130,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
         <Button onClick={() => setOpen("choose")} title="Search indexers for the whole show and pick a pack or episode yourself">Choose release…</Button>
         <Menu
           label="More actions"
+          portal
           trigger={<span aria-hidden className="text-lg leading-none">⋯</span>}
           triggerClassName="grid h-[34px] w-[38px] place-items-center rounded-lg"
           triggerStyle={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
