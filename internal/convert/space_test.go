@@ -390,6 +390,13 @@ func TestSkipAttempts(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Attempts != 1 || list[0].RetryAfter == 0 {
 		t.Fatalf("list: %+v, %v", list, err)
 	}
+	// A finished usenet job's folder goes within minutes, so the first look comes soon (#99).
+	if d := retryDelay(SkipHardlinked, 1); d != hardlinkFirstWait {
+		t.Fatalf("the first wait of a linked file, got %s", d)
+	}
+	if d := retryDelay(SkipHardlinked, 2); d != 12*time.Hour {
+		t.Fatalf("a file still linked after that waits 12 hours, got %s", d)
+	}
 	if d := retryDelay(SkipHardlinked, 5); d != 12*time.Hour {
 		t.Fatalf("seeding files keep their fixed wait, got %s", d)
 	}

@@ -11,6 +11,18 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **Forget missing files**, in a show's ⋯ menu ([#97](https://github.com/tristenlammi/Arrmada/issues/97)). If you deleted a show's files on purpose, outside Arrmada, a rescan refuses to clear them in case a disk is down. This is how you say it wasn't one: the episodes go back to missing, and nothing on disk is touched. A TV folder that looks unmounted is still refused.
+
+### Fixed
+
+- **Convert no longer waits 12 hours on a Usenet download** ([#99](https://github.com/tristenlammi/Arrmada/issues/99)). A file picked before SABnzbd's folder was cleared read as "still seeding". The first check now comes back after 25 minutes, and only a file still linked after that waits 12 hours.
+- **Tidying tracks is no longer thrown away over a few extra bytes** ([#98](https://github.com/tristenlammi/Arrmada/issues/98)). Rewriting a file can add a little even with tracks removed, so a tidy may now come out up to 1% bigger. Files already skipped for this stay skipped until you choose Try again in Convert's Problems.
+- **A show with searching off no longer re-grabs on its own** when a download stalls, fails or disappears. Try another release in Needs you still works, because that's you asking.
+- **A film named with its saga number imports** ([#74](https://github.com/tristenlammi/Arrmada/issues/74)): `Star Wars The Force Awakens Episode VII (2015)` grabbed for Star Wars: The Force Awakens (2015) is no longer held. It has to be the film it was grabbed for, with the same year.
+- **Prowlarr link on Unraid** ([#101](https://github.com/tristenlammi/Arrmada/issues/101)): the Prowlarr panel and the Unraid guide now explain the two port settings that have to match.
+
 ## [0.4.0] - 2026-10-31
 
 ### Highlights

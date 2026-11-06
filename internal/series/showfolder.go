@@ -65,6 +65,9 @@ func ShowFolder(episodePath string) string {
 // TVRoots is every TV folder now, the default first.
 func (s *Service) TVRoots() []string { return s.libRoots() }
 
+// TVRootOf is the TV folder holding path, and whether one does.
+func (s *Service) TVRootOf(path string) (string, bool) { return rootOf(s.libRoots(), path) }
+
 // rootOf is the TV folder holding path (the deepest, when one is inside another) and
 // whether there is one.
 func rootOf(roots []string, path string) (string, bool) {

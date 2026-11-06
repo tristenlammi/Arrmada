@@ -347,6 +347,9 @@ func (c *Coordinator) recordRSSGrab(ctx context.Context, mediaType string, id in
 // replaceRecorded runs a stall fail-over's replacement search as a recorded attempt. The
 // target's kind (movie, series, book, music) is the attempt's media type.
 func (c *Coordinator) replaceRecorded(ctx context.Context, t stallTarget, exclude map[string]bool) (repl string, err error) {
+	if t.noReplacement() != "" {
+		return "", nil
+	}
 	ctx, notes := newSearchNotes(WithSearchTrigger(ctx, TriggerStall))
 	defer func() {
 		var out SearchOutcome

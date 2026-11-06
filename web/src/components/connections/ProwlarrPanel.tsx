@@ -121,6 +121,11 @@ export function ProwlarrPanel({ onSynced }: { onSynced: () => void }) {
           </button>
           {uiMsg && <span className="text-xs" style={{ color: uiMsg.ok ? "var(--good-text)" : "var(--reject-text)" }}>{uiMsg.msg}</span>}
         </div>
+        {bundled && (
+          <div className="text-xs text-ink-faint">
+            Link opens the wrong page? On Unraid, Prowlarr web UI port and Prowlarr web UI host port in the template have to be the same number. Or save the right address above.
+          </div>
+        )}
         <div className="text-ink-dim">
           For a Cloudflare-protected tracker, add the{" "}
           <code className="rounded px-1 py-0.5 font-mono text-xs" style={{ background: "var(--panel-2)", color: "var(--accent-text)" }}>flaresolverr</code>{" "}

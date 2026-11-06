@@ -511,6 +511,7 @@ POST /api/v1/series/scan staff -
 POST /api/v1/series/{id}/aliases staff -
 POST /api/v1/series/{id}/autograb staff -
 POST /api/v1/series/{id}/blocklist staff -
+POST /api/v1/series/{id}/forget-missing staff -
 POST /api/v1/series/{id}/grab staff -
 POST /api/v1/series/{id}/grabtorrent staff -
 POST /api/v1/series/{id}/manualimport staff -

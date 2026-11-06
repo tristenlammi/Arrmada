@@ -649,6 +649,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/series/{id}/autograb", a.requireRole(auth.RoleManager, a.handleAutoGrabSeries))
 	mux.HandleFunc("POST /api/v1/series/refresh", a.requireRole(auth.RoleManager, a.handleRefreshAllSeries))
 	mux.HandleFunc("POST /api/v1/series/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshSeries))
+	mux.HandleFunc("POST /api/v1/series/{id}/forget-missing", a.requireRole(auth.RoleManager, a.handleForgetMissingEpisodes))
 	mux.HandleFunc("GET /api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImportList))
 	mux.HandleFunc("POST /api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImport))
 	mux.HandleFunc("GET /api/v1/series/{id}/manualimport/suggestions", a.requireRole(auth.RoleManager, a.handleSeriesImportSuggestions))

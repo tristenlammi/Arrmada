@@ -932,6 +932,32 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, s)
 }
 
+// handleForgetMissingEpisodes clears the records of a show's files that are gone from disk, for
+// someone who deleted them on purpose (#97). It never deletes anything.
+func (a *api) handleForgetMissingEpisodes(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	n, err := a.deps.Automation.ForgetMissingEpisodes(ctx, id)
+	if err != nil {
+		var refused *automation.RescanRefusedError
+		switch {
+		case errors.Is(err, series.ErrNotFound):
+			a.writeError(w, http.StatusNotFound, "series not found")
+		case errors.As(err, &refused):
+			a.writeError(w, http.StatusConflict, refused.Reason)
+		default:
+			a.deps.Log.Warn("series: forget missing files failed", "series_id", id, "err", err)
+			a.writeError(w, http.StatusInternalServerError, "could not check the disk")
+		}
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]int{"cleared": n})
+}
+
 // handleRefreshAllSeries refreshes metadata and rescans the disk for every series.
 //
 // The per-series refresh is what reconciles episodes whose file is already on disk but

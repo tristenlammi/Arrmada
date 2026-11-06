@@ -47,6 +47,9 @@ export const seriesApi = {
     req<JobRef>(`/api/v1/series/${id}/numbering/apply`, { method: "POST", body: JSON.stringify({ plan_hash }) }),
   dismissSeriesNumbering: (id: number) =>
     req<void>(`/api/v1/series/${id}/numbering/pending`, { method: "DELETE" }),
+  // Clears the records of files gone from disk, for someone who deleted them on purpose. A TV
+  // folder that looks unmounted is refused with a 409. Nothing on disk is touched.
+  forgetMissingEpisodes: (id: number) => req<{ cleared: number }>(`/api/v1/series/${id}/forget-missing`, { method: "POST" }),
   // The show's searching switch (the monitored field): season and episode choices are kept
   // either way.
   setSeriesMonitored: (id: number, monitored: boolean) =>
