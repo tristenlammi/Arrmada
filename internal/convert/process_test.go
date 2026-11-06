@@ -36,11 +36,20 @@ func TestVerifyOutput(t *testing.T) {
 			t.Errorf("%s: got (%q, %q), want kind %q containing %q", c.name, kind, reason, c.kind, c.contains)
 		}
 	}
-	// A track tidy-up keeps the video, so it saves little — that's fine, as long as it
-	// doesn't grow.
+	// A track tidy-up keeps the video, so it saves little — that's fine, and rewriting the
+	// container may even add a little (#98), but no more than 1%.
 	copyPlan := Plan{Audio: plan.Audio}
 	if _, reason := verifyOutput(src, good, src.SizeBytes*99/100, copyPlan); reason != "" {
 		t.Errorf("a track tidy-up that saved 1%% was refused: %s", reason)
+	}
+	if _, reason := verifyOutput(src, good, src.SizeBytes+1, copyPlan); reason != "" {
+		t.Errorf("a track tidy-up one byte bigger was refused: %s", reason)
+	}
+	if _, reason := verifyOutput(src, good, src.SizeBytes+src.SizeBytes/100, copyPlan); reason != "" {
+		t.Errorf("a track tidy-up exactly 1%% bigger was refused: %s", reason)
+	}
+	if kind, reason := verifyOutput(src, good, src.SizeBytes+src.SizeBytes/100+1, copyPlan); kind != SkipNotSmaller || !strings.Contains(reason, "more than 1% bigger") {
+		t.Errorf("a track tidy-up over 1%% bigger: got (%q, %q)", kind, reason)
 	}
 }
 

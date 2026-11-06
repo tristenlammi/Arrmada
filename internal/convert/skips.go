@@ -45,14 +45,23 @@ func backoffSkip(kind string) bool {
 	return false
 }
 
+// hardlinkFirstWait is the first wait of a file still linked to the downloads folder. A
+// usenet job's folder goes on the seed clean-up pass, every 10 minutes, so a file picked just
+// after its import is usually free by then; a torrent that really is seeding pays one extra
+// look. It has to outlast a pass that's already due and one more.
+const hardlinkFirstWait = 25 * time.Minute
+
 // retryDelay is how long a temporary skip waits before the file is picked again. A seeding
-// file is checked twice a day; a file you cancelled stays out of the way for a month (or
+// file is checked once soon, then twice a day; a file you cancelled stays out of the way for a month (or
 // until you press "Try again"). A full disk is looked at again after an hour, then six,
 // then daily — soon enough to notice space was freed, rarely enough not to flood the log.
 // attempts counts this kind in a row, starting at 1.
 func retryDelay(kind string, attempts int) time.Duration {
 	switch kind {
 	case SkipHardlinked:
+		if attempts <= 1 {
+			return hardlinkFirstWait
+		}
 		return 12 * time.Hour
 	case SkipCancelled:
 		return 30 * 24 * time.Hour

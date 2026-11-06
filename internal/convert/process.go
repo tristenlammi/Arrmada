@@ -76,10 +76,12 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.finishSkip(job, SkipAlreadyTarget, note)
 		return
 	}
-	// Seeding safety: a hardlinked file is still shared by the download client, so replacing
-	// the library copy frees nothing and duplicates the data. Tried again later.
+	// Seeding safety: a hardlinked file is still shared with the downloads folder, so replacing
+	// the library copy frees nothing and duplicates the data. Tried again later. The link count
+	// can't say why: a torrent seeding, or a finished usenet job whose folder hasn't been
+	// cleared yet (retryDelay).
 	if fileLinks(src) > 1 {
-		s.finishSkip(job, SkipHardlinked, "still seeding (hardlinked to your downloads) — will try again later")
+		s.finishSkip(job, SkipHardlinked, "still linked to your downloads (seeding, or not cleared yet) — will try again later")
 		return
 	}
 	// A file of someone's at the .mkv name (no record owns it) stops the swap (swapIn), so
@@ -823,11 +825,16 @@ func verifyOutput(mi, out *MediaInfo, outSize int64, plan Plan) (kind, reason st
 		}
 		return SkipNotSmaller, fmt.Sprintf("only %d%% smaller — not worth another generation of compression, kept the original", max(saved, 0))
 	}
-	if plan.VideoCodec == "" && outSize > mi.SizeBytes {
-		return SkipNotSmaller, "tidying the tracks made the file bigger — kept the original"
+	if plan.VideoCodec == "" && outSize > mi.SizeBytes+mi.SizeBytes*tidyGrowthPct/100 {
+		return SkipNotSmaller, fmt.Sprintf("tidying the tracks made the file more than %d%% bigger — kept the original", tidyGrowthPct)
 	}
 	return "", ""
 }
+
+// tidyGrowthPct is how much bigger a tracks-only tidy may come out. Rewriting the container can
+// add a little even with tracks removed (#98): small subtitle tracks free less than the new
+// index and headers take. The video is copied, so this is never a loss of quality.
+const tidyGrowthPct = 1
 
 func clock(sec float64) string {
 	t := int(sec + 0.5)
