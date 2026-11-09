@@ -143,7 +143,7 @@ export function AlbumDetail() {
               <a
                 href={`https://musicbrainz.org/release-group/${al.mbid}`}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="rounded px-1.5 py-0.5 font-mono text-xs font-bold"
                 style={{ background: "#4a2a6a", color: "#fff" }}
               >
