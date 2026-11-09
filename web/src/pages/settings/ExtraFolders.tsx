@@ -28,12 +28,16 @@ export function ExtraFolders() {
   const [opened, setOpened] = useState(false);
   if (error && !data) return <div className="text-sm" style={{ color: "var(--reject-text)" }}>Couldn't load the folders: {error.message}</div>;
   if (!data) return <div className="text-base text-ink-dim">Loading…</div>;
-  const anySet = [...data.movie.folders, ...data.series.folders].some((f) => !!f.downloads);
-  const offer = admin && (opened || anySet || data.movie.multi || data.series.multi);
+  const movie: LibraryFolderSet = data.movie ?? { multi: false, folders: [] };
+  const series: LibraryFolderSet = data.series ?? { multi: false, folders: [] };
+  const movieFolders = movie.folders ?? [];
+  const seriesFolders = series.folders ?? [];
+  const anySet = [...movieFolders, ...seriesFolders].some((f) => !!f.downloads);
+  const offer = admin && (opened || anySet || !!movie.multi || !!series.multi);
   return (
     <div className="flex flex-col gap-5">
-      <FolderList media="movie" title="Movies" set={data.movie} admin={admin} offer={offer} />
-      <FolderList media="series" title="TV Shows" set={data.series} admin={admin} offer={offer} />
+      <FolderList media="movie" title="Movies" set={movie} admin={admin} offer={offer} />
+      <FolderList media="series" title="TV Shows" set={series} admin={admin} offer={offer} />
       <p className="m-0 text-sm text-ink-faint">
         A new folder has to be inside a folder mounted into the container. Under the same mount as your other libraries (say <span className="font-mono">/storage</span>), just pick it; anywhere else, add its mount to <span className="font-mono">docker-compose.override.yml</span> first (see <span className="font-mono">docker-compose.override.example.yml</span>) and recreate the container, then pick it here. Moving a title between folders moves its files: use <b>Move to folder</b> on the title's page.
       </p>
@@ -57,8 +61,9 @@ function FolderList({ media, title, set, admin, offer }: { media: FolderMedia; t
   const [busy, setBusy] = useState(false);
   // The folder just added: its row offers to scan what's already in it.
   const [fresh, setFresh] = useState<number | null>(null);
-  const extras = set.folders.filter((f) => !f.default);
-  const main = set.folders.find((f) => f.default);
+  const folders = set.folders ?? [];
+  const extras = folders.filter((f) => !f.default);
+  const main = folders.find((f) => f.default);
 
   const add = async (path: string) => {
     setPicking(false);
@@ -274,8 +279,6 @@ function ExtraRow({ f, admin, first, last, busy, onMove, offer, fresh }: {
     </div>
   );
 }
-
-const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 // FolderScan is an extra folder's scan. Adding a folder doesn't import what's already in
 // it, so the row says what's there — the folder just added offers a scan straight away,
