@@ -91,11 +91,22 @@ const anime: Series = show(2, {
   stats: { episodes: 130, have_files: 100, size_bytes: 140_000_000_000, seasons: 1, missing: 30, unmonitored_missing: 0 },
 });
 
+// Show 5 runs ten finished seasons: more than a desktop rail shows at once.
+const longRun: Series = show(5, {
+  title: "Long Run", status: "Ended",
+  seasons: Array.from({ length: 10 }, (_, i): Season => ({
+    id: 50 + i, season_number: i + 1, name: `Season ${i + 1}`, monitored: true,
+    episodes: Array.from({ length: 4 }, (_, n) => ep(i + 1, n + 1, { id: 50_000 + i * 10 + n })),
+  })),
+  stats: { episodes: 40, have_files: 40, size_bytes: 56_000_000_000, seasons: 10, missing: 0, unmonitored_missing: 0 },
+});
+
 export const seriesDetails: Record<number, Series> = {
   1: show(1, {}),
   2: anime,
   3: show(3, { title: "Tidewater" }),
   4: show(4, { title: "Anchor Point" }),
+  5: longRun,
 };
 
 export const numbering: Record<number, SeriesNumbering> = {

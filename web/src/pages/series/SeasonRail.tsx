@@ -12,7 +12,7 @@ import { posterThumb } from "../../lib/img";
 import { attemptLine, outcomeTone } from "../../lib/searchOutcome";
 import { SEARCHING_OFF_HINT, STATUS_LABEL } from "../../lib/status";
 import { jobFailed, jobToast, useJob } from "../../lib/useJob";
-import { Button, ConfirmDialog, StatusChip } from "../../ui";
+import { Button, ConfirmDialog, IconButton, StatusChip } from "../../ui";
 import { scrollDelta } from "../../ui/Tabs";
 import { EpisodeCard, type EpisodeDialog } from "./EpisodeCard";
 import { useEpisodeSubs, useSeenOnce } from "./EpisodeSubs";
@@ -27,10 +27,12 @@ export const PAGE = 50;
 const MAX_BULK_SEARCH = 200;
 
 // SeasonRail is the row of season chips under the hero: poster, name and progress. It
-// scrolls sideways on a phone and keeps the chosen season in view.
+// scrolls sideways and keeps the chosen season in view. With a mouse there's no swipe, so
+// an arrow shows at whichever end has more seasons past it.
 export function SeasonRail({ seasons, selected, onSelect }: { seasons: Season[]; selected?: number; onSelect: (n: number) => void }) {
   const row = useRef<HTMLDivElement>(null);
   const chips = useRef(new Map<number, HTMLButtonElement>());
+  const [more, setMore] = useState({ left: false, right: false });
   useEffect(() => {
     const el = selected !== undefined ? chips.current.get(selected) : undefined;
     if (!el || !row.current) return;
@@ -38,44 +40,78 @@ export function SeasonRail({ seasons, selected, onSelect }: { seasons: Season[];
     const d = scrollDelta(row.current.getBoundingClientRect(), el.getBoundingClientRect());
     if (d !== 0) row.current.scrollLeft += d > 0 ? Math.ceil(d) : Math.floor(d);
   }, [selected]);
+  useEffect(() => {
+    const el = row.current;
+    if (!el) return;
+    const measure = () => {
+      const left = el.scrollLeft > 1;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+      setMore((m) => (m.left === left && m.right === right ? m : { left, right }));
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => { el.removeEventListener("scroll", measure); ro?.disconnect(); };
+  }, [seasons.length]);
+  const page = (dir: -1 | 1) => row.current?.scrollBy({ left: dir * Math.max(300, row.current.clientWidth * 0.8), behavior: "smooth" });
 
   return (
-    <div ref={row} role="group" aria-label="Seasons" className="thin-scroll -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
-      {seasons.map((sn) => {
-        const c = seasonCounts(sn);
-        const active = sn.season_number === selected;
-        const done = c.counted > 0 && c.have >= c.counted;
-        const pct = c.counted ? Math.round((c.have / c.counted) * 100) : 0;
-        const thumb = posterThumb(sn.poster_url);
-        return (
-          <button
-            key={sn.id}
-            ref={(el) => { if (el) chips.current.set(sn.season_number, el); else chips.current.delete(sn.season_number); }}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onSelect(sn.season_number)}
-            className="flex w-[156px] flex-none items-center gap-2.5 rounded-xl p-1.5 pr-3 text-left"
-            style={{ background: active ? "var(--accent-soft)" : "var(--panel)", border: `1px solid ${active ? "var(--accent)" : "var(--line)"}` }}
-          >
-            {/* An unreleased season fades its artwork only: fading the card took its words
-                below a readable contrast. */}
-            <span className="h-[54px] w-[36px] flex-none overflow-hidden rounded-md" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))", opacity: c.total === 0 ? 0.65 : 1 }}>
-              {thumb && <img src={thumb} alt="" loading="lazy" className="h-full w-full object-cover" />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-base font-semibold" style={{ color: active ? "var(--accent-text)" : "var(--ink)" }}>{seasonName(sn.season_number)}</span>
-              <span className={`block font-mono text-xs ${active ? "text-ink-dim" : "text-ink-faint"}`}>
-                {c.total === 0 ? "Not yet released" : c.airedCount === 0 ? "Upcoming" : `${c.have}/${c.counted}`}
+    <div className="relative">
+      {more.left && <RailEdge dir={-1} onClick={() => page(-1)} />}
+      {more.right && <RailEdge dir={1} onClick={() => page(1)} />}
+      <div ref={row} role="group" aria-label="Seasons" className="thin-scroll -mx-4 flex gap-2 overflow-x-auto px-4 pb-2 sm:mx-0 sm:px-0">
+        {seasons.map((sn) => {
+          const c = seasonCounts(sn);
+          const active = sn.season_number === selected;
+          const done = c.counted > 0 && c.have >= c.counted;
+          const pct = c.counted ? Math.round((c.have / c.counted) * 100) : 0;
+          const thumb = posterThumb(sn.poster_url);
+          return (
+            <button
+              key={sn.id}
+              ref={(el) => { if (el) chips.current.set(sn.season_number, el); else chips.current.delete(sn.season_number); }}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onSelect(sn.season_number)}
+              className="flex w-[156px] flex-none items-center gap-2.5 rounded-xl p-1.5 pr-3 text-left"
+              style={{ background: active ? "var(--accent-soft)" : "var(--panel)", border: `1px solid ${active ? "var(--accent)" : "var(--line)"}` }}
+            >
+              {/* An unreleased season fades its artwork only: fading the card took its words
+                  below a readable contrast. */}
+              <span className="h-[54px] w-[36px] flex-none overflow-hidden rounded-md" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))", opacity: c.total === 0 ? 0.65 : 1 }}>
+                {thumb && <img src={thumb} alt="" loading="lazy" className="h-full w-full object-cover" />}
               </span>
-              {c.total > 0 && c.airedCount > 0 && (
-                <span className="mt-1 block h-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-                  <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: done ? "var(--good)" : "var(--accent)" }} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-base font-semibold" style={{ color: active ? "var(--accent-text)" : "var(--ink)" }}>{seasonName(sn.season_number)}</span>
+                <span className={`block font-mono text-xs ${active ? "text-ink-dim" : "text-ink-faint"}`}>
+                  {c.total === 0 ? "Not yet released" : c.airedCount === 0 ? "Upcoming" : `${c.have}/${c.counted}`}
                 </span>
-              )}
-            </span>
-          </button>
-        );
-      })}
+                {c.total > 0 && c.airedCount > 0 && (
+                  <span className="mt-1 block h-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
+                    <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: done ? "var(--good)" : "var(--accent)" }} />
+                  </span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// RailEdge is the season rail's arrow, over a fade at that end. A phone swipes instead.
+function RailEdge({ dir, onClick }: { dir: -1 | 1; onClick: () => void }) {
+  const side = dir === -1 ? "left-0" : "right-0";
+  return (
+    <div
+      className={`pointer-events-none absolute inset-y-0 z-10 hidden w-14 items-center sm:flex ${side} ${dir === -1 ? "justify-start" : "justify-end"}`}
+      style={{ background: `linear-gradient(to ${dir === -1 ? "right" : "left"}, var(--bg) 35%, transparent)`, bottom: 8 }}
+    >
+      <IconButton label={dir === -1 ? "Scroll left" : "Scroll right"} onClick={onClick} className="pointer-events-auto h-8 w-8 rounded-full" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden style={{ transform: dir === -1 ? "rotate(180deg)" : "none" }}><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </IconButton>
     </div>
   );
 }

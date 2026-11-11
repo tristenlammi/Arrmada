@@ -188,6 +188,27 @@ test.describe("desktop seasons", () => {
     await expect(page.getByRole("button", { name: /^Grab (missing|again)$/ })).toHaveCount(0);
   });
 
+  test("the season rail's arrows reach seasons off either end", async ({ page }) => {
+    await page.goto("/series/5?season=1");
+    const rail = page.getByRole("group", { name: "Seasons" });
+    const left = page.getByRole("button", { name: "Scroll left" });
+    const right = page.getByRole("button", { name: "Scroll right" });
+    const last = rail.getByRole("button", { name: /^Season 10/ });
+    // At the start there is nothing to the left, and Season 10 is out of sight.
+    await expect(right).toBeVisible();
+    await expect(left).toHaveCount(0);
+    await expect(last).not.toBeInViewport({ ratio: 1 });
+    for (let i = 0; i < 6 && (await right.count()) > 0; i++) {
+      await right.click();
+      await page.waitForTimeout(500); // the smooth scroll settles
+    }
+    await expect(right).toHaveCount(0);
+    await expect(last).toBeInViewport({ ratio: 1 });
+    await last.click();
+    await expect(page).toHaveURL(/season=10/);
+    await expect(left).toBeVisible();
+  });
+
   test("a long anime season pages in 50 at a time", async ({ page }) => {
     await page.goto("/series/2");
     const cards = page.getByTestId("episode-card");
