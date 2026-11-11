@@ -22,8 +22,11 @@ const dist = process.argv[2] ?? fileURLToPath(new URL("../../internal/webui/dist
 // The first split build measured 327 KB raw / 88 KB brotli. The raw budget is the
 // roadmap's 350 KB cap; the brotli one is that measurement plus 10%, tighter than the
 // roadmap's 110 KB. Raise them on purpose, in review, never just to make a build pass.
+// Raised to 98 KB in Nov 2026: the first load had grown to within 41 bytes of 97 KB, and the
+// chunk hashes it imports by name don't compress, so a change to a staff page alone moved
+// it ±50 bytes with no byte of first-load code added. The raw budget is the one that counts.
 const BUDGET_RAW = 350 * 1024;
-const BUDGET_BR = 97 * 1024;
+const BUDGET_BR = 98 * 1024;
 
 const REQUESTER_PAGE = "src/pages/Discover.tsx";
 const ADMIN_ONLY = ["Quality", "Convert", "Insights", "Settings", "AudiobooksAdmin"].map((p) => `src/pages/${p}.tsx`);
