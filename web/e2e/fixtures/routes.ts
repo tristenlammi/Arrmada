@@ -159,6 +159,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get(`/api/v1/jobs/${sys.failOverJob.id}`, sys.failOverJob),
     { method: "POST", path: /^\/api\/v1\/queue\/([0-9a-f]+)\/category$/, respond: ({ body }) => ({ status: "moved", category: (body as { category?: string })?.category ?? "" }) },
     { method: "POST", path: /^\/api\/v1\/queue\/([0-9a-f]+)\/action$/, body: { status: "ok" } },
+    // The Queue's select mode: every picked download removed.
+    { method: "POST", path: "/api/v1/queue/remove", respond: ({ body }) => { const b = body as { items?: unknown[]; mode?: string }; return { mode: b?.mode ?? "keep_files", removed: (b?.items ?? []).length, failed: [] }; } },
     // Finished torrents Arrmada didn't grab (ACQ-31).
     get("/api/v1/downloads/unmanaged", sys.unmanaged),
     { method: "GET", path: /^\/api\/v1\/queue\/([0-9a-z]+)\/targets$/, respond: ({ url }) => sys.unmanagedTargets(url) },

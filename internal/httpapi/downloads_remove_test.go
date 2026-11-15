@@ -20,6 +20,8 @@ type fakeQbit struct {
 	mu    sync.Mutex
 	calls []url.Values // form of each /api/v2/torrents/* call
 	paths []string
+	// failHash, when set, is a torrent whose delete the client refuses (HTTP 500).
+	failHash string
 }
 
 func (f *fakeQbit) server(t *testing.T) *httptest.Server {
@@ -33,7 +35,12 @@ func (f *fakeQbit) server(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		f.calls = append(f.calls, r.PostForm)
 		f.paths = append(f.paths, r.URL.Path)
+		fail := f.failHash != "" && r.PostForm.Get("hashes") == f.failHash
 		f.mu.Unlock()
+		if fail {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
 		fmt.Fprint(w, "Ok.")
 	})
 	srv := httptest.NewServer(mux)

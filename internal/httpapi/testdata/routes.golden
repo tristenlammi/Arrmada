@@ -483,6 +483,7 @@ POST /api/v1/quality/preview staff -
 POST /api/v1/quality/profiles staff -
 POST /api/v1/quality/profiles/{id}/hold-existing staff -
 POST /api/v1/quality/test staff -
+POST /api/v1/queue/remove staff -
 POST /api/v1/queue/{hash}/action staff -
 POST /api/v1/queue/{hash}/block staff -
 POST /api/v1/queue/{hash}/category staff -

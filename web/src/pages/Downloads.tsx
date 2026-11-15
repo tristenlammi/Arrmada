@@ -19,7 +19,8 @@ import { isUsenetDownload, leftLine, usenetFailLine, usenetFailed } from "../lib
 import { inClient, isStalled, queueClients, showClientNames, stalledMinutes, transferKey } from "../lib/queueFilter";
 import { downloadPercent } from "../lib/percent";
 import { CardActions, ItemChips, TransferPoster, TransferTitle } from "./activity/transfer";
-import { EmptyState, ErrorState, IconButton, Skeleton, StatusChip, useToast } from "../ui";
+import { QueueBulkBar, Selectable, bulkRemovedMessage } from "./activity/select";
+import { Button, EmptyState, ErrorState, IconButton, Skeleton, StatusChip, useToast } from "../ui";
 
 type MediaFilter = "all" | "movie" | "series" | "book" | "music";
 const MEDIA_FILTERS: readonly MediaFilter[] = ["all", "movie", "series", "book", "music"];
@@ -229,6 +230,18 @@ export function QueuePanel() {
   const [params, setParams] = useSearchParams();
   const problemsOnly = params.get("filter") === "problems";
   const showAll = () => setParams((p) => { const next = new URLSearchParams(p); next.delete("filter"); return next; }, { replace: true });
+  // Select mode: downloads picked (by hash) to remove together. Only what the current view
+  // and filters show is acted on, so a pick hidden by a filter is never removed unseen.
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const togglePick = (hash: string) => setPicked((cur) => {
+    const next = new Set(cur);
+    if (next.has(hash)) next.delete(hash); else next.add(hash);
+    return next;
+  });
+  const stopSelecting = () => { setSelecting(false); setPicked(new Set()); };
+  // Another sub-view is another list: its picks start empty.
+  useEffect(() => { setPicked(new Set()); }, [view]);
 
   useEffect(() => {
     downloadClientApi.downloadClients().then((cs) => {
@@ -338,6 +351,12 @@ export function QueuePanel() {
   const shownSeeding = useMemo(() => filterSort(seedingDownloads, seedSort), [seedingDownloads, query, seedSort, typeFilter, problemsOnly]); // eslint-disable-line react-hooks/exhaustive-deps
   const shownFinishing = useMemo(() => filterSort(finishingDownloads, "name"), [finishingDownloads, query, typeFilter, problemsOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const shownNow = view === "seeding" ? shownSeeding : view === "finishing" ? shownFinishing : view === "stalled" ? shownStalled : shownDownloads;
+  const pickedShown = useMemo(() => shownNow.filter((d) => picked.has(d.hash)), [shownNow, picked]);
+  const sel = (it: ActivityDownload, card: React.ReactNode) => (
+    <Selectable key={transferKey(it)} it={it} selecting={selecting} selected={picked.has(it.hash)} onToggle={() => togglePick(it.hash)}>{card}</Selectable>
+  );
+
   const base = view === "seeding" ? seedingDownloads : view === "finishing" ? finishingDownloads : view === "stalled" ? stalledDownloads : activeDownloads;
   const typeCount = (k: MediaFilter) => (k === "all" ? base.length : base.filter((d) => (d.media_type ?? "movie") === k).length);
   // With the problems filter on, the counts are of problems, so the pills say where they are.
@@ -431,12 +450,19 @@ export function QueuePanel() {
             Problems only ✕
           </button>
         )}
+        <div className="ml-auto flex min-w-0 items-center gap-2">
         {showClients && clientList.length > 0 && (
-          <select value={activeClient} onChange={(e) => setClientFilter(e.target.value)} aria-label="Download client" className="ml-auto max-w-[220px] rounded-lg px-2.5 py-1.5 text-sm" style={{ background: "var(--panel-2)", border: `1px solid ${activeClient ? "var(--accent)" : "var(--line)"}`, color: "var(--ink)" }}>
+          <select value={activeClient} onChange={(e) => setClientFilter(e.target.value)} aria-label="Download client" className="min-w-0 max-w-[220px] rounded-lg px-2.5 py-1.5 text-sm" style={{ background: "var(--panel-2)", border: `1px solid ${activeClient ? "var(--accent)" : "var(--line)"}`, color: "var(--ink)" }}>
             <option value="">All clients</option>
             {clientList.map((c) => <option key={c.id} value={String(c.id)}>{c.name} ({c.count})</option>)}
           </select>
         )}
+        {!noClient && (selecting || shownNow.length > 0) && (
+          <Button size="sm" onClick={() => (selecting ? stopSelecting() : setSelecting(true))} aria-pressed={selecting} title="Pick downloads to remove together">
+            {selecting ? "Done" : "Select"}
+          </Button>
+        )}
+        </div>
       </div>
 
       {!loaded ? null : noClient ? (
@@ -444,28 +470,37 @@ export function QueuePanel() {
       ) : view === "downloading" ? (
         shownDownloads.length === 0 ? <Empty>{problemsOnly ? "No download needs a look right now." : "Nothing downloading. Grab a release and it'll appear here."}</Empty> : (
           <div className="flex flex-col gap-2">
-            {shownDownloads.map((it) => <DownloadCard key={transferKey(it)} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} onNote={note} showClient={showClients} searching={it.hash in failovers} onTryAnother={tryAnother} />)}
+            {shownDownloads.map((it) => sel(it, <DownloadCard it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} onNote={note} showClient={showClients} searching={it.hash in failovers} onTryAnother={tryAnother} />))}
           </div>
         )
       ) : view === "stalled" ? (
         shownStalled.length === 0 ? <Empty>Nothing has stalled. A download counts as stalled after half an hour with no progress.</Empty> : (
           <div className="flex flex-col gap-2">
-            {shownStalled.map((it) => <DownloadCard key={transferKey(it)} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} onNote={note} showClient={showClients} searching={it.hash in failovers} onTryAnother={tryAnother} />)}
+            {shownStalled.map((it) => sel(it, <DownloadCard it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} onNote={note} showClient={showClients} searching={it.hash in failovers} onTryAnother={tryAnother} />))}
           </div>
         )
       ) : view === "finishing" ? (
         shownFinishing.length === 0 ? <Empty>{problemsOnly ? "No finished download needs a look right now." : "Nothing waiting to import. Finished downloads pass through here on their way into the library."}</Empty> : (
           <div className="flex flex-col gap-2">
-            {shownFinishing.map((it) => <FinishingCard key={transferKey(it)} it={it} busy={!!busy[it.hash]} onRemoved={(m) => { note(m); refreshQueue(); }} showClient={showClients} />)}
+            {shownFinishing.map((it) => sel(it, <FinishingCard it={it} busy={!!busy[it.hash]} onRemoved={(m) => { note(m); refreshQueue(); }} showClient={showClients} />))}
           </div>
         )
       ) : (
         shownSeeding.length === 0 ? <Empty>{problemsOnly ? "No seeding download needs a look right now." : "Nothing seeding right now."}</Empty> : (
           <div className="flex flex-col gap-2">
             <SeedingSummary items={shownSeeding} />
-            {shownSeeding.map((it) => <SeedingCard key={transferKey(it)} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} showClient={showClients} />)}
+            {shownSeeding.map((it) => sel(it, <SeedingCard it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={note} showClient={showClients} />))}
           </div>
         )
+      )}
+      {selecting && !noClient && (
+        <QueueBulkBar
+          shown={shownNow}
+          picked={pickedShown}
+          setPicked={setPicked}
+          onRemoved={(r) => { if (r.removed > 0) note(bulkRemovedMessage(r)); if (r.failed.length === 0) setSelecting(false); refreshQueue(); }}
+          onFailed={fail}
+        />
       )}
     </>
   );

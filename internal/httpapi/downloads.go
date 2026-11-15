@@ -208,6 +208,81 @@ func (a *api) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, res)
 }
 
+// maxBulkRemove caps one bulk removal: a whole seeding list picked with "select all", with
+// room to spare, while keeping one request's run of client calls bounded.
+const maxBulkRemove = 500
+
+// bulkRemoveFailure is one download a bulk removal couldn't take out, and why.
+type bulkRemoveFailure struct {
+	Hash  string `json:"hash"`
+	Error string `json:"error"`
+}
+
+// handleBulkRemoveDownloads is the Queue's select mode's Remove: several downloads taken out
+// of the client in one go, {items: [{hash, name}], mode: keep_files | delete_files}. Each
+// goes through exactly the single Delete's removal (Automation.RemoveDownload: the grab
+// closed as removed, a pending review settled, the history line), so picking ten is the same
+// as removing each of them by hand with the same choice. Block isn't offered here: it starts
+// an indexer search per download, and "stop wanting" is worded per download, so both stay
+// one at a time. A download that fails doesn't stop the rest; each failure is reported.
+func (a *api) handleBulkRemoveDownloads(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Items []struct {
+			Hash string `json:"hash"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Mode automation.RemoveMode `json:"mode"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Mode == "" {
+		req.Mode = automation.RemoveKeepFiles
+	}
+	if req.Mode != automation.RemoveKeepFiles && req.Mode != automation.RemoveDeleteFiles {
+		a.writeError(w, http.StatusBadRequest, "mode must be keep_files or delete_files")
+		return
+	}
+	if len(req.Items) == 0 || len(req.Items) > maxBulkRemove {
+		a.writeError(w, http.StatusBadRequest, fmt.Sprintf("pick between 1 and %d downloads", maxBulkRemove))
+		return
+	}
+	// Every key is checked before anything is removed: one "all" or pipe list in the batch
+	// refuses the lot, as it does the single route, rather than removing half of it.
+	seen := make(map[string]bool, len(req.Items))
+	for _, it := range req.Items {
+		if !download.ValidKey(it.Hash) {
+			a.writeError(w, http.StatusBadRequest, "not a torrent hash — "+it.Hash)
+			return
+		}
+	}
+	if a.deps.Automation == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "automation isn't running")
+		return
+	}
+	// The removal runs to the end even if the page is closed part way through: a batch half
+	// removed because a phone locked would be harder to reason about than one that finished.
+	ctx := context.WithoutCancel(r.Context())
+	removed, failed, changed := 0, []bulkRemoveFailure{}, []string{}
+	for _, it := range req.Items {
+		key := strings.ToLower(it.Hash)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if _, err := a.deps.Automation.RemoveDownload(ctx, it.Hash, it.Name, req.Mode, false); err != nil {
+			failed = append(failed, bulkRemoveFailure{Hash: it.Hash, Error: err.Error()})
+			continue
+		}
+		removed++
+		changed = append(changed, key)
+	}
+	if len(changed) > 0 {
+		a.queueChanged(changed...)
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"mode": req.Mode, "removed": removed, "failed": failed})
+}
+
 // handleTorrentAction runs a per-torrent command: recheck, reannounce, or move
 // up/down the queue.
 func (a *api) handleTorrentAction(w http.ResponseWriter, r *http.Request) {

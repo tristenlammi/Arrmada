@@ -558,6 +558,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/queue/{hash}/block", a.requireRole(auth.RoleManager, a.handleBlockDownload))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/action", a.requireRole(auth.RoleManager, a.handleTorrentAction))
 	mux.HandleFunc("DELETE /api/v1/queue/{hash}", a.requireRole(auth.RoleManager, a.handleDeleteDownload))
+	// The Queue's select mode: the same removal as DELETE above, for several at once.
+	mux.HandleFunc("POST /api/v1/queue/remove", a.requireRole(auth.RoleManager, a.handleBulkRemoveDownloads))
 	// Activity → Needs you's actions on a stuck download (needsyou.go).
 	mux.HandleFunc("POST /api/v1/queue/{hash}/failover", a.requireRole(auth.RoleManager, a.handleFailOver))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/category", a.requireRole(auth.RoleManager, a.handleSetCategory))
