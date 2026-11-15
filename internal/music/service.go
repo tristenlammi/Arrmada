@@ -65,6 +65,7 @@ func (s *Service) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	}
 	a.Albums = albums
 	a.Stats = statsFromAlbums(albums)
+	a.CoverURL = standInCover(albums)
 	if a.AppearsOn, err = s.repo.AppearsOn(ctx, id); err != nil {
 		return Artist{}, err
 	}

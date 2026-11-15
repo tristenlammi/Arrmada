@@ -3924,7 +3924,11 @@ export interface Artist {
   name: string;
   sort_name?: string;
   overview?: string;
+  /** A photo of the artist: no source supplies one yet, so it's empty in practice. */
   image_url?: string;
+  /** One of the artist's album covers (held first, then the newest studio album),
+   *  standing in for the photo. */
+  cover_url?: string;
   genres?: string[];
   monitored: boolean;
   quality_profile: string;

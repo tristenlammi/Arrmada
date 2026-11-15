@@ -23,6 +23,7 @@ type Artist struct {
 	SortName       string   `json:"sort_name,omitempty"`
 	Overview       string   `json:"overview,omitempty"`
 	ImageURL       string   `json:"image_url,omitempty"`
+	CoverURL       string   `json:"cover_url,omitempty"` // an album cover standing in for a photo: see standInCover
 	Genres         []string `json:"genres,omitempty"`
 	Monitored      bool     `json:"monitored"`
 	QualityProfile string   `json:"quality_profile"`

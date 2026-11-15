@@ -11,6 +11,7 @@ import { LibraryEmpty } from "../features/library/LibraryEmpty";
 import { NewReleasesModal } from "../components/music/NewReleases";
 import { ScanResultsModal } from "../components/music/ScanResults";
 import { MISSING_MOVED_HINT } from "../components/music/fileMarks";
+import { Artwork } from "../components/music/Artwork";
 import { musicApi } from "../lib/musicApi";
 import { Page } from "../ui/Page";
 
@@ -320,7 +321,7 @@ export function Music() {
             No artists match this filter.
           </div>
         ) : (
-          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {shown.map((a) => (
               <ArtistCard
                 key={a.id}
@@ -370,46 +371,47 @@ function ArtistCard({
   const st = libraryStatus(statusInput(a));
   const tone = TONE_HUE[st.tone];
 
+  // The artist's photo when a source has one; otherwise one of its album covers, then its
+  // initials (Artwork falls back when a cover won't load).
   const body = (
     <>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2">
-          {selectable && (
-            <span
-              className="mt-0.5 grid h-4 w-4 flex-none place-items-center rounded text-xs font-bold"
-              style={{
-                border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`,
-                background: selected ? "var(--accent)" : "transparent",
-                color: "var(--accent-ink)",
-              }}
-            >
-              {selected ? "✓" : ""}
-            </span>
-          )}
-          <div className="min-w-0">
-            <div className="truncate text-md font-semibold">{a.name}</div>
-            <div className="mt-0.5 truncate text-xs text-ink-faint">
-              {albumsDone}/{albums} album{albums === 1 ? "" : "s"}
-              {a.genres && a.genres.length > 0 && <> · {a.genres[0]}</>}
-            </div>
+      <div className="relative">
+        <Artwork src={a.image_url || a.cover_url} name={a.name} kind="artist" size={500} className="aspect-square w-full" />
+        {selectable && (
+          <span
+            className="absolute left-2 top-2 grid h-5 w-5 place-items-center rounded text-xs font-bold"
+            style={{
+              border: `1px solid ${selected ? "var(--accent)" : "rgba(255,255,255,.8)"}`,
+              background: selected ? "var(--accent)" : "rgba(14,10,7,.6)",
+              color: "var(--accent-ink)",
+            }}
+          >
+            {selected ? "✓" : ""}
+          </span>
+        )}
+      </div>
+      <div className="flex min-w-0 flex-col gap-1.5 p-3">
+        <div className="min-w-0">
+          <div className="truncate text-md font-semibold" title={a.name}>{a.name}</div>
+          <div className="mt-0.5 truncate text-xs text-ink-faint">
+            {albumsDone}/{albums} album{albums === 1 ? "" : "s"}
+            {a.genres && a.genres.length > 0 && <> · {a.genres[0]}</>}
           </div>
         </div>
-        <StatusChip tone={st.tone} className="flex-none">
-          {st.label}
-        </StatusChip>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+          <StatusChip tone={st.tone}>{st.label}</StatusChip>
+          <span className="font-mono text-xs text-ink-faint" title="Tracks on disk, of the tracks wanted">
+            {all > 0 ? `${done}/${all}` : "—"}
+          </span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
           <div className="h-full rounded-full" style={{ width: `${pct}%`, background: tone }} />
         </div>
-        <span className="flex-none font-mono text-xs text-ink-faint" title="Tracks on disk, of the tracks wanted">
-          {all > 0 ? `${done}/${all}` : "—"}
-        </span>
       </div>
     </>
   );
 
-  const cls = "flex flex-col gap-2 rounded-xl p-3.5 text-left transition-colors hover:bg-[var(--panel-2)]";
+  const cls = "flex min-w-0 flex-col overflow-hidden rounded-xl text-left transition-colors hover:bg-[var(--panel-2)]";
   const style = {
     background: selected ? "var(--accent-soft)" : "var(--panel)",
     border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`,
