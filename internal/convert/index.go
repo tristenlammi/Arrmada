@@ -46,6 +46,11 @@ type indexRow struct {
 	VersionLabel string
 }
 
+// ref is the title the row belongs to, for its plan.
+func (r indexRow) ref() titleRef {
+	return titleRef{Kind: r.MediaType, MovieID: r.MovieID, SeriesID: r.SeriesID, OrigLang: r.OrigLang}
+}
+
 // rowMeta is what the indexer needs to know about an indexed file to decide whether it's
 // up to date without touching the disk.
 type rowMeta struct {
@@ -496,7 +501,7 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 		if infoJSON == "" || json.Unmarshal([]byte(infoJSON), &mi) != nil {
 			continue
 		}
-		_, needs := p.planFor(&mi, path, orig, dirCache)
+		_, needs := p.planForTitle(&mi, path, titleRef{Kind: "episode", SeriesID: id, OrigLang: orig}, dirCache)
 		switch {
 		case needs.Worth:
 			r.Convertible++
@@ -646,7 +651,7 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 		convertible := false
 		if probed {
 			hdr = mi.HDR
-			_, needs := p.planFor(&mi, path, orig, dirCache)
+			_, needs := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, OrigLang: orig}, dirCache)
 			convertible = needs.Worth
 			if convertible {
 				est = size - needs.Save
@@ -718,7 +723,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 				c.Info = &mi
 				// The gap is derived here, not stored — changing a setting takes effect
 				// immediately with no reindex.
-				plan, needs := p.planFor(&mi, r.Path, r.OrigLang, dirCache)
+				plan, needs := p.planForTitle(&mi, r.Path, r.ref(), dirCache)
 				c.Needs, c.Candidate, c.Worth, c.SaveBytes = needs, needs.Any(), needs.Worth, needs.Save
 				if c.Candidate {
 					c.EstBytes = mi.SizeBytes - needs.Save

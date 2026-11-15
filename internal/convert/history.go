@@ -127,12 +127,17 @@ func trackDecisions(mi *MediaInfo, plan Plan) []TrackDecision {
 	for _, sub := range keptSubs(mi, plan) {
 		keptS[sub.SubIndex] = true
 	}
+	langKept := langFilteredSubs(mi, plan)
+	audio := mainAudioLang(mi, plan)
 	for _, sub := range mi.Subs {
 		d := TrackDecision{Type: "subtitle", Index: sub.SubIndex, Codec: sub.Codec, Lang: sub.Lang,
 			Forced: sub.Forced, Image: !sub.Text, Keep: keptS[sub.SubIndex]}
 		if !d.Keep {
 			langOK := len(plan.Subs.KeepLangs) == 0 || langIn(sub.Lang, plan.Subs.KeepLangs)
+			byProfile, why := profileSubDrop(sub, langKept, audio, plan.Subs.Rules)
 			switch {
+			case langOK && byProfile:
+				d.Reason = why
 			case !sub.Text && langOK && plan.Subs.ImageSubs == ImageSubsRemove:
 				d.Reason = "image subtitles removed"
 			case !sub.Text && langOK:

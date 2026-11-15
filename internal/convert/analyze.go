@@ -114,6 +114,9 @@ type SubStream struct {
 	// from the disposition flag or a title saying so.
 	Forced bool   `json:"forced,omitempty"`
 	Title  string `json:"title,omitempty"`
+	// HearingImpaired is the disposition flag for an SDH track (a title saying so counts
+	// too: see isSDH). Older cache rows lack it and fall back on the title.
+	HearingImpaired bool `json:"hearing_impaired,omitempty"`
 }
 
 // EncodeHDR is the HDR format a conversion carries forward. For everything but Dolby Vision
@@ -287,6 +290,7 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 				AttachedPic int `json:"attached_pic"`
 				Comment     int `json:"comment"`
 				Forced      int `json:"forced"`
+				Hearing     int `json:"hearing_impaired"`
 			} `json:"disposition"`
 			Tags struct {
 				Language string `json:"language"`
@@ -414,8 +418,9 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 				SubIndex: mi.SubTracks, Codec: s.CodecName, Lang: s.Tags.Language, Text: textSubCodecs[s.CodecName],
 				// Many releases mark forced tracks only in the title. Older cache rows lack
 				// the title and keep the flag alone; a new probe picks it up.
-				Forced: s.Disposition.Forced == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "forced"),
-				Title:  s.Tags.Title,
+				Forced:          s.Disposition.Forced == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "forced"),
+				Title:           s.Tags.Title,
+				HearingImpaired: s.Disposition.Hearing == 1,
 			})
 			mi.SubTracks++
 		}

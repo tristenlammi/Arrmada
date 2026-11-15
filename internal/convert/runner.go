@@ -316,7 +316,7 @@ func (s *Service) computeCandidates(ctx context.Context, p prefs) []autoCand {
 		if json.Unmarshal([]byte(infoJSON), &mi) != nil {
 			continue
 		}
-		plan, n := p.planFor(&mi, path, orig, dirCache)
+		plan, n := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, OrigLang: orig}, dirCache)
 		if !n.Worth {
 			continue
 		}

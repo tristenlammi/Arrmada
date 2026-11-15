@@ -68,6 +68,10 @@ type prefs struct {
 	keepOriginal, dropCommentary          bool
 	keepSubs                              []string // resolved: SameAsSubtitles expanded (sublangs.go)
 	keepSubsSaved                         string   // as saved, sentinel and all, for the settings page
+	// subRules is each title's Subtitles profile while the keep-list follows Subtitles
+	// (subrules.go); nil otherwise. subKey changes when any of them could have.
+	subRules func(titleRef) []SubRule
+	subKey   string
 	imageSubs                             string
 	tidyTracks                            bool
 	// crop is off unless you turned it on: a brief wider shot between the samples could
@@ -108,6 +112,9 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		doviTool:       s.doviTool != "",
 	}
 	p.keepSubs = s.keepSubLangs(ctx, p.keepSubsSaved)
+	if p.subRules = s.subRulesFor(ctx, p.keepSubsSaved); p.subRules != nil && s.subProfiles.Key != nil {
+		p.subKey = s.subProfiles.Key(ctx)
+	}
 	switch p.imageSubs {
 	case ImageSubsKeep, ImageSubsWhenText, ImageSubsRemove:
 	default:
@@ -123,8 +130,8 @@ func (s *Service) prefs(ctx context.Context) prefs {
 // cacheKey identifies the settings that change which files need work, for cached views —
 // and resumable, which changes the scratch space each one needs.
 func (p prefs) cacheKey() string {
-	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
-		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable)
+	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v|%v|%s", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
+		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable, p.subRules != nil, p.subKey)
 }
 
 // Needs is the gap between a file and the target.
@@ -252,9 +259,18 @@ func (p prefs) basePlan() Plan {
 // a side-by-side test picks). A file whose picture is fine gets a copy plan that only
 // rewrites the tracks: minutes, and bit-for-bit identical video.
 func (p prefs) planFor(mi *MediaInfo, path, origLang string, dirCache map[string][]string) (Plan, Needs) {
+	return p.planForTitle(mi, path, titleRef{OrigLang: origLang}, dirCache)
+}
+
+// planForTitle is planFor knowing the title the file belongs to, so "Same as Subtitles"
+// can follow that title's own Subtitles profile.
+func (p prefs) planForTitle(mi *MediaInfo, path string, t titleRef, dirCache map[string][]string) (Plan, Needs) {
 	plan := withSidecars(p.basePlan(), path, dirCache)
 	if p.keepOriginal {
-		plan.Audio.OriginalLang = origLang
+		plan.Audio.OriginalLang = t.OrigLang
+	}
+	if p.subRules != nil {
+		plan.Subs.Rules = p.subRules(t)
 	}
 	n := needsOf(mi, plan)
 	if n.Video && mi.HDR == "Dolby Vision" {

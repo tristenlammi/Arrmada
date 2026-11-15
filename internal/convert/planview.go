@@ -76,7 +76,7 @@ func (s *Service) PlanView(ctx context.Context, key string) (PlanView, error) {
 		return PlanView{}, err
 	}
 	p := s.prefs(ctx)
-	plan, needs := p.planFor(r.Info, r.Path, r.OrigLang, nil)
+	plan, needs := p.planForTitle(r.Info, r.Path, r.ref(), nil)
 	return s.planView(ctx, p, r, plan, needs), nil
 }
 

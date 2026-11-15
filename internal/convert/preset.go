@@ -181,7 +181,7 @@ func defaultAudio(kept []AudioStream, plan Plan) int {
 // keptSubs applies the plan's subtitle choices. With no filter and image subs kept, every
 // track is kept, so the untouched path stays byte-identical.
 func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
-	return imageSubsStep(langFilteredSubs(mi, plan), plan)
+	return imageSubsStep(profileSubs(langFilteredSubs(mi, plan), mi, plan), plan)
 }
 
 // langFilteredSubs is the subtitle language filter on its own.
