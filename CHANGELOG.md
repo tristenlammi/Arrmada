@@ -11,7 +11,48 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
+### Highlights
+
+- **Delete a season's files**, and deleting a show or a season cancels its downloads in
+  progress (#111).
+- **Remove several downloads at once** from Activity's queue (#112).
+- **Music looks like a library**: artist pictures and album covers (#113). Music imports
+  are more forgiving too: a held folder can match another pressing (#116), bonus and demo
+  tracks no longer hold an album back, and searches skip live albums, demos and best-ofs
+  that share a studio album's name (#115).
+- **Convert's "Same as Subtitles" follows each title's Subtitles profile** (#100), so the
+  embedded subtitle tracks a profile doesn't want go too.
+- **Forget missing files** for files you deleted on purpose outside Arrmada (#97).
+- **Convert no longer waits 12 hours** on a fresh Usenet download (#99).
+
+### Before you update
+
+- **Convert may remove more embedded subtitle tracks** if its subtitle setting is
+  **Same as Subtitles** (#100). For a language a title's Subtitles profile names, the full
+  and SDH tracks the profile doesn't want now go too: with "Only when the audio is another
+  language", an English film's full English track goes, and under "Never SDH" an SDH track
+  goes when a plain one stays. Forced tracks always stay. Removing a track can't be undone
+  once the original has left Convert's hold. With **Tidy tracks even when that's all a file
+  needs** on, files already converted are tidied again by these rules. To keep every track
+  of your languages, choose **These languages** in Convert's settings and list them.
+- **Music searches no longer grab live albums, demos, best-ofs, remix albums, karaoke or
+  instrumentals for a studio album of the same name** (#115). An album that is that kind
+  on MusicBrainz still gets them.
+- **Deleting a show or a season cancels its downloads in progress by default**, with their
+  partial data (#111). Untick it in the dialog to let them finish.
+- **A show with searching off no longer grabs a replacement by itself** when a download
+  stalls, fails or disappears. Try another release in Needs you still does.
+- **An already-imported season pack only refills monitored episodes.** It used to put back
+  any missing episode of its season, monitored or not, from the pack still seeding.
+- **Rolling back to v0.4.0 needs no `--with-db`**: this version adds no database changes.
+
 ### Added
+
+- **Remove a book from Continue listening** on the Listen tab, with Undo. It's the same as
+  the listening apps' "Remove from Continue Listening": only for you, your place is kept, and
+  listening again puts the book back.
 
 - **Forget missing files**, in a show's ⋯ menu ([#97](https://github.com/tristenlammi/Arrmada/issues/97)). If you deleted a show's files on purpose, outside Arrmada, a rescan refuses to clear them in case a disk is down. This is how you say it wasn't one: the episodes go back to missing, and nothing on disk is touched. A TV folder that looks unmounted is still refused.
 - **Remove several downloads at once** ([#112](https://github.com/tristenlammi/Arrmada/issues/112)). Activity's queue has **Select**: tick downloads (or All, which picks what the current filters show), then Remove, keeping or deleting their files. Each one goes exactly as a single remove does. Blocking and "stop wanting" stay on the single remove.
@@ -29,6 +70,8 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 - **Bonus and demo tracks no longer hold a whole album back** ([#115](https://github.com/tristenlammi/Arrmada/issues/115)). When a download grabbed for an album has every track of it plus extras, the extras stay in the download and the album imports. Before, enough extras pushed the match score over the limit and the whole download went to Needs you.
 - **Music searches skip live albums, demos, best-ofs and remixes that share a studio album's name** ([#115](https://github.com/tristenlammi/Arrmada/issues/115)). "Album (Live at Donington)" no longer gets grabbed for "Album". It's still allowed when the album is that kind itself on MusicBrainz, when its own title or artist says the word ("Live Through This", the band Live), or when the words only describe bonus tracks ("Deluxe incl. Live Tracks", a "2019 Remix" reissue). Interactive search shows the reason.
 - **Convert's "Same as Subtitles" follows each title's Subtitles profile** ([#100](https://github.com/tristenlammi/Arrmada/issues/100)), not just its languages. With English set to "Full + forced", "Never SDH" and "Only when the audio is another language", an English show kept its full English and SDH tracks. Now the full and SDH tracks go there, and only the forced one stays. "Never SDH" removes an SDH track only when a plain full track of that language stays. Forced tracks always stay, including ones titled signs, songs or foreign. The audio only counts as English when every audio track kept is English, so a dub beside the original keeps the subtitles. A language you also typed in by hand keeps all its tracks. With "Tidy tracks even when that's all a file needs" on, files that now carry unwanted tracks are tidied again.
+- **The subtitle chips on a show's episodes no longer vanish** when you come back to the
+  show within a minute.
 - **Every season can be reached with a mouse.** A show's season row scrolled sideways only by swipe or shift + wheel, so seasons past either edge looked missing. An arrow now shows at whichever end has more.
 - **Prowlarr link on Unraid** ([#101](https://github.com/tristenlammi/Arrmada/issues/101)): the Prowlarr panel and the Unraid guide now explain the two port settings that have to match.
 
@@ -1198,7 +1241,8 @@ The first tagged release (early development).
 - **Safety nets**: hardlinked imports, a recycle bin, nightly backups, a blocklist, and
   `update.sh` with automatic rollback.
 
-[Unreleased]: https://github.com/tristenlammi/Arrmada/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tristenlammi/Arrmada/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tristenlammi/Arrmada/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tristenlammi/Arrmada/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/tristenlammi/Arrmada/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tristenlammi/Arrmada/compare/v0.3.1...v0.3.2
