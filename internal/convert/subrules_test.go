@@ -137,3 +137,43 @@ func TestIsSDH(t *testing.T) {
 		t.Error("the disposition flag should count")
 	}
 }
+
+// The review's cases: none of these may lose a subtitle someone needs.
+func TestProfileSubsReviewCases(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	s.SetSubtitleLangs(func(context.Context) []string { return []string{"en"} })
+	s.SetSubtitleProfiles(SubtitleProfiles{Rules: func(context.Context, string, int64, int64) []SubRule {
+		return []SubRule{{Lang: "en", Full: true, OnlyIfAudioDiffers: true, NoSDH: true}}
+	}})
+	show := titleRef{Kind: "episode", SeriesID: 1}
+
+	set(t, s, map[string]string{keyKeepSubLangs: SameAsSubtitles})
+	p := s.prefs(ctx)
+	// A dub beside the original: which one is watched can't be told, so English stays.
+	dual := withSubs(film("hevc", 1920, 1080, 8000, aud("aac", "eng", 2), aud("flac", "jpn", 2)), srt("eng"))
+	plan, _ := p.planForTitle(dual, "/a.mkv", show, nil)
+	if got := keptNames(dual, plan); !reflect.DeepEqual(got, []string{"eng"}) {
+		t.Errorf("dual audio kept %v, want the English track", got)
+	}
+	// An unflagged signs-and-songs track is forced in all but name.
+	signs := withSubs(film("hevc", 1920, 1080, 8000, aud("aac", "eng", 2)), titled(srt("eng"), "Signs & Songs"), srt("eng"))
+	plan, _ = p.planForTitle(signs, "/a.mkv", show, nil)
+	if got := keptNames(signs, plan); !reflect.DeepEqual(got, []string{"eng/Signs & Songs"}) {
+		t.Errorf("kept %v, want the signs track", got)
+	}
+	// A commentary track doesn't stand in for the SDH one.
+	comm := withSubs(film("hevc", 1920, 1080, 8000, aud("aac", "fre", 2)), titled(srt("eng"), "Commentary"), titled(srt("eng"), "English SDH"))
+	plan, _ = p.planForTitle(comm, "/a.mkv", show, nil)
+	if got := keptNames(comm, plan); !reflect.DeepEqual(got, []string{"eng/Commentary", "eng/English SDH"}) {
+		t.Errorf("kept %v, want the SDH track kept beside the commentary", got)
+	}
+
+	// Image subtitles removed: a PGS that's about to go doesn't stand in for the SDH text.
+	set(t, s, map[string]string{keyKeepSubLangs: SameAsSubtitles, keyImageSubs: ImageSubsRemove})
+	img := withSubs(film("hevc", 1920, 1080, 8000, aud("aac", "fre", 2)), pgs("eng"), titled(srt("eng"), "SDH"))
+	plan, _ = s.prefs(ctx).planForTitle(img, "/a.mkv", show, nil)
+	if got := keptNames(img, plan); !reflect.DeepEqual(got, []string{"eng/SDH"}) {
+		t.Errorf("kept %v, want the SDH text track (the PGS goes)", got)
+	}
+}

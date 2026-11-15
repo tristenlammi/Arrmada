@@ -86,7 +86,7 @@ export function DeleteSeasonDialog({ seriesId, season, name, monitored, onClose,
               </span>
             </label>
           )}
-          {pending.length > 0 && <CancelDownloadsBox pending={pending} checked={cancelDownloads} disabled={busy} onChange={setCancelDownloads} />}
+          {pending.length > 0 && <CancelDownloadsBox pending={pending} checked={cancelDownloads} disabled={busy} onChange={setCancelDownloads} leftRunning={`Left running, ${pending.length === 1 ? "it's" : "they're"} imported into ${name} when ${pending.length === 1 ? "it finishes" : "they finish"}.`} />}
         </div>
       }
       confirmLabel="Delete files"

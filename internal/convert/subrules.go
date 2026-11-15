@@ -16,9 +16,12 @@ import (
 //   - a full track goes when the profile doesn't want the full subtitle for this file
 //     (forced only, or the main audio is already that language and the profile says to
 //     skip it then);
-//   - an SDH track goes under "Never SDH" when a plain full track of the language stays.
+//   - an SDH track goes under "Never SDH" when a plain full track of the language stays
+//     (a text one, when image subtitles are removed; never a commentary track).
 //
-// A forced track always stays: it's a few lines, and players pick it on their own. A track
+// A forced track always stays (flagged, or titled forced, signs, songs or foreign): it's a
+// few lines, and players pick it on their own. The audio counts as one language only when
+// every audio track kept is tagged with it: a dub beside the original keeps the subtitles. A track
 // in no language, or a language the profile doesn't name (another profile's, or one added
 // beside "Same as Subtitles" by hand), is left to the language list as before. A main
 // audio that can't be read keeps every full track: better a subtitle too many than none.
@@ -129,24 +132,58 @@ func isSDH(s SubStream) bool {
 	return false
 }
 
-// mainAudioLang is the language the file's main audio will be in: the first audio track it
-// keeps, as a base code, or "" when that track is untagged.
+// mainAudioLang is the one language the file's audio will be in: every audio track it
+// keeps tagged with the same base language. "" when they differ (a dub beside the original:
+// which one is watched can't be told, and the default flag isn't probed) or any is untagged.
+// Only then can "the audio is already this language" drop a subtitle.
 func mainAudioLang(mi *MediaInfo, plan Plan) string {
-	aud := keptAudio(mi, plan)
-	if len(aud) == 0 {
-		return ""
+	lang := ""
+	for _, a := range keptAudio(mi, plan) {
+		if a.Commentary {
+			continue // a commentary track says nothing about what the film is watched in
+		}
+		l := strings.ToLower(strings.TrimSpace(a.Lang))
+		if l == "" || l == "und" {
+			return ""
+		}
+		b := langtab.Base(l)
+		if lang != "" && b != lang {
+			return ""
+		}
+		lang = b
 	}
-	l := strings.ToLower(strings.TrimSpace(aud[0].Lang))
-	if l == "" || l == "und" {
-		return ""
+	return lang
+}
+
+// forcedLike is a track that's only some of the lines: flagged forced, or titled as forced,
+// signs or songs, or the foreign parts. It's never dropped by a profile.
+func forcedLike(s SubStream) bool {
+	if s.Forced {
+		return true
 	}
-	return langtab.Base(l)
+	t := strings.ToLower(s.Title)
+	for _, w := range []string{"forced", "sign", "song", "foreign"} {
+		if strings.Contains(t, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// plainCover is a track that stands in for an SDH one under "Never SDH": a full subtitle of
+// the language, not SDH, not commentary, and one that will really stay (a text track when
+// image subtitles are removed).
+func plainCover(o SubStream, lang string, plan Plan) bool {
+	return !forcedLike(o) && !isSDH(o) && !strings.Contains(strings.ToLower(o.Title), "commentary") &&
+		(o.Text || plan.Subs.ImageSubs != ImageSubsRemove) &&
+		langtab.Match(strings.ToLower(strings.TrimSpace(o.Lang)), langtab.Base(lang))
 }
 
 // profileSubDrop says whether the title's profile drops one subtitle track, and why. subs
 // is every track still in the running, so "Never SDH" can see whether a plain one stays.
-func profileSubDrop(s SubStream, subs []SubStream, audio string, rules []SubRule) (bool, string) {
-	if s.Forced || len(rules) == 0 {
+func profileSubDrop(s SubStream, subs []SubStream, audio string, plan Plan) (bool, string) {
+	rules := plan.Subs.Rules
+	if forcedLike(s) || len(rules) == 0 {
 		return false, ""
 	}
 	r, ok := subRule(s.Lang, rules)
@@ -161,7 +198,7 @@ func profileSubDrop(s SubStream, subs []SubStream, audio string, rules []SubRule
 	}
 	if r.NoSDH && isSDH(s) {
 		for _, o := range subs {
-			if o.SubIndex != s.SubIndex && !o.Forced && !isSDH(o) && langtab.Match(strings.ToLower(o.Lang), langtab.Base(r.Lang)) {
+			if o.SubIndex != s.SubIndex && plainCover(o, r.Lang, plan) {
 				return true, "the Subtitles profile says never SDH"
 			}
 		}
@@ -177,7 +214,7 @@ func profileSubs(subs []SubStream, mi *MediaInfo, plan Plan) []SubStream {
 	audio := mainAudioLang(mi, plan)
 	out := make([]SubStream, 0, len(subs))
 	for _, s := range subs {
-		if drop, _ := profileSubDrop(s, subs, audio, plan.Subs.Rules); !drop {
+		if drop, _ := profileSubDrop(s, subs, audio, plan); !drop {
 			out = append(out, s)
 		}
 	}

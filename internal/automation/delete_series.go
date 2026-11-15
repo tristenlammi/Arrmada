@@ -174,10 +174,10 @@ type DeleteSeasonOpts struct {
 	CancelDownloads bool // only grabs made for exactly this season
 }
 
-// DeleteSeason moves one season's files to the recycle bin (series.DeleteSeasonFiles),
-// optionally stops monitoring it, and cancels the season's own downloads when asked. The
-// season is unmonitored first, so a search can't pick it up in between; if no file could
-// be moved, its monitoring is put back.
+// DeleteSeason moves one season's files to the recycle bin (series.DeleteSeasonFiles), then
+// stops monitoring it and cancels the season's own downloads when asked. The show stays,
+// so a download left running is left exactly as it was: still in flight, imported into the
+// season when it finishes. Nothing is changed when no file could be moved.
 func (c *Coordinator) DeleteSeason(ctx context.Context, id int64, season int, opts DeleteSeasonOpts) (series.DeleteSummary, error) {
 	if c.series == nil {
 		return series.DeleteSummary{}, errors.New("the series module isn't ready")
@@ -186,47 +186,33 @@ func (c *Coordinator) DeleteSeason(ctx context.Context, id int64, season int, op
 	if err != nil {
 		return series.DeleteSummary{}, err
 	}
-	wasMonitored, found := false, false
+	monitored, found := false, false
 	for _, sn := range s.Seasons {
 		if sn.SeasonNumber == season {
-			wasMonitored, found = sn.Monitored, true
+			monitored, found = sn.Monitored, true
 		}
 	}
 	if !found {
 		return series.DeleteSummary{}, series.ErrNoSuchSeason
 	}
-	grabs, err := c.pendingSeriesGrabs(ctx, id, season)
-	if err != nil {
-		return series.DeleteSummary{}, err
-	}
-	if opts.Unmonitor && wasMonitored {
-		if err := c.series.SetSeasonMonitored(ctx, id, int64(season), false); err != nil {
-			return series.DeleteSummary{}, err
-		}
-	}
-	for _, g := range grabs {
-		c.setGrabStatus(ctx, g.id, grabStatusOrphaned)
-	}
 	sum, err := c.series.DeleteSeasonFiles(ctx, id, season)
-	if err != nil {
-		// Stopped partway or never started: its downloads carry on as they were, and a
-		// season nothing went from is wanted again as before.
-		for _, g := range grabs {
-			c.setGrabStatus(ctx, g.id, grabStatusGrabbed)
-		}
-		if len(sum.Moved) > 0 {
-			return sum, err
-		}
-		if opts.Unmonitor && wasMonitored {
-			if rerr := c.series.SetSeasonMonitored(ctx, id, int64(season), true); rerr != nil {
-				c.log.Warn("season delete: couldn't put its monitoring back", "series_id", id, "season", season, "err", rerr)
-			}
-		}
+	if err != nil && len(sum.Moved) == 0 {
 		return sum, err
 	}
-	if opts.CancelDownloads {
+	// Files went (all, or some before a refusal): the season is what the person asked for
+	// now, whatever stopped the rest.
+	if opts.Unmonitor && monitored {
+		if uerr := c.series.SetSeasonMonitored(ctx, id, int64(season), false); uerr != nil {
+			c.log.Warn("season delete: couldn't stop monitoring it", "series_id", id, "season", season, "err", uerr)
+		}
+	}
+	if opts.CancelDownloads && err == nil {
+		grabs, gerr := c.pendingSeriesGrabs(ctx, id, season)
+		if gerr != nil {
+			c.log.Warn("season delete: couldn't list its downloads", "series_id", id, "season", season, "err", gerr)
+		}
 		c.cancelSeriesGrabs(ctx, grabs)
 	}
 	c.log.Info("season files deleted", "series_id", id, "season", season, "moved", len(sum.Moved), "unmonitor", opts.Unmonitor, "cancel", opts.CancelDownloads)
-	return sum, nil
+	return sum, err
 }

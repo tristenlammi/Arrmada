@@ -63,3 +63,43 @@ func TestScanFolderMatchOfNothingKeepsTheEdition(t *testing.T) {
 		t.Errorf("the edition switched (%d → %d) though nothing was recorded", before.TargetEditionID, after.TargetEditionID)
 	}
 }
+
+// An album that already holds files stays on its edition: moving it would leave those files
+// on tracks the new edition doesn't list. Only a person's own choice of edition moves it.
+func TestScanFolderMatchKeepsTheEditionOfAnAlbumWithFiles(t *testing.T) {
+	r := newMatchRig(t, false, nil)
+	std := r.editionID(t, "rel-std")
+	stdFiles := trackFileNames(okcTitles)
+	r.tagAll(stdFiles, okcTitles)
+	held := filepath.Join(r.h.c.imp.MusicDir(), "Radiohead", "OK Computer")
+	for _, f := range stdFiles {
+		blobTrack(t, held, f, 1)
+	}
+	match := func(name, dir string) error {
+		res, err := r.h.c.db.Exec(`INSERT INTO import_reviews (hash, name, content_path, media_type, expected_id, reason, reason_code)
+			VALUES (?, ?, ?, 'music', 0, 'held', 'unmatched')`, scanReviewPrefix+name, name, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		return r.h.c.ImportReview(r.h.ctx, id, r.album.ID, "music")
+	}
+	if err := match("std", held); err != nil {
+		t.Fatalf("first match: %v", err)
+	}
+	if al, _ := r.svc.AlbumRecord(r.h.ctx, r.album.ID); al.TargetEditionID != std || al.HaveTracks != 6 {
+		t.Fatalf("after the first folder: target %d (want %d), have %d (want 6)", al.TargetEditionID, std, al.HaveTracks)
+	}
+
+	all := append(append([]string(nil), okcTitles...), okcBonus...)
+	dlxFiles := trackFileNames(all)
+	r.tagAll(dlxFiles, all)
+	second := filepath.Join(r.h.c.imp.MusicDir(), "Radiohead", "OK Computer (Deluxe)")
+	for _, f := range dlxFiles {
+		blobTrack(t, second, f, 2)
+	}
+	_ = match("dlx", second) // nothing new to record on the standard: refused, and that's fine
+	if al, _ := r.svc.AlbumRecord(r.h.ctx, r.album.ID); al.TargetEditionID != std || al.HaveTracks != 6 {
+		t.Errorf("target %d (want the standard %d still), have %d (want 6)", al.TargetEditionID, std, al.HaveTracks)
+	}
+}

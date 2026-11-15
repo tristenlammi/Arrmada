@@ -105,11 +105,13 @@ export function DeleteSeriesDialog({ series, onClose, onDeleted }: {
 
 // CancelDownloadsBox offers to cancel a show's (or a season's) downloads still in progress,
 // naming each one.
-export function CancelDownloadsBox({ pending, checked, disabled, onChange }: {
+export function CancelDownloadsBox({ pending, checked, disabled, onChange, leftRunning }: {
   pending: PendingSeriesDownload[];
   checked: boolean;
   disabled: boolean;
   onChange: (on: boolean) => void;
+  /** What happens to a download left running; a removed show's wait in Needs you. */
+  leftRunning?: string;
 }) {
   return (
     <label className="flex items-start gap-2.5 rounded-lg p-3 text-base" style={{ border: `1px solid ${checked ? "var(--reject)" : "var(--line)"}`, background: checked ? "var(--reject-soft)" : "var(--panel-2)", cursor: "pointer" }}>
@@ -121,7 +123,7 @@ export function CancelDownloadsBox({ pending, checked, disabled, onChange }: {
         {pending.map((d) => (
           <span key={d.hash || d.title} className="mt-0.5 block break-all font-mono text-xs text-ink-faint">{d.title}{d.progress > 0 ? ` · ${downloadPercent(d.progress)}` : ""}</span>
         ))}
-        {!checked && <span className="mt-0.5 block text-xs text-ink-faint">Left running, {pending.length === 1 ? "it waits" : "each waits"} in Activity → Needs you when it finishes instead of coming back into the library.</span>}
+        {!checked && <span className="mt-0.5 block text-xs text-ink-faint">{leftRunning ?? `Left running, ${pending.length === 1 ? "it waits" : "each waits"} in Activity → Needs you when it finishes instead of coming back into the library.`}</span>}
       </span>
     </label>
   );

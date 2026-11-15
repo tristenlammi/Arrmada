@@ -2313,6 +2313,11 @@ func (s *Service) SeasonHasMissing(ctx context.Context, seriesID int64, season i
 	return s.repo.SeasonHasMissing(ctx, seriesID, season)
 }
 
+// SeasonHasWantedMissing counts only monitored episodes (repo.SeasonHasWantedMissing).
+func (s *Service) SeasonHasWantedMissing(ctx context.Context, seriesID int64, season int) bool {
+	return s.repo.SeasonHasWantedMissing(ctx, seriesID, season)
+}
+
 // MarkEpisodeMissing flips an episode back to wanted (no file on disk) — used by
 // rescan to reconcile episodes whose file was deleted or moved away.
 func (s *Service) MarkEpisodeMissing(ctx context.Context, seriesID int64, season, episode int) error {

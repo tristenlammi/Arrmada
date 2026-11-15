@@ -152,6 +152,8 @@ test.describe("series page", () => {
 
     await page.goto("/series/1?season=1");
     const e2 = page.locator('[data-episode="S01E02"]');
+    // The chips load once the cards are seen: on a phone they start below the fold.
+    await e2.scrollIntoViewIfNeeded();
     await expect(e2.getByRole("button", { name: "subs · 1 missing" })).toBeVisible();
     await expect(page.locator('[data-episode="S01E01"]').getByRole("button", { name: "subs ✓" })).toBeVisible();
     await e2.getByRole("button", { name: "subs · 1 missing" }).click();

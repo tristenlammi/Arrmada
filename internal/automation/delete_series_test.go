@@ -71,8 +71,8 @@ func TestDeleteSeasonCancelsOnlyItsOwnDownloads(t *testing.T) {
 	}
 }
 
-// Without cancel or unmonitor, a season delete leaves the downloads running and the season
-// wanted.
+// Without cancel or unmonitor, a season delete leaves the downloads exactly as they were
+// (still in flight, so the sweep doesn't grab a second copy) and the season wanted.
 func TestDeleteSeasonLeavesDownloadsUnlessAsked(t *testing.T) {
 	c, calls, id, _, s2, _ := seriesDeleteCoord(t)
 	ctx := context.Background()
@@ -82,8 +82,8 @@ func TestDeleteSeasonLeavesDownloadsUnlessAsked(t *testing.T) {
 	if len(*calls) != 0 {
 		t.Errorf("remove calls = %+v, want none", *calls)
 	}
-	if got := grabStatus(t, c, s2); got != grabStatusOrphaned {
-		t.Errorf("season 2's grab = %q, want orphaned (its import goes to Reviews)", got)
+	if got := grabStatus(t, c, s2); got != grabStatusGrabbed {
+		t.Errorf("season 2's grab = %q, want still grabbed", got)
 	}
 	s, _ := c.series.Get(ctx, id)
 	for _, sn := range s.Seasons {

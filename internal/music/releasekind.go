@@ -22,14 +22,20 @@ var releaseKinds = []releaseKind{
 	{regexp.MustCompile(`(?i)\b(live|unplugged|in concert)\b`), "Live", "a live recording"},
 	{regexp.MustCompile(`(?i)\bdemos?\b`), "Demo", "demos"},
 	{regexp.MustCompile(`(?i)\b(greatest hits|best of|the very best|anthology)\b`), "Compilation", "a compilation"},
-	{regexp.MustCompile(`(?i)\bremix(es|ed)?\b`), "Remix", "remixes"},
+	// Plural only: "(2019 Remix)" and "Remixed & Remastered" are reissues of the album.
+	{regexp.MustCompile(`(?i)\bremixes\b`), "Remix", "remixes"},
 	{regexp.MustCompile(`(?i)\bkaraoke\b`), "", "karaoke"},
 	{regexp.MustCompile(`(?i)\binstrumentals?\b`), "", "instrumentals"},
 }
 
+// reBonus is a kind word named as extras on the album itself: "Deluxe incl. Live Tracks",
+// "+ Demos", "with Bonus Instrumentals". That part of the name says nothing about the kind.
+var reBonus = regexp.MustCompile(`(?i)(\bincl(?:\.|uding|udes)?\b|\bbonus\b|\bplus\b|\bwith\b|\bw/|\+)[^()\[\]]{0,40}`)
+
 // OtherReleaseKind says why a release name is another kind of record than the album, or ""
 // when it isn't (or might not be).
 func OtherReleaseKind(releaseName, artist string, al Album) string {
+	releaseName = reBonus.ReplaceAllString(releaseName, " ")
 	_, secondary := albumTypes(al)
 	own := map[string]bool{}
 	for _, s := range secondary {

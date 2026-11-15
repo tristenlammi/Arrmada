@@ -20,6 +20,11 @@ func TestOtherReleaseKind(t *testing.T) {
 		{"the title says live", "Hole - Live Through This (1994) [FLAC]", "Hole", Album{Title: "Live Through This"}, false},
 		{"the artist is Live", "Live - Throwing Copper (1994) [FLAC]", "Live", Album{Title: "Throwing Copper"}, false},
 		{"alive isn't live", "Kiss - Alive II [FLAC]", "Kiss", Album{Title: "Alive II"}, false},
+		{"an anniversary remix is the album", "Disturbed - Believe (2019 Remix) [FLAC]", "Disturbed", Album{Title: "Believe"}, false},
+		{"remixed and remastered", "Disturbed - Believe (Remixed & Remastered) [FLAC]", "Disturbed", Album{Title: "Believe"}, false},
+		{"a deluxe with live bonus tracks", "Iron Maiden - No Prayer for the Dying (Deluxe incl. Live Tracks) [FLAC]", "Iron Maiden", studio, false},
+		{"plus demos", "Green Day - Dookie + Demos [FLAC]", "Green Day", Album{Title: "Dookie"}, false},
+		{"live outside the bonus part", "Iron Maiden - No Prayer for the Dying (Live) incl. Bonus [FLAC]", "Iron Maiden", studio, true},
 		{"an old album type label", "Iron Maiden - Rock in Rio (Live) [FLAC]", "Iron Maiden", Album{Title: "Rock in Rio", AlbumType: "Live"}, false},
 	}
 	for _, c := range cases {

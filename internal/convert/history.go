@@ -134,7 +134,7 @@ func trackDecisions(mi *MediaInfo, plan Plan) []TrackDecision {
 			Forced: sub.Forced, Image: !sub.Text, Keep: keptS[sub.SubIndex]}
 		if !d.Keep {
 			langOK := len(plan.Subs.KeepLangs) == 0 || langIn(sub.Lang, plan.Subs.KeepLangs)
-			byProfile, why := profileSubDrop(sub, langKept, audio, plan.Subs.Rules)
+			byProfile, why := profileSubDrop(sub, langKept, audio, plan)
 			switch {
 			case langOK && byProfile:
 				d.Reason = why
