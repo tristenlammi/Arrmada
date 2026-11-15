@@ -48,6 +48,7 @@ var cliCommands = []cliCommand{
 		run: func(_ context.Context, c *cli, args []string) int {
 			return restoreCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
 		}},
+	{name: "music-source-test", args: "[--albums file] [--limit N] [--gap 2s]", summary: "search the connected indexers for a list of albums and report how many they have (downloads nothing)", dataDir: true, run: cmdMusicSourceTest},
 	{name: "backups", summary: "list the backups in the data folder", dataDir: true,
 		run: func(_ context.Context, c *cli, args []string) int {
 			return backupsCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
