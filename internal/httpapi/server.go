@@ -327,6 +327,7 @@ func (a *api) registerRoutes(mux *router) {
 	// Getting started: the self-ticking checklist on the Dashboard and the wizard's last step.
 	mux.HandleFunc("GET /api/v1/setup/checklist", a.requireRole(auth.RoleAdmin, a.handleSetupChecklist))
 	mux.HandleFunc("POST /api/v1/setup/checklist/dismiss", a.requireRole(auth.RoleAdmin, a.handleDismissSetupChecklist))
+	mux.HandleFunc("POST /api/v1/setup/checklist/restore", a.requireRole(auth.RoleAdmin, a.handleRestoreSetupChecklist))
 	mux.HandleFunc("POST /api/v1/system/restart", a.requireRole(auth.RoleAdmin, a.handleRestart))
 	// Recurring tasks: staff can see how they're doing; starting one by hand (a backup, a
 	// whole-library sweep) is a system action, so Run now is admin-only.

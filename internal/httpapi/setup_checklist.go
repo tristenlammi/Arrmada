@@ -166,3 +166,14 @@ func (a *api) handleDismissSetupChecklist(w http.ResponseWriter, r *http.Request
 	}
 	a.writeJSON(w, http.StatusOK, a.setupChecklist(r.Context()))
 }
+
+// handleRestoreSetupChecklist — POST /api/v1/setup/checklist/restore (admin). Brings the
+// Getting started card back so an admin can work through remaining steps again. If every
+// step is already done the next GET will re-dismiss it automatically.
+func (a *api) handleRestoreSetupChecklist(w http.ResponseWriter, r *http.Request) {
+	if err := a.deps.Settings.SetBool(r.Context(), keyGettingStartedDismissed, false); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not save")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, a.setupChecklist(r.Context()))
+}
