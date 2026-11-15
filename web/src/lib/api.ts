@@ -1609,7 +1609,12 @@ export interface DeletePreview {
   bytes: number;
   confirm_over_bytes: number; // above this, the title must be typed
   recycle: RecycleMode;
+  pending_downloads?: PendingSeriesDownload[]; // in flight for the show (#111)
 }
+// An in-flight download for a show; season -1 when it covers more than one season.
+export interface PendingSeriesDownload { hash: string; title: string; progress: number; season: number }
+// What deleting one season's files would do (#111). shared: files another season holds too, which stay.
+export interface SeasonDeletePreview { files: number; bytes: number; shared: string[]; recycle: RecycleMode; pending_downloads: PendingSeriesDownload[] }
 // One track's planned rename (MOV-16). status ok: it moves to proposed; same: already
 // named right; conflict: something else has that name (reason says what), so it stays put;
 // missing: the recorded file isn't on disk.

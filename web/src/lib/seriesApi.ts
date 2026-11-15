@@ -1,4 +1,4 @@
-import { req, type BlockEntry, type DeletePreview, type JobRef, type RenameSkip, type SceneOverride, type SeriesNumbering, type SeriesRenameItem } from "./api";
+import { req, type BlockEntry, type DeletePreview, type JobRef, type RenameSkip, type SceneOverride, type SeasonDeletePreview, type SeriesNumbering, type SeriesRenameItem } from "./api";
 
 /** One episode file outside its show's folder, and what putting it back does with it:
  * move it into the show's season folder; recycle it (the folder already has this episode,
@@ -77,9 +77,10 @@ export const seriesApi = {
     req<{ monitored: boolean }>(`/api/v1/series/episodes/${eid}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   // confirm is the series title, required by the server when deleting files over its size
   // threshold. A 409 (ApiError) carries body.moved / body.failed.
-  deleteSeries: (id: number, deleteFiles?: boolean, confirm?: string) => {
+  deleteSeries: (id: number, deleteFiles?: boolean, confirm?: string, cancelDownloads?: boolean) => {
     const q = new URLSearchParams();
     if (deleteFiles) q.set("delete_files", "true");
+    if (cancelDownloads) q.set("cancel_downloads", "true");
     if (deleteFiles && confirm) q.set("confirm", confirm);
     const qs = q.toString();
     return req<void>(`/api/v1/series/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
@@ -91,6 +92,14 @@ export const seriesApi = {
     req<{ status: string } & JobRef>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/regrab`, { method: "POST" }),
   deleteEpisodeFile: (id: number, season: number, episode: number) =>
     req<void>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/file`, { method: "DELETE" }),
+  seasonDeletePreview: (id: number, season: number) => req<SeasonDeletePreview>(`/api/v1/series/${id}/seasons/${season}/delete-preview`),
+  // A 409 (ApiError) carries body.moved / body.failed, as a show's delete.
+  deleteSeasonFiles: (id: number, season: number, opts: { unmonitor: boolean; cancelDownloads: boolean }) => {
+    const q = new URLSearchParams();
+    if (opts.unmonitor) q.set("unmonitor", "true");
+    if (opts.cancelDownloads) q.set("cancel_downloads", "true");
+    return req<{ moved: string[]; failed: string[]; bytes: number }>(`/api/v1/series/${id}/seasons/${season}/files?${q}`, { method: "DELETE" });
+  },
 
   // Books
 };

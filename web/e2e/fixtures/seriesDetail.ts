@@ -164,6 +164,13 @@ export const misplaced: Record<number, MisplacedPlan> = {
 // routes answers every call the series page makes for the shows above.
 export function routes(): MockRoute[] {
   return [
+    // #111: a season's files and its own download in progress; Season 1 shares a file with Season 2.
+    { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/seasons\/(\d+)\/delete-preview$/, respond: ({ params }) => ({
+      files: Number(params[1]) === 1 ? 9 : 5, bytes: 12_600_000_000, recycle: { enabled: true, dirs: ["/tv/.arrmada-recycle"], retention_days: 30, max_gb: 0 },
+      shared: Number(params[1]) === 1 ? ["Harbour Lights - S01E10-S02E01.mkv"] : [],
+      pending_downloads: Number(params[1]) === 2 ? [{ hash: "abc123", title: "Harbour.Lights.S02.1080p.WEB-DL-GRP", progress: 0.42, season: 2 }] : [],
+    }) },
+    { method: "DELETE", path: /^\/api\/v1\/series\/(\d+)\/seasons\/(\d+)\/files$/, body: { moved: [], failed: [], bytes: 0 } },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)$/, respond: ({ params }) => seriesDetails[id(params)] ?? seriesDetails[1] },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/downloads$/, respond: ({ params }) => (id(params) === 1 ? [{ season: 3, episode: 2, state: "downloading", progress: 0.42, hash: "abc123" }] : []) },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/history$/, respond: ({ params }) => ({ events: id(params) === 1 ? history : [] }) },

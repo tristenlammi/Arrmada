@@ -95,16 +95,17 @@ func (j *albumJudge) early(rel indexer.Release) albumRelease {
 		r.stage, r.code, r.reason = stageTitle, DropWrongTitle, why
 		return r
 	}
-	if why := music.OtherReleaseKind(rel.Title, j.artist, j.al); why != "" {
-		r.stage, r.code, r.reason = stageTitle, DropWrongTitle, why
-		return r
-	}
 	if ok, code, why := music.ReleaseSane(rel.Title, rel.Categories, rel.SizeBytes, r.tier, j.listing); !ok {
 		r.stage, r.reason = stageSane, why
 		r.code = DropSize
 		if code == music.SaneVideo {
 			r.code = DropVideo
 		}
+		return r
+	}
+	// After the size check: a video release says so first.
+	if why := music.OtherReleaseKind(rel.Title, j.artist, j.al); why != "" {
+		r.stage, r.code, r.reason = stageTitle, DropWrongTitle, why
 		return r
 	}
 	r.stage = stageBlocked // got past step 3; the rest decides the final stage

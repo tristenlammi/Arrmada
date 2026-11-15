@@ -654,7 +654,17 @@ func (a *api) handleDeleteSeries(w http.ResponseWriter, r *http.Request) {
 	// Detached from the request: moving a big show to a bin on another filesystem copies
 	// for a long time, and if the browser or a proxy gives up meanwhile, the files would
 	// all be in the bin while the series row stayed, still claiming them.
-	sum, err := a.deps.Series.Delete(context.WithoutCancel(ctx), id, deleteFiles)
+	var sum series.DeleteSummary
+	var err error
+	if a.deps.Automation != nil {
+		// Settles the show's downloads too (#111): cancelled when asked, else a finished one
+		// goes to Reviews rather than importing a show that's gone.
+		sum, err = a.deps.Automation.DeleteSeries(context.WithoutCancel(ctx), id, automation.DeleteSeriesOpts{
+			DeleteFiles: deleteFiles, CancelDownloads: r.URL.Query().Get("cancel_downloads") == "true",
+		})
+	} else {
+		sum, err = a.deps.Series.Delete(context.WithoutCancel(ctx), id, deleteFiles)
+	}
 	if errors.Is(err, series.ErrFilesNotRemoved) {
 		a.writeJSON(w, http.StatusConflict, map[string]any{
 			"status": "error", "message": err.Error(), "moved": sum.Moved, "failed": sum.Failed,
@@ -688,6 +698,7 @@ func (a *api) handleSeriesDeletePreview(w http.ResponseWriter, r *http.Request) 
 		"files": plan.Files, "sidecars": plan.Sidecars, "bytes": plan.Bytes,
 		"confirm_over_bytes": bigSeriesDeleteBytes,
 		"recycle":            a.recycleMode(r.Context()),
+		"pending_downloads":  a.pendingSeriesDownloads(r, id),
 	})
 }
 

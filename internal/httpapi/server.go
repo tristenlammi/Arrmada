@@ -691,6 +691,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab", a.requireRole(auth.RoleManager, a.handleRegrabEpisode))
 	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file", a.requireRole(auth.RoleManager, a.handleDeleteEpisodeFile))
 	mux.HandleFunc("GET /api/v1/series/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeriesDeletePreview))
+	mux.HandleFunc("GET /api/v1/series/{id}/seasons/{season}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeasonDeletePreview))
+	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons/{season}/files", a.requireRole(auth.RoleManager, a.handleDeleteSeasonFiles))
 	mux.HandleFunc("DELETE /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.

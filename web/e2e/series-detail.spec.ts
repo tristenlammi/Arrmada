@@ -209,6 +209,40 @@ test.describe("desktop seasons", () => {
     await expect(left).toBeVisible();
   });
 
+  test("a season's files are deleted after a dialog that says what goes (#111)", async ({ page, api }) => {
+    await page.goto("/series/1?season=2");
+    await page.getByRole("button", { name: "Delete files…" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("5 episode files, with their subtitles");
+    await expect(dialog.getByRole("checkbox", { name: /Stop monitoring Season 2/ })).toBeChecked();
+    const cancel = dialog.getByRole("checkbox", { name: /Cancel the download in progress/ });
+    await expect(cancel).toBeChecked();
+    await expect(dialog).toContainText("Harbour.Lights.S02.1080p.WEB-DL-GRP");
+    await cancel.uncheck();
+    await dialog.getByRole("button", { name: "Delete files" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(() => api.callsTo("DELETE", "/api/v1/series/1/seasons/2/files").map((c) => c.path)).toEqual(["/api/v1/series/1/seasons/2/files?unmonitor=true"]);
+
+    // A file another season holds too is named as kept.
+    await page.goto("/series/1?season=1");
+    await page.getByRole("button", { name: "Delete files…" }).click();
+    await expect(page.getByRole("dialog")).toContainText("Harbour Lights - S01E10-S02E01.mkv");
+  });
+
+  test("removing the show cancels its downloads in progress unless unticked (#111)", async ({ page, api }) => {
+    await page.route(/\/api\/v1\/series\/1\/delete-preview$/, (route) => route.fulfill({ json: {
+      files: 14, sidecars: 0, bytes: 21_000_000_000, confirm_over_bytes: 500_000_000_000, recycle: { enabled: true, dirs: ["/tv/.arrmada-recycle"], retention_days: 30, max_gb: 0 },
+      pending_downloads: [{ hash: "abc123", title: "Harbour.Lights.S03E02.1080p.WEB-DL-GRP", progress: 0.42, season: 3 }],
+    } }));
+    await page.goto("/series/1");
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Delete…" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("checkbox", { name: /Cancel the download in progress/ })).toBeChecked();
+    await dialog.getByRole("button", { name: "Remove", exact: true }).click();
+    await expect.poll(() => api.callsTo("DELETE", "/api/v1/series/1").map((c) => c.path)).toContain("/api/v1/series/1?cancel_downloads=true");
+  });
+
   test("a long anime season pages in 50 at a time", async ({ page }) => {
     await page.goto("/series/2");
     const cards = page.getByTestId("episode-card");

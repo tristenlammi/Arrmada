@@ -15,6 +15,7 @@ import { jobFailed, jobToast, useJob } from "../../lib/useJob";
 import { Button, ConfirmDialog, IconButton, StatusChip } from "../../ui";
 import { scrollDelta } from "../../ui/Tabs";
 import { EpisodeCard, type EpisodeDialog } from "./EpisodeCard";
+import { DeleteSeasonDialog } from "./DeleteSeasonDialog";
 import { useEpisodeSubs, useSeenOnce } from "./EpisodeSubs";
 import { LazySubtitleDrawer } from "../../components/subtitles/LazySubtitleDrawer";
 import type { Flash } from "./HeroActions";
@@ -128,6 +129,7 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
   const name = seasonName(season.season_number);
   const [busy, setBusy] = useState<null | "grab" | "resume" | "monitor">(null);
   const [choose, setChoose] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [dialog, setDialog] = useState<EpisodeDialog | null>(null);
   const [shown, setShown] = useState(eps.length > LONG_SEASON ? PAGE : Infinity);
   // Select mode (SER-16): cards become checkboxes and a bar acts on the picked ones. The
@@ -227,6 +229,11 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
           >
             {season.monitored ? "Monitored" : "Monitor"}
           </Button>
+          {c.have > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => setDeleting(true)} title={`Delete ${name}'s files — the rest of the show stays`} style={{ color: "var(--reject-text)" }}>
+              Delete files…
+            </Button>
+          )}
         </div>
       </div>
       {seasonDir && <div className="mt-1 truncate font-mono text-xs text-ink-faint" title={seasonDir}>{seasonDir}</div>}
@@ -282,6 +289,16 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
           fetchReleases={() => api.seriesReleases(series.id, season.season_number)}
           onGrab={async (rel) => { await api.grabSeries(series.id, { token: rel.token ?? "" }); onChange(); }}
           onClose={() => setChoose(false)}
+        />
+      )}
+      {deleting && (
+        <DeleteSeasonDialog
+          seriesId={series.id}
+          season={season.season_number}
+          name={name}
+          monitored={season.monitored}
+          onClose={() => setDeleting(false)}
+          onDone={(msg) => { setDeleting(false); flash(msg); onChange(); }}
         />
       )}
       <EpisodeDialogs series={series} dialog={dialog} onClose={() => setDialog(null)} onChange={onChange} flash={flash} />

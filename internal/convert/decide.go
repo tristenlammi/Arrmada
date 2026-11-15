@@ -70,10 +70,10 @@ type prefs struct {
 	keepSubsSaved                         string   // as saved, sentinel and all, for the settings page
 	// subRules is each title's Subtitles profile while the keep-list follows Subtitles
 	// (subrules.go); nil otherwise. subKey changes when any of them could have.
-	subRules func(titleRef) []SubRule
-	subKey   string
-	imageSubs                             string
-	tidyTracks                            bool
+	subRules   func(titleRef) []SubRule
+	subKey     string
+	imageSubs  string
+	tidyTracks bool
 	// crop is off unless you turned it on: a brief wider shot between the samples could
 	// still be trimmed (see crop.go), for about 2% smaller files.
 	crop bool
