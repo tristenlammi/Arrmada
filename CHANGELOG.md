@@ -14,6 +14,8 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 ### Added
 
 - **Forget missing files**, in a show's ⋯ menu ([#97](https://github.com/tristenlammi/Arrmada/issues/97)). If you deleted a show's files on purpose, outside Arrmada, a rescan refuses to clear them in case a disk is down. This is how you say it wasn't one: the episodes go back to missing, and nothing on disk is touched. A TV folder that looks unmounted is still refused.
+- **Delete a season's files** ([#111](https://github.com/tristenlammi/Arrmada/issues/111)). A season has **Delete files…** beside Monitor. Its files and their subtitles go to the recycle bin, and the dialog says how many and how big first. The season stops being monitored by default, so it isn't downloaded straight back. A file that also holds another season's episode stays, and the dialog names it.
+- **Deleting a show or a season cancels its downloads in progress** ([#111](https://github.com/tristenlammi/Arrmada/issues/111)), with their partial data, as deleting a movie already did. It's on by default and the dialog names each download. A season only cancels downloads grabbed for that season, never a pack that holds other seasons. Left running, a download waits in Needs you when it finishes. Finished downloads that are seeding are left to your seeding rules.
 
 ### Fixed
 
