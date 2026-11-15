@@ -59,6 +59,9 @@ type albumMode struct {
 // albumJudge holds what judging one album's releases needs.
 type albumJudge struct {
 	artist, album string
+	// al is the album itself: its MusicBrainz types say whether a live or best-of release
+	// could be it (music.OtherReleaseKind).
+	al music.Album
 	// names are the artist's name and matchable aliases (MUS-38): a release named under an
 	// alias names the album too, when the artist's own name doesn't.
 	names   music.ArtistNames
@@ -98,6 +101,11 @@ func (j *albumJudge) early(rel indexer.Release) albumRelease {
 		if code == music.SaneVideo {
 			r.code = DropVideo
 		}
+		return r
+	}
+	// After the size check: a video release says so first.
+	if why := music.OtherReleaseKind(rel.Title, j.artist, j.al); why != "" {
+		r.stage, r.code, r.reason = stageTitle, DropWrongTitle, why
 		return r
 	}
 	r.stage = stageBlocked // got past step 3; the rest decides the final stage
@@ -341,7 +349,7 @@ func (c *Coordinator) searchAlbumReleases(ctx context.Context, a music.Artist, a
 		return nil, sp, &albumOutcome{Code: outcomeNoResults, Detail: "no releases"}
 	}
 	j := &albumJudge{
-		artist: a.Name, album: al.Title, names: names, sp: sp, nets: c.networks(ctx),
+		artist: a.Name, album: al.Title, al: al, names: names, sp: sp, nets: c.networks(ctx),
 		listing: music.ListingOf(tracks), mode: mode, exclude: exclude,
 	}
 	judged, err := c.judgeAlbum(ctx, al.ID, j, res.Releases)

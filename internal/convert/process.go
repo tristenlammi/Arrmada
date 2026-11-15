@@ -64,7 +64,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	rec.srcRelease = s.sourceRelease(ctx, job, src)
 
 	p := s.prefs(ctx)
-	plan, needs := p.planFor(mi, src, origLang, nil)
+	plan, needs := p.planForTitle(mi, src, titleRef{Kind: job.Kind, MovieID: job.MovieID, SeriesID: job.SeriesID, OrigLang: origLang}, nil)
 	rec.setPlan(plan)
 	if !needs.Any() || (!job.Requested && !needs.Worth) {
 		note := "already matches — nothing to do"

@@ -558,6 +558,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/queue/{hash}/block", a.requireRole(auth.RoleManager, a.handleBlockDownload))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/action", a.requireRole(auth.RoleManager, a.handleTorrentAction))
 	mux.HandleFunc("DELETE /api/v1/queue/{hash}", a.requireRole(auth.RoleManager, a.handleDeleteDownload))
+	// The Queue's select mode: the same removal as DELETE above, for several at once.
+	mux.HandleFunc("POST /api/v1/queue/remove", a.requireRole(auth.RoleManager, a.handleBulkRemoveDownloads))
 	// Activity → Needs you's actions on a stuck download (needsyou.go).
 	mux.HandleFunc("POST /api/v1/queue/{hash}/failover", a.requireRole(auth.RoleManager, a.handleFailOver))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/category", a.requireRole(auth.RoleManager, a.handleSetCategory))
@@ -691,6 +693,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab", a.requireRole(auth.RoleManager, a.handleRegrabEpisode))
 	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file", a.requireRole(auth.RoleManager, a.handleDeleteEpisodeFile))
 	mux.HandleFunc("GET /api/v1/series/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeriesDeletePreview))
+	mux.HandleFunc("GET /api/v1/series/{id}/seasons/{season}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeasonDeletePreview))
+	mux.HandleFunc("DELETE /api/v1/series/{id}/seasons/{season}/files", a.requireRole(auth.RoleManager, a.handleDeleteSeasonFiles))
 	mux.HandleFunc("DELETE /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.

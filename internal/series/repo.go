@@ -873,9 +873,22 @@ func (r *Repo) SeasonExists(ctx context.Context, seriesID int64, season int) boo
 // be filled yet), so an ongoing show doesn't look perpetually incomplete. season <= 0
 // checks the whole series.
 func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int) bool {
+	return r.seasonHasMissing(ctx, seriesID, season, false)
+}
+
+// SeasonHasWantedMissing is SeasonHasMissing counting only monitored episodes: a season
+// whose files were deleted and that was unmonitored (#111) isn't a gap to fill.
+func (r *Repo) SeasonHasWantedMissing(ctx context.Context, seriesID int64, season int) bool {
+	return r.seasonHasMissing(ctx, seriesID, season, true)
+}
+
+func (r *Repo) seasonHasMissing(ctx context.Context, seriesID int64, season int, monitoredOnly bool) bool {
 	q := `SELECT 1 FROM episodes
 	      WHERE series_id = ? AND has_file = 0 AND season_number > 0
 	        AND air_date != '' AND air_date <= date('now')`
+	if monitoredOnly {
+		q += ` AND monitored = 1`
+	}
 	args := []any{seriesID}
 	if season > 0 {
 		q += ` AND season_number = ?`

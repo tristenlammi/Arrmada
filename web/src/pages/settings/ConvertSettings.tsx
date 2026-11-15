@@ -416,7 +416,7 @@ function KeepSubsChoice({ save, input }: { save: AutoSave<string>; input: ReactN
         These languages
       </label>
       {follows
-        ? <span className="ml-6 text-xs text-ink-faint">Change them under <Link to={LINKS.subtitlesSettings} style={{ color: "var(--accent-text)" }}>Subtitles → Kept languages</Link>.</span>
+        ? <span className="ml-6 text-xs text-ink-faint">Each title follows its own <Link to={LINKS.subtitlesSettings} style={{ color: "var(--accent-text)" }}>Subtitles profile</Link>: an unwanted full or SDH track goes too, and the full one when the audio is already that language and the profile says so. Forced tracks always stay.</span>
         : <span className="ml-6 flex flex-wrap items-center gap-2">{input}<span className="text-xs text-ink-faint">comma-separated, e.g. en · blank = keep every language</span></span>}
     </div>
   );

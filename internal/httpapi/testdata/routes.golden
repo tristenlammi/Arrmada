@@ -39,6 +39,7 @@ DELETE /api/v1/series/{id}/duplicates staff -
 DELETE /api/v1/series/{id}/numbering/pending staff -
 DELETE /api/v1/series/{id}/scene-map/{season} staff -
 DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
+DELETE /api/v1/series/{id}/seasons/{season}/files staff -
 DELETE /api/v1/settings/smtp admin -
 DELETE /api/v1/subtitles/file staff -
 DELETE /api/v1/subtitles/overrides/{kind}/{id} staff -
@@ -285,6 +286,7 @@ GET /api/v1/series/{id}/numbering staff -
 GET /api/v1/series/{id}/releases staff -
 GET /api/v1/series/{id}/rename staff -
 GET /api/v1/series/{id}/scene-map staff -
+GET /api/v1/series/{id}/seasons/{season}/delete-preview staff -
 GET /api/v1/series/{id}/title-choices staff -
 GET /api/v1/series/{id}/watch-stats staff -
 GET /api/v1/settings staff -
@@ -481,6 +483,7 @@ POST /api/v1/quality/preview staff -
 POST /api/v1/quality/profiles staff -
 POST /api/v1/quality/profiles/{id}/hold-existing staff -
 POST /api/v1/quality/test staff -
+POST /api/v1/queue/remove staff -
 POST /api/v1/queue/{hash}/action staff -
 POST /api/v1/queue/{hash}/block staff -
 POST /api/v1/queue/{hash}/category staff -

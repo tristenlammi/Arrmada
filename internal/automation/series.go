@@ -1231,8 +1231,10 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			// finds nothing new, and blocklists it as a pack that "can't complete the
 			// season" — turning every successful single-episode import into a permanent
 			// blocklist entry.
+			// Only a gap someone still wants: a season whose files were deleted and that
+			// was unmonitored (#111) must not come back from its pack still seeding.
 			if !matchOK || parsed.Kind() == parser.KindEpisode ||
-				!c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
+				!c.series.SeasonHasWantedMissing(ctx, s.ID, parsed.Season) {
 				continue
 			}
 			// Nor can a special grabbed by its title: its one file went onto its special.

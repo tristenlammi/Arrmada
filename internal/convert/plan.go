@@ -68,4 +68,7 @@ type SubPlan struct {
 	// TextSidecarForcedLangs lists the languages with a forced ".<lang>.forced.srt" beside
 	// this file. Those cover only a forced image track, never a full one.
 	TextSidecarForcedLangs []string
+	// Rules is the title's Subtitles profile when the keep-list is "Same as Subtitles"
+	// (subrules.go). Per file; empty otherwise.
+	Rules []SubRule
 }

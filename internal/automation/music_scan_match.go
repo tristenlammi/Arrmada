@@ -37,17 +37,22 @@ func (c *Coordinator) matchScanFolder(ctx context.Context, r Review, albumID int
 	for _, f := range files {
 		audio = append(audio, music.AudioFile{Path: f.path, SizeBytes: f.size, Disc: music.DiscOfFolder(filepath.Base(filepath.Dir(f.path)))})
 	}
-	// The album's own edition, unless the person chose one ("Match as …"): only then may
-	// the album move to another edition, and it moves back if nothing is recorded.
-	chosen := musicEditionFrom(ctx) != 0
+	// Every edition of the album is weighed, not just its target (#116), when the album
+	// holds no files yet: the scan held the folder because the target didn't fit, often
+	// because it's another pressing with other track lengths. The best fit takes the files
+	// and the album moves to it unless it's pinned. An album that already holds files stays
+	// on its edition (moving would leave those files on tracks the new edition doesn't
+	// list), unless the person chose one ("Match as …"). It moves back if nothing is
+	// recorded.
+	weighAll := musicEditionFrom(ctx) != 0 || al.HaveTracks == 0
 	before := al
 	recorded := 0
 	defer func() {
-		if chosen && recorded == 0 {
+		if recorded == 0 {
 			c.switchBack(context.WithoutCancel(ctx), before, albumImport{})
 		}
 	}()
-	tracks, matched, _, err := c.matchInto(ctx, al, audio, filepath.Base(r.ContentPath), !chosen)
+	tracks, matched, _, err := c.matchInto(ctx, al, audio, filepath.Base(r.ContentPath), !weighAll)
 	if err != nil {
 		return err
 	}

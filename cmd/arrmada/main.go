@@ -1203,6 +1203,18 @@ func main() {
 	convertSvc.SetHoldRoots(func() []libroots.Root { return roots.Libraries(context.Background()) }, cfg.DataDir)
 	// "Same as Subtitles" for the subtitle tracks Convert keeps reads the Subtitles list.
 	convertSvc.SetSubtitleLangs(subtitlesSvc.Languages)
+	// ...and, for those languages, each title's own profile: full or forced, SDH, and
+	// whether the full one is wanted when the audio is already that language (#100).
+	convertSvc.SetSubtitleProfiles(convert.SubtitleProfiles{
+		Rules: func(ctx context.Context, kind string, movieID, seriesID int64) []convert.SubRule {
+			var out []convert.SubRule
+			for _, r := range subtitlesSvc.TrackRules(ctx, kind, movieID, seriesID) {
+				out = append(out, convert.SubRule{Lang: r.Lang, Full: r.Full, OnlyIfAudioDiffers: r.OnlyIfAudioDiffers, NoSDH: r.NoSDH})
+			}
+			return out
+		},
+		Key: subtitlesSvc.ProfilesKey,
+	})
 	// An untagged audio track is read as the language the subtitle AI heard on it, for the
 	// language badges and the quality profile's Audio language rules (from its cache only).
 	convertSvc.SetDetectedAudio(subtitlesSvc.DetectedAudio)

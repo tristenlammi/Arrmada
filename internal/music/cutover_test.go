@@ -101,13 +101,28 @@ func TestCompletenessFromTheTargetEdition(t *testing.T) {
 	}
 
 	// The list and the detail read agree on the stats, and the album counts add up.
-	stats, err := r.artistStats(ctx)
+	stats, covers, err := r.artistStats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	albums, _ := r.AlbumsFor(ctx, a.ID)
 	if got, want := *stats[a.ID], *statsFromAlbums(albums); got != want {
 		t.Errorf("list stats %+v != detail stats %+v", got, want)
+	}
+	if got, want := covers[a.ID].url, standInCover(albums); got != want {
+		t.Errorf("list cover %q != detail cover %q", got, want)
+	}
+	// An album held on disk stands in for the artist over one only listed.
+	if _, err := r.db.ExecContext(ctx, `UPDATE albums SET cover_url = 'caa/' || title WHERE id IN (?, ?)`, partial, unlisted); err != nil {
+		t.Fatal(err)
+	}
+	list, err := r.ListArtists(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list = %+v (err %v)", list, err)
+	}
+	albums, _ = r.AlbumsFor(ctx, a.ID)
+	if got, want := list[0].CoverURL, standInCover(albums); got != "caa/Partial" || got != want {
+		t.Errorf("list cover %q, detail cover %q; want caa/Partial", got, want)
 	}
 	if s := stats[a.ID]; s.Albums != 5 || s.AlbumsComplete != 2 || s.AlbumsUnlisted != 1 || s.AlbumsWithFiles != 3 ||
 		s.AlbumsMonitored != 5 || s.AlbumsWanted != 3 {

@@ -6,6 +6,7 @@ import { AlbumSearchButton } from "../components/music/AlbumSearch";
 import { ArtistSearchButton } from "../components/music/ArtistSearch";
 import { foundWords } from "../components/music/releaseRules";
 import { albumFileMarks } from "../components/music/fileMarks";
+import { Artwork } from "../components/music/Artwork";
 import { api, type Artist, type MusicAlbum, type MovieEvent } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { libraryStatus } from "../lib/status";
@@ -93,33 +94,38 @@ export function ArtistDetail() {
           All artists
         </Link>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <StatusChip tone={st.tone} size="md">
-            {st.label}
-          </StatusChip>
-          <span className="font-mono text-xs text-ink-faint">
-            {albumsDone}/{albums} albums · {done}/{all} tracks
-            {a.stats?.size_bytes ? ` · ${formatBytes(a.stats.size_bytes)}` : ""}
-          </span>
-          <a
-            href={`https://musicbrainz.org/artist/${a.mbid}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded px-1.5 py-0.5 font-mono text-xs font-bold"
-            style={{ background: "#4a2a6a", color: "#fff" }}
-          >
-            MusicBrainz
-          </a>
-        </div>
-        {a.genres && a.genres.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {a.genres.map((g) => (
-              <span key={g} className="rounded-full px-2 py-0.5 text-xs" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>
-                {g}
+        <div className="flex items-start gap-4">
+          <Artwork src={a.image_url || a.cover_url} name={a.name} kind="artist" className="h-20 w-20 flex-none rounded-xl sm:h-28 sm:w-28" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <StatusChip tone={st.tone} size="md">
+                {st.label}
+              </StatusChip>
+              <span className="font-mono text-xs text-ink-faint">
+                {albumsDone}/{albums} albums · {done}/{all} tracks
+                {a.stats?.size_bytes ? ` · ${formatBytes(a.stats.size_bytes)}` : ""}
               </span>
-            ))}
+              <a
+                href={`https://musicbrainz.org/artist/${a.mbid}`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded px-1.5 py-0.5 font-mono text-xs font-bold"
+                style={{ background: "#4a2a6a", color: "#fff" }}
+              >
+                MusicBrainz
+              </a>
+            </div>
+            {a.genres && a.genres.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {a.genres.map((g) => (
+                  <span key={g} className="rounded-full px-2 py-0.5 text-xs" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>
+                    {g}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Switch size="sm" checked={a.monitored} disabled={busy !== null}
@@ -212,19 +218,22 @@ function AlbumRow({ al, onChange, credit }: { al: MusicAlbum; onChange: () => vo
   const tone = !known ? "var(--ink-faint)" : complete ? "var(--good)" : al.monitored && !al.stale_since ? "var(--avoid)" : "var(--ink-faint)";
   return (
     <div className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0" style={{ background: "var(--panel)", borderColor: "var(--line-soft)" }}>
-      <Link to={`/music/album/${al.id}`} className="min-w-0 flex-1 hover:underline">
-        <div className="truncate text-base font-medium">{al.title}</div>
-        <div className="truncate font-mono text-xs text-ink-faint">
-          {[credit ? al.artist_credit || "" : "", al.year || "", al.album_type || ""].filter(Boolean).join(" · ")}
-        </div>
-        {(al.stale_since || (!al.monitored && al.found_as)) && (
-          <div className="truncate text-xs text-ink-faint">
-            {al.stale_since ? "No longer on MusicBrainz; kept with its files" : foundWords(al.found_as, al.monitored)}
+      <Link to={`/music/album/${al.id}`} className="group flex min-w-0 flex-1 items-center gap-3">
+        <Artwork src={al.cover_url} name={al.title} kind="album" className="h-12 w-12 flex-none rounded-md" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-base font-medium group-hover:underline">{al.title}</div>
+          <div className="truncate font-mono text-xs text-ink-faint">
+            {[credit ? al.artist_credit || "" : "", al.year || "", al.album_type || ""].filter(Boolean).join(" · ")}
           </div>
-        )}
-        {albumFileMarks(al) && (
-          <div className="truncate text-xs" style={{ color: "var(--avoid-text)" }}>{albumFileMarks(al)}</div>
-        )}
+          {(al.stale_since || (!al.monitored && al.found_as)) && (
+            <div className="truncate text-xs text-ink-faint">
+              {al.stale_since ? "No longer on MusicBrainz; kept with its files" : foundWords(al.found_as, al.monitored)}
+            </div>
+          )}
+          {albumFileMarks(al) && (
+            <div className="truncate text-xs" style={{ color: "var(--avoid-text)" }}>{albumFileMarks(al)}</div>
+          )}
+        </div>
       </Link>
       <span className="flex-none font-mono text-xs" style={{ color: tone }}>
         {known ? `${al.have_tracks}/${al.track_count}` : "not listed"}

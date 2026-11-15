@@ -49,6 +49,15 @@ func tagged(album, artist, release string) func(int, tr) FileTags {
 	}
 }
 
+// withDemos adds n demo recordings no edition lists, like a deluxe rip's bonus disc.
+func withDemos(files []MatchFile, n int) []MatchFile {
+	for i := 0; i < n; i++ {
+		files = append(files, MatchFile{Path: fmt.Sprintf("/dl/okc/%02d - Demo %d (4-track demo).flac", 13+i, i+1), DurationMs: (90 + i*17) * 1000,
+			Tags: FileTags{Title: fmt.Sprintf("Demo %d (4-track demo)", i+1), Album: "OK Computer", Track: 13 + i}})
+	}
+	return files
+}
+
 func plainTags(album, artist string) func(int, tr) FileTags {
 	return func(i int, t tr) FileTags {
 		return FileTags{Title: t.title, Artist: artist, AlbumArtist: artist, Album: album, Track: i + 1}
@@ -420,6 +429,18 @@ func TestMatchDecisions(t *testing.T) {
 				MatchFile{Path: "/dl/okc/13 - Lull.flac", DurationMs: 147000, Tags: FileTags{Title: "Lull", Album: "OK Computer", Track: 13}}),
 				Candidates: []MatchCandidate{stdC}, GrabbedAlbumID: 1},
 			decision: MatchImport, placed: p(12), left: p(1),
+		},
+		{
+			// #115: a download grabbed for the album with the whole album and twelve demo
+			// tracks. The demos stay in the download; they don't hold the album back.
+			name:     "the whole album and many extras, grabbed for it, imports",
+			in:       MatchInput{Files: withDemos(filesFor("/dl/okc", okc, plainTags("OK Computer", "Radiohead")), 12), Candidates: []MatchCandidate{stdC}, GrabbedAlbumID: 1},
+			decision: MatchImport, placed: p(12), left: p(12),
+		},
+		{
+			name:     "the same files nobody grabbed are still held",
+			in:       MatchInput{Files: withDemos(filesFor("/dl/okc", okc, plainTags("OK Computer", "Radiohead")), 12), Candidates: []MatchCandidate{stdC}},
+			decision: MatchReview, reason: MatchReasonLowConfidence,
 		},
 		{
 			name: "a hidden track (a ten-minute track 13) stays in the download",

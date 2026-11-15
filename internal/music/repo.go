@@ -60,7 +60,7 @@ func (r *Repo) ListArtists(ctx context.Context) ([]Artist, error) {
 	if err != nil {
 		return nil, err
 	}
-	stats, err := r.artistStats(ctx)
+	stats, covers, err := r.artistStats(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +70,7 @@ func (r *Repo) ListArtists(ctx context.Context) ([]Artist, error) {
 		} else {
 			out[i].Stats = &ArtistStats{}
 		}
+		out[i].CoverURL = covers[out[i].ID].url
 	}
 	return out, nil
 }
@@ -118,21 +119,27 @@ const albumCounts = `
 // artistStats summarizes every library artist's albums in one statement, with the same
 // counts and arithmetic as statsFromAlbums (which the detail read uses), so list and
 // detail agree. About a third of a second on a 15,000-album, 200,000-track library.
-func (r *Repo) artistStats(ctx context.Context) (map[int64]*ArtistStats, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT al.artist_id, (al.monitored = 1 AND al.stale_since IS NULL),`+albumCounts+` FROM albums al`)
+// The same pass picks each artist's stand-in cover, by the detail read's rule
+// (standInCover), so the list and the artist's page show the same picture.
+func (r *Repo) artistStats(ctx context.Context) (map[int64]*ArtistStats, map[int64]coverPick, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT al.artist_id, (al.monitored = 1 AND al.stale_since IS NULL),`+albumCounts+`,
+		al.id, al.cover_url, al.primary_type, al.year FROM albums al`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := map[int64]*ArtistStats{}
+	covers := map[int64]coverPick{}
 	for rows.Next() {
 		var (
 			id                              int64
 			mon, tracks, have, editionCount int
 			size                            int64
+			al                              Album
 		)
-		if err := rows.Scan(&id, &mon, &tracks, &have, &size, &editionCount); err != nil {
-			return nil, err
+		if err := rows.Scan(&id, &mon, &tracks, &have, &size, &editionCount,
+			&al.ID, &al.CoverURL, &al.PrimaryType, &al.Year); err != nil {
+			return nil, nil, err
 		}
 		s := out[id]
 		if s == nil {
@@ -140,8 +147,12 @@ func (r *Repo) artistStats(ctx context.Context) (map[int64]*ArtistStats, error) 
 			out[id] = s
 		}
 		s.add(tracks, have, editionCount, size, mon != 0)
+		al.HaveTracks = have
+		if c := pickOf(al); c.beats(covers[id]) {
+			covers[id] = c
+		}
 	}
-	return out, rows.Err()
+	return out, covers, rows.Err()
 }
 
 // HasArtists reports whether the library holds any artist at all. A cheap EXISTS rather

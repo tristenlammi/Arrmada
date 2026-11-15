@@ -308,7 +308,7 @@ func (s *Service) StartCompare(ctx context.Context, key string) error {
 		mi, err := probe(bg, s.ffprobe, src)
 		if err == nil {
 			p := s.prefs(bg)
-			plan, _ := p.planFor(mi, src, origLang, nil)
+			plan, _ := p.planForTitle(mi, src, titleRef{Kind: it.Kind, MovieID: it.MovieID, SeriesID: it.SeriesID, OrigLang: origLang}, nil)
 			if plan.VideoCodec == "" {
 				plan.VideoCodec = "hevc" // Compare tests the picture even when it would not convert
 			}

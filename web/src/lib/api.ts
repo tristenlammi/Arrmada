@@ -1609,7 +1609,12 @@ export interface DeletePreview {
   bytes: number;
   confirm_over_bytes: number; // above this, the title must be typed
   recycle: RecycleMode;
+  pending_downloads?: PendingSeriesDownload[]; // in flight for the show (#111)
 }
+// An in-flight download for a show; season -1 when it covers more than one season.
+export interface PendingSeriesDownload { hash: string; title: string; progress: number; season: number }
+// What deleting one season's files would do (#111). shared: files another season holds too, which stay.
+export interface SeasonDeletePreview { files: number; bytes: number; shared: string[]; recycle: RecycleMode; pending_downloads: PendingSeriesDownload[] }
 // One track's planned rename (MOV-16). status ok: it moves to proposed; same: already
 // named right; conflict: something else has that name (reason says what), so it stays put;
 // missing: the recorded file isn't on disk.
@@ -3919,7 +3924,11 @@ export interface Artist {
   name: string;
   sort_name?: string;
   overview?: string;
+  /** A photo of the artist: no source supplies one yet, so it's empty in practice. */
   image_url?: string;
+  /** One of the artist's album covers (held first, then the newest studio album),
+   *  standing in for the photo. */
+  cover_url?: string;
   genres?: string[];
   monitored: boolean;
   quality_profile: string;
