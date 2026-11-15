@@ -490,6 +490,13 @@ func Match(in MatchInput) MatchResult {
 	if res.Expected {
 		threshold = s.Expected
 	}
+	fit := best.Fit
+	if res.Expected && len(best.Missing) == 0 && len(best.Extra) > 0 && len(best.Extra) <= len(best.Cand.trackList()) && best.dist != nil {
+		// #115: every track of the edition is here, in a download grabbed for it. The extra
+		// files (bonus, demo or live tracks) stay in the download, so they don't make the
+		// album's own tracks a worse fit. Ranking still counts them.
+		fit = round4(best.dist.value(CompMissingTracks, CompUnmatched))
+	}
 	nameOnly := true
 	for _, f := range files {
 		if f.Tags.tagged() || len(f.Fingerprint) > 0 { // identified by sound counts too
@@ -497,14 +504,14 @@ func Match(in MatchInput) MatchResult {
 			break
 		}
 	}
-	if best.Fit > threshold || (nameOnly && !res.Expected) {
+	if fit > threshold || (nameOnly && !res.Expected) {
 		reason := MatchReasonLowConfidence
-		why := fmt.Sprintf("The best fit, %s, is %.2f away (automatic up to %.2f).", editionWords(best.Cand), best.Fit, threshold)
+		why := fmt.Sprintf("The best fit, %s, is %.2f away (automatic up to %.2f).", editionWords(best.Cand), fit, threshold)
 		switch {
-		case best.Fit > s.Review:
+		case fit > s.Review:
 			reason = MatchReasonUnmatched
-			why = fmt.Sprintf("Couldn't identify the files: the closest, %s, is %.2f away.", editionWords(best.Cand), best.Fit)
-		case nameOnly && best.Fit <= threshold:
+			why = fmt.Sprintf("Couldn't identify the files: the closest, %s, is %.2f away.", editionWords(best.Cand), fit)
+		case nameOnly && fit <= threshold:
 			why = fmt.Sprintf("Only the file names say these are %s, and nobody grabbed the download for it.", editionWords(best.Cand))
 		}
 		res.review(reason, why, files, s)
