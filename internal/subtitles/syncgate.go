@@ -142,13 +142,23 @@ func shiftWords(shiftMs int, scale float64) string {
 	return strings.Join(parts, " and ")
 }
 
-// signedSeconds renders a shift as "−3.0 s" / "+0.4 s".
+// signedSeconds renders a shift as "−3.0 s" / "+0.45 s".
 func signedSeconds(ms int) string {
 	sign := "+"
 	if ms < 0 {
 		sign, ms = "−", -ms
 	}
-	return fmt.Sprintf("%s%.1f s", sign, float64(ms)/1000)
+	return sign + secondsWords(ms)
+}
+
+// secondsWords is a length of time in seconds: one decimal from a second up ("3.0 s"),
+// two below it ("0.45 s"), where a tenth is most of the amount.
+func secondsWords(ms int) string {
+	ms = (ms + 5) / 10 * 10 // the measurement's own grain
+	if ms < 1000 && ms%100 != 0 {
+		return fmt.Sprintf("%.2f s", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%.1f s", float64(ms)/1000)
 }
 
 // --- on-demand check ---
@@ -189,23 +199,59 @@ type SyncReport struct {
 // changed: it may not be Arrmada's. An unowned sidecar gets a provenance row with source
 // "unknown" to hold the result.
 func (s *Service) CheckSync(ctx context.Context, m MediaRef, lang, variant string) (SyncReport, error) {
+	ms, err := s.measureSync(ctx, m, lang, variant)
+	if err != nil {
+		return SyncReport{}, err
+	}
+	return s.recordCheck(ctx, ms)
+}
+
+// syncMeasure is one sidecar measured against its video's speech: what Check sync records
+// and what Fix sync goes on to use.
+type syncMeasure struct {
+	t      SyncTargetInfo
+	raw    []byte // the sidecar exactly as measured
+	res    SyncResult
+	judged bool
+	track  *speechTrack
+	// audioLangs is how many different languages the video's audio tracks are tagged with.
+	audioLangs int
+}
+
+// measureSync finds the sidecar, reads it and the audio it is checked against, and
+// measures. Nothing is recorded or changed.
+func (s *Service) measureSync(ctx context.Context, m MediaRef, lang, variant string) (syncMeasure, error) {
 	t, err := s.SyncTarget(ctx, m, lang, variant)
 	if err != nil {
-		return SyncReport{}, err
+		return syncMeasure{}, err
 	}
-	job, ref, path, lang, variant := t.job, t.ref, t.path, t.lang, t.variant
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(t.path)
 	if err != nil {
-		return SyncReport{}, err
+		return syncMeasure{}, err
 	}
-	mi, _ := s.probeFile(ctx, ref.Path)
-	audio := s.newJobAudio(ref.Path, mi)
+	mi, _ := s.probeFile(ctx, t.ref.Path)
+	audio := s.newJobAudio(t.ref.Path, mi)
 	defer audio.close()
-	track, err := audio.track(ctx, audio.syncStream(lang))
+	track, err := audio.track(ctx, audio.syncStream(t.lang))
 	if err != nil {
-		return SyncReport{}, fmt.Errorf("could not read the audio: %w", err)
+		return syncMeasure{}, fmt.Errorf("could not read the audio: %w", err)
 	}
 	res, judged := track.CheckJudged(raw)
+	seen := map[string]bool{}
+	if mi != nil {
+		for _, a := range mi.withDetected().Audio {
+			if !a.untagged() {
+				seen[langs.Canonical(a.Lang)] = true
+			}
+		}
+	}
+	return syncMeasure{t: t, raw: raw, res: res, judged: judged, track: track, audioLangs: len(seen)}, nil
+}
+
+// recordCheck stores a measurement as the sidecar's Health and reports it.
+func (s *Service) recordCheck(ctx context.Context, ms syncMeasure) (SyncReport, error) {
+	job, ref, path, lang, variant := ms.t.job, ms.t.ref, ms.t.path, ms.t.lang, ms.t.variant
+	res, judged := ms.res, ms.judged
 	rep := SyncReport{Path: filepath.Base(path), Lang: lang, Sync: res, Judged: judged}
 	if !judged {
 		rep.Health = LangHealth{State: HealthUnknown, CheckedAt: time.Now().Unix()}

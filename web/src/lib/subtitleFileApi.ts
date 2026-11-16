@@ -132,6 +132,13 @@ export const subtitleFileApi = {
   // Measures one language's sidecar against the audio, as a job (reading a soundtrack takes a while).
   syncCheck: (m: SubMediaRef, lang: string, variant = "") =>
     req<{ job_id?: number; file: string }>("/api/v1/subtitles/sync-check", { method: "POST", body: JSON.stringify({ ...m, lang, variant }) }),
+  // Check sync, then move the file onto the speech when the measurement is trusted. A job.
+  // name is the file's card that was clicked: the server refuses if the language resolves to another file.
+  syncFix: (m: SubMediaRef, lang: string, variant: string, name: string) =>
+    req<{ job_id?: number; file: string }>("/api/v1/subtitles/sync-fix", { method: "POST", body: JSON.stringify({ ...m, lang, variant, name }) }),
+  // The same for every episode of a show (or one season), one after another. A long job.
+  syncFixSeries: (seriesId: number, season?: number) =>
+    req<{ job_id?: number }>(`/api/v1/subtitles/sync-fix/series/${seriesId}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
   // Queues a manual-priority job for one language; the old file goes to the bin only once the new one exists.
   redo: (m: SubMediaRef, r: SubRedo) =>
     req<SubtitleJob>("/api/v1/subtitles/redo", { method: "POST", body: JSON.stringify({ ...m, ...r }) }),
