@@ -12,7 +12,7 @@ async function fitsScreen(page: Page) {
   expect(w.doc, "document width").toBeLessThanOrEqual(w.viewport);
 }
 
-const OVERFLOW = ["Refresh & rescan", "Forget missing files…", "Rename…", "Manual import…", "Upload .torrent or .nzb…", "Switch to anime numbering", "Delete…"];
+const OVERFLOW = ["Refresh & rescan", "Forget missing files…", "Fix subtitle sync…", "Rename…", "Manual import…", "Upload .torrent or .nzb…", "Switch to anime numbering", "Delete…"];
 
 test.describe("desktop", () => {
   test.skip(({ isMobile }) => isMobile, "desktop project only");
@@ -96,6 +96,21 @@ test.describe("desktop", () => {
     await expect(page.getByText("Forgot 3 missing files.")).toBeVisible();
     await expect(dialog).toHaveCount(0);
     expect(posts).toBe(1);
+  });
+
+  test("Fix subtitle sync explains itself, then starts the show's job", async ({ page }) => {
+    await page.route(/\/api\/v1\/subtitles\/sync-fix\/series\/1$/, (route) => route.fulfill({ status: 202, json: { status: "fixing" } }));
+    await page.goto("/series/1");
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name: "Fix subtitle sync…" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("left as they are");
+    await expect(dialog).toContainText("Subtitles inside the video file aren't touched");
+    const started = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/v1/subtitles/sync-fix/series/1"));
+    await dialog.getByRole("button", { name: "Fix sync" }).click();
+    await started;
+    await expect(dialog).toHaveCount(0);
+
   });
 
   test("Forget missing files shows why it was refused and stays open", async ({ page }) => {

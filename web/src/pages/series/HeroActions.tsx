@@ -9,6 +9,7 @@ import { UploadTorrentModal } from "../../components/UploadTorrentModal";
 import { LastSearches, refreshSearches } from "../../components/LastSearch";
 import { api, type Series as SeriesT } from "../../lib/api";
 import { seriesApi, type MonitorReply } from "../../lib/seriesApi";
+import { subtitleFileApi } from "../../lib/subtitleFileApi";
 import { jobFailed, jobToast, useJob } from "../../lib/useJob";
 import { searchJobLine } from "../../lib/searchOutcome";
 import { Button, ConfirmDialog, Menu, type MenuItem } from "../../ui";
@@ -70,7 +71,14 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
   useJob(importJob, {
     onDone: (j) => { setImportJob(null); flash(jobToast(j, "Import finished."), jobFailed(j)); onChange(); },
   });
-  const [open, setOpen] = useState<null | "import" | "choose" | "upload" | "rename" | "delete" | "move" | "title" | "forget">(null);
+  const [open, setOpen] = useState<null | "import" | "choose" | "upload" | "rename" | "delete" | "move" | "title" | "forget" | "syncfix">(null);
+  const [syncJob, setSyncJob] = useState<number | null>(null);
+  const [syncStarting, setSyncStarting] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  useJob(syncJob, {
+    giveUpMs: 24 * 60 * 60 * 1000, // every episode's soundtrack is read: a long show takes hours
+    onDone: (j) => { setSyncJob(null); flash(jobToast(j, "Subtitle sync checked."), jobFailed(j)); invalidate(`subs-episodes:${series.id}`); },
+  });
   const [forgetting, setForgetting] = useState(false);
   const [forgetError, setForgetError] = useState<string | null>(null);
   const name = shownTitle(series);
@@ -105,6 +113,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
       },
     },
     { label: "Forget missing files…", onSelect: () => { setForgetError(null); setOpen("forget"); } },
+    { label: "Fix subtitle sync…", onSelect: () => { setSyncError(null); setOpen("syncfix"); } },
     { label: "Rename…", onSelect: () => setOpen("rename") },
     { label: "Manual import…", onSelect: () => setOpen("import") },
     { label: "Upload .torrent or .nzb…", onSelect: () => setOpen("upload") },
@@ -201,6 +210,34 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
               setForgetError((e as Error).message);
             } finally {
               setForgetting(false);
+            }
+          }}
+          onCancel={close}
+        />
+      )}
+      {open === "syncfix" && (
+        <ConfirmDialog
+          title={<>Fix subtitle sync for “{name}”?</>}
+          body={
+            <p className="m-0">
+              Each episode's .srt subtitles are measured against the speech in its audio, and moved into sync where the measurement is sure and they're more than about a tenth of a second off. Ones it can't be sure about are left as they are. Subtitles inside the video file aren't touched. It reads every episode's soundtrack, so a long show takes a while; it carries on if you leave this page.
+            </p>
+          }
+          confirmLabel="Fix sync"
+          busyLabel="Starting…"
+          busy={syncStarting}
+          error={syncError}
+          onConfirm={async () => {
+            setSyncStarting(true); setSyncError(null);
+            try {
+              const r = await subtitleFileApi.syncFixSeries(series.id);
+              if (r.job_id) setSyncJob(r.job_id);
+              close();
+              flash("Checking every episode's subtitles — this shows the result when it's done.");
+            } catch (e) {
+              setSyncError((e as Error).message);
+            } finally {
+              setSyncStarting(false);
             }
           }}
           onCancel={close}

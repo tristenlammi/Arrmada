@@ -4,7 +4,7 @@ import { Button, IconButton, Sheet, useConfirm, useToast } from "../ui";
 import { usePoll } from "../lib/usePoll";
 import { formatAgo, formatBytes } from "../lib/format";
 import { langName, useLanguages } from "../lib/languages";
-import { jobToast, useJob } from "../lib/useJob";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import type { SubLangStatus, SubTrack } from "../lib/api";
 import { subMediaKey, subtitleFileApi, type SubFileView, type SubMediaRef, type SubRedo, type SubSidecar } from "../lib/subtitleFileApi";
 import { orphanApi } from "../pages/subtitles/orphanApi";
@@ -30,7 +30,7 @@ export interface SubtitleDrawerProps {
 
 const lbl = "font-mono text-2xs font-bold uppercase tracking-[0.11em] text-ink-faint";
 const RUNG_LABEL: Record<string, string> = { extract: "Embedded", opensubtitles: "OpenSubtitles", ai: "AI", upgrade: "Upgrade", repair: "Repair" };
-const NUDGES = [-1000, -500, 500, 1000];
+const NUDGES = [-1000, -500, -100, 100, 500, 1000];
 const HEALTH_COLOR: Record<string, string> = { ok: "var(--good-text)", uncertain: "var(--accent-text)", bad: "var(--avoid-text)", unknown: "var(--ink-dim)", unchecked: "var(--ink-faint)" };
 
 // fmtCue is a cue time as h:mm:ss.mmm (the hour only when there is one).
@@ -293,11 +293,11 @@ function SidecarCard({ media, s, kept, langLabel, onChanged, toast }: {
 }) {
   const confirm = useConfirm();
   const [pending, setPending] = useState(0);
-  const [busy, setBusy] = useState<null | "shift" | "delete" | "check">(null);
+  const [busy, setBusy] = useState<null | "shift" | "delete" | "check" | "fix">(null);
   const [checkJob, setCheckJob] = useState<number | null>(null);
   useJob(checkJob, {
     giveUpMs: 30 * 60 * 1000, // a remux's soundtrack takes a minute or more to read
-    onDone: (job) => { toast(jobToast(job, "Sync checked.")); setCheckJob(null); setBusy(null); onChanged(); },
+    onDone: (job) => { toast(jobToast(job, busy === "fix" ? "Sync fixed." : "Sync checked."), jobFailed(job) ? { tone: "error" } : undefined); setCheckJob(null); setBusy(null); onChanged(); },
   });
   const h = s.health ?? { state: "unchecked", note: "not checked" };
   // The language a check or redo names: the sidecar's own, or the first kept one when untagged.
@@ -318,6 +318,14 @@ function SidecarCard({ media, s, kept, langLabel, onChanged, toast }: {
     try {
       const r = await subtitleFileApi.syncCheck(media, lang, s.variant === "sdh" ? "sdh" : "");
       toast(`Checking the sync of ${r.file} — reading the soundtrack takes a minute`);
+      if (r.job_id) setCheckJob(r.job_id); else setBusy(null);
+    } catch (e) { toast((e as Error).message, { tone: "error" }); setBusy(null); }
+  };
+  const fix = async () => {
+    setBusy("fix");
+    try {
+      const r = await subtitleFileApi.syncFix(media, lang, s.variant === "sdh" ? "sdh" : "");
+      toast(`Measuring ${r.file} against the audio, then moving it into sync`);
       if (r.job_id) setCheckJob(r.job_id); else setBusy(null);
     } catch (e) { toast((e as Error).message, { tone: "error" }); setBusy(null); }
   };
@@ -396,6 +404,9 @@ function SidecarCard({ media, s, kept, langLabel, onChanged, toast }: {
         <span className="ml-auto flex gap-1.5">
           {checkable && pending === 0 && (
             <Button size="sm" variant="ghost" onClick={check} busy={busy === "check"} busyLabel="Checking…" disabled={busy !== null} title="Measure how well it lines up with the speech in the audio">Check sync</Button>
+          )}
+          {checkable && s.shiftable && pending === 0 && (
+            <Button size="sm" variant="ghost" onClick={fix} busy={busy === "fix"} busyLabel="Fixing…" disabled={busy !== null} title="Measure it against the speech, then move it into sync. It's only moved when the measurement is sure, and more than about a tenth of a second off.">Fix sync</Button>
           )}
           <Button size="sm" variant="ghost" onClick={remove} busy={busy === "delete"} busyLabel="Deleting…" disabled={busy !== null || pending !== 0} style={{ color: "var(--reject-text)" }}>Delete…</Button>
         </span>

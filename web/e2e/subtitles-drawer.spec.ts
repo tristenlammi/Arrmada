@@ -31,6 +31,7 @@ const movieWithFile: MockRoute = {
   } as Movie),
 };
 const shift: MockRoute = { method: "POST", path: "/api/v1/subtitles/file/shift", respond: ({ body }) => ({ name: (body as { name: string }).name, lang: "en", ext: ".srt", size: 1, modified_at: 0, cue_count: 812, first_cues: [], shiftable: true, owned: true, source: "opensubtitles" }) };
+const syncFix: MockRoute = { method: "POST", path: "/api/v1/subtitles/sync-fix", body: { status: "fixing", file: "Fixture Film (2020).en.srt" } };
 const remove: MockRoute = { method: "DELETE", path: "/api/v1/subtitles/file", respond: ({ url }) => ({ removed: url.searchParams.get("name") }) };
 
 for (const scheme of ["dark", "light"] as const) {
@@ -38,7 +39,7 @@ for (const scheme of ["dark", "light"] as const) {
     test.use({ persona: "admin", colorScheme: scheme });
 
     test("chips, then the drawer: preview, nudge + apply, delete to the bin", async ({ page, api, isMobile }) => {
-      await installExtra(page, api, [movieWithFile, shift, remove]);
+      await installExtra(page, api, [movieWithFile, shift, remove, syncFix]);
       await page.goto("/movies/1");
       await expect(page.getByRole("button", { name: "✓ en · OpenSubtitles · Health 92" })).toBeVisible();
       await expect(page.getByRole("button", { name: /es missing · next try in 6 days/ })).toBeVisible();
@@ -56,6 +57,15 @@ for (const scheme of ["dark", "light"] as const) {
       await drawer.getByRole("button", { name: "Apply +1 s" }).click();
       await expect.poll(() => api.callsTo("POST", "/api/v1/subtitles/file/shift").length).toBe(1);
       expect(api.callsTo("POST", "/api/v1/subtitles/file/shift")[0].body).toEqual({ kind: "movie", movie_id: 1, name: "Fixture Film (2020).en.srt", offset_ms: 1000 });
+
+      // A tenth of a second at a time, for an offset the half-second steps can't reach.
+      await drawer.getByRole("button", { name: "Move −0.1 s" }).click();
+      await drawer.getByRole("button", { name: "Move −0.1 s" }).click();
+      await expect(drawer.getByRole("button", { name: "Apply −0.2 s" })).toBeVisible();
+      await drawer.getByRole("button", { name: "Reset" }).click();
+      // Fix sync measures it and moves it; the request names the file by its title and language.
+      await drawer.getByRole("button", { name: "Fix sync" }).first().click();
+      await expect.poll(() => api.callsTo("POST", "/api/v1/subtitles/sync-fix").map((c) => c.body)).toEqual([{ kind: "movie", movie_id: 1, lang: "en", variant: "" }]);
 
       await drawer.getByRole("button", { name: "Delete…" }).first().click();
       const confirm = page.getByRole("dialog", { name: /Delete Fixture Film \(2020\)\.en\.srt\?/ });

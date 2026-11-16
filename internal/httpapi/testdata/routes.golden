@@ -547,6 +547,8 @@ POST /api/v1/subtitles/retry staff -
 POST /api/v1/subtitles/search staff -
 POST /api/v1/subtitles/sweep staff -
 POST /api/v1/subtitles/sync-check staff -
+POST /api/v1/subtitles/sync-fix staff -
+POST /api/v1/subtitles/sync-fix/series/{id} staff -
 POST /api/v1/system/backups admin -
 POST /api/v1/system/backups/upload admin -
 POST /api/v1/system/backups/{name}/restore admin -

@@ -142,13 +142,22 @@ func shiftWords(shiftMs int, scale float64) string {
 	return strings.Join(parts, " and ")
 }
 
-// signedSeconds renders a shift as "−3.0 s" / "+0.4 s".
+// signedSeconds renders a shift as "−3.0 s" / "+0.45 s".
 func signedSeconds(ms int) string {
 	sign := "+"
 	if ms < 0 {
 		sign, ms = "−", -ms
 	}
-	return fmt.Sprintf("%s%.1f s", sign, float64(ms)/1000)
+	return sign + secondsWords(ms)
+}
+
+// secondsWords is a length of time in seconds: one decimal from a second up ("3.0 s"),
+// two below it ("0.45 s"), where a tenth is most of the amount.
+func secondsWords(ms int) string {
+	if ms < 1000 && ms%100 != 0 {
+		return fmt.Sprintf("%.2f s", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%.1f s", float64(ms)/1000)
 }
 
 // --- on-demand check ---
