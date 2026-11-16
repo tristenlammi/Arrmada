@@ -46,7 +46,7 @@ func TestFixSyncMovesASmallOffset(t *testing.T) {
 		s, speech, side, write := fixFixture(t)
 		base := subtitleFor(speech, 5)
 		write(formatSRT(shiftCues(base, offMs, 1)))
-		fix, err := s.FixSync(context.Background(), m, "en", "")
+		fix, err := s.FixSync(context.Background(), m, "en", "", FixOpts{})
 		if err != nil || fix.Outcome != FixFixed {
 			t.Fatalf("%d ms: outcome %q err %v (%+v)", offMs, fix.Outcome, err, fix.Sync)
 		}
@@ -61,7 +61,7 @@ func TestFixSyncMovesASmallOffset(t *testing.T) {
 			t.Errorf("%d ms: health %+v", offMs, h)
 		}
 		before, _ := os.ReadFile(side)
-		again, err := s.FixSync(context.Background(), m, "en", "")
+		again, err := s.FixSync(context.Background(), m, "en", "", FixOpts{})
 		if err != nil || again.Outcome != FixInSync {
 			t.Errorf("%d ms: second fix = %q, %v (%+v); want in sync", offMs, again.Outcome, err, again.Sync)
 		}
@@ -80,7 +80,7 @@ func TestFixSyncLeavesAlone(t *testing.T) {
 	s, speech, side, write := fixFixture(t)
 	inSync := formatSRT(subtitleFor(speech, 6))
 	write(inSync)
-	fix, err := s.FixSync(ctx, m, "en", "")
+	fix, err := s.FixSync(ctx, m, "en", "", FixOpts{})
 	if err != nil || fix.Outcome != FixInSync {
 		t.Fatalf("in sync: %q, %v (%+v)", fix.Outcome, err, fix.Sync)
 	}
@@ -90,7 +90,7 @@ func TestFixSyncLeavesAlone(t *testing.T) {
 
 	unrelated := formatSRT(subtitleFor(synthSpeech(909, 4*time.Minute), 3))
 	write(unrelated)
-	fix, err = s.FixSync(ctx, m, "en", "")
+	fix, err = s.FixSync(ctx, m, "en", "", FixOpts{})
 	if err != nil || fix.Outcome != FixUnsure || !strings.Contains(fix.Words, "isn't sure enough") {
 		t.Fatalf("unrelated: %q %q, %v (%+v)", fix.Outcome, fix.Words, err, fix.Sync)
 	}
@@ -104,13 +104,13 @@ func TestFixSyncLeavesAlone(t *testing.T) {
 	}
 	s.busy["m:1"] = &Job{}
 	s.mu.Unlock()
-	if _, err := s.FixSync(ctx, m, "en", ""); !errors.Is(err, ErrFileBusy) {
+	if _, err := s.FixSync(ctx, m, "en", "", FixOpts{}); !errors.Is(err, ErrFileBusy) {
 		t.Errorf("busy video: %v, want ErrFileBusy", err)
 	}
 }
 
 func TestSecondsWords(t *testing.T) {
-	for ms, want := range map[int]string{250: "0.25 s", 450: "0.45 s", 500: "0.5 s", 3000: "3.0 s", 1250: "1.2 s", 80: "0.08 s"} {
+	for ms, want := range map[int]string{250: "0.25 s", 450: "0.45 s", 500: "0.5 s", 3000: "3.0 s", 1250: "1.2 s", 80: "0.08 s", 995: "1.0 s", 999: "1.0 s", 95: "0.1 s", 105: "0.11 s"} {
 		if got := secondsWords(ms); got != want {
 			t.Errorf("secondsWords(%d) = %q, want %q", ms, got, want)
 		}
@@ -141,5 +141,102 @@ func TestFixSyncAllCountsAndNotes(t *testing.T) {
 	}
 	if w := got.Words(); w != "1 fixed, 1 already in sync." {
 		t.Errorf("words %q", w)
+	}
+}
+
+// lingering makes cues that start on the word and stay up `after` past its end, as most
+// real subtitles do. Overlap alone reads these as late; their starts don't lie.
+func lingering(speech []cue, after time.Duration) []cue {
+	out := make([]cue, 0, len(speech))
+	for i, c := range speech {
+		end := c.end + after
+		if i+1 < len(speech) && end > speech[i+1].start-50*time.Millisecond {
+			end = speech[i+1].start - 50*time.Millisecond
+		}
+		out = append(out, cue{start: c.start, end: end, text: c.text})
+	}
+	return out
+}
+
+// A subtitle in sync whose lines linger is left alone, and one that lingers AND runs late
+// is moved by how late it runs, not by how long its lines stay up.
+func TestFixSyncIsNotFooledByLingeringLines(t *testing.T) {
+	m := MediaRef{Kind: "movie", MovieID: 1}
+	ctx := context.Background()
+
+	s, speech, side, write := fixFixture(t)
+	inSync := formatSRT(lingering(speech, 800*time.Millisecond))
+	write(inSync)
+	fix, err := s.FixSync(ctx, m, "en", "", FixOpts{})
+	if err != nil || fix.Outcome != FixInSync {
+		t.Fatalf("lingering, in sync: %q, %v (%+v refined=%v)", fix.Outcome, err, fix.Sync, fix.Refined)
+	}
+	if raw, _ := os.ReadFile(side); string(raw) != inSync {
+		t.Error("an in-sync subtitle with lingering lines was moved")
+	}
+
+	s, speech, side, write = fixFixture(t)
+	base := lingering(speech, 800*time.Millisecond)
+	write(formatSRT(shiftCues(base, 400, 1)))
+	fix, err = s.FixSync(ctx, m, "en", "", FixOpts{})
+	if err != nil || fix.Outcome != FixFixed || !fix.Refined {
+		t.Fatalf("lingering, 400 ms late: %q, %v (%+v refined=%v)", fix.Outcome, err, fix.Sync, fix.Refined)
+	}
+	if d := firstCue(t, side) - base[0].start; d < -80*time.Millisecond || d > 80*time.Millisecond {
+		t.Errorf("first cue is %v off after the fix, want within 80 ms", d)
+	}
+}
+
+// A subtitle replaced while its audio was being read isn't touched: the measurement was
+// of the old file.
+func TestFixSyncRefusesAFileThatChanged(t *testing.T) {
+	s, speech, side, write := fixFixture(t)
+	write(formatSRT(shiftCues(subtitleFor(speech, 5), 3000, 1)))
+	replacement := formatSRT(subtitleFor(speech, 6))
+	extract := s.extractAudio
+	s.extractAudio = func(ctx context.Context, video string, stream int, dst string) error {
+		write(replacement) // a new download lands mid-measure
+		return extract(ctx, video, stream, dst)
+	}
+	_, err := s.FixSync(context.Background(), MediaRef{Kind: "movie", MovieID: 1}, "en", "", FixOpts{})
+	if !errors.Is(err, ErrFixChanged) {
+		t.Fatalf("err = %v, want ErrFixChanged", err)
+	}
+	if raw, _ := os.ReadFile(side); string(raw) != replacement {
+		t.Error("the replacement was rewritten with the old file's measurement")
+	}
+}
+
+// One fix per file at a time, and only the file that was clicked.
+func TestFixSyncOneAtATimeAndOnlyTheNamedFile(t *testing.T) {
+	s, speech, side, write := fixFixture(t)
+	late := formatSRT(shiftCues(subtitleFor(speech, 5), 800, 1))
+	write(late)
+	m := MediaRef{Kind: "movie", MovieID: 1}
+	ctx := context.Background()
+
+	if _, err := s.FixSync(ctx, m, "en", "", FixOpts{Name: "Movie (2020).eng.srt"}); !errors.Is(err, ErrFixOtherFile) {
+		t.Errorf("another file's name: %v, want ErrFixOtherFile", err)
+	}
+	if raw, _ := os.ReadFile(side); string(raw) != late {
+		t.Error("a fix asked for another file moved this one")
+	}
+
+	// A second fix arriving while the first reads the audio is turned away.
+	extract := s.extractAudio
+	var second error
+	s.extractAudio = func(ctx context.Context, video string, stream int, dst string) error {
+		_, second = s.FixSync(ctx, m, "en", "", FixOpts{})
+		return extract(ctx, video, stream, dst)
+	}
+	fix, err := s.FixSync(ctx, m, "en", "", FixOpts{Name: filepath.Base(side)})
+	if err != nil || fix.Outcome != FixFixed {
+		t.Fatalf("first fix: %q, %v", fix.Outcome, err)
+	}
+	if !errors.Is(second, ErrFileBusy) {
+		t.Errorf("second fix during the first: %v, want ErrFileBusy", second)
+	}
+	if f, _, _ := s.ledger.LiveFile(ctx, side); f.SyncShiftMs == nil || abs(*f.SyncShiftMs+800) > 100 {
+		t.Errorf("recorded shift %v, want about −800 once", f.SyncShiftMs)
 	}
 }

@@ -21,6 +21,9 @@ func (a *api) handleSubtitleSyncFix(w http.ResponseWriter, r *http.Request) {
 		subtitles.MediaRef
 		Lang    string `json:"lang"`
 		Variant string `json:"variant"`
+		// Name is the sidecar the person clicked; the fix is refused if the language
+		// resolves to another file.
+		Name string `json:"name"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -37,11 +40,15 @@ func (a *api) handleSubtitleSyncFix(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not find that subtitle")
 		return
 	}
-	// The same target as a check: one measurement of a file at a time.
+	if req.Name != "" && req.Name != t.Name {
+		a.writeError(w, http.StatusConflict, "Arrmada uses "+t.Name+" for this language, so that's the file a fix would move. Fix it from that file's card.")
+		return
+	}
+	// The service lets one fix at a time touch a file (and refuses one a subtitle job is on).
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "subtitles.sync-fix", Target: t.Key, Timeout: 30 * time.Minute,
 		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
 			p.SetMessage("Reading the audio of " + t.Title + "…")
-			fix, err := a.deps.Subtitles.FixSync(ctx, req.MediaRef, req.Lang, req.Variant)
+			fix, err := a.deps.Subtitles.FixSync(ctx, req.MediaRef, req.Lang, req.Variant, subtitles.FixOpts{Name: req.Name})
 			if err != nil {
 				return nil, err
 			}

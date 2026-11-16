@@ -246,23 +246,6 @@ func gateEnergy(db []float64) []float32 {
 			hold--
 		}
 	}
-	// The hangover is there to bridge the short gaps inside a sentence, but it also left
-	// every burst 200 ms long at its tail. Against cues that end with the words, that
-	// made a plateau of equally good offsets 200 ms wide, and a subtitle in sync measured
-	// about 100 ms early. Give the tail back: each run ends where its energy did.
-	run := 0
-	for i := 0; i <= len(env); i++ {
-		if i < len(env) && env[i] == 1 {
-			run++
-			continue
-		}
-		if run > syncHangover {
-			for k := i - syncHangover; k < i; k++ {
-				env[k] = 0
-			}
-		}
-		run = 0
-	}
 	return env
 }
 

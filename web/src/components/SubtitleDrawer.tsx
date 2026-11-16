@@ -324,7 +324,7 @@ function SidecarCard({ media, s, kept, langLabel, onChanged, toast }: {
   const fix = async () => {
     setBusy("fix");
     try {
-      const r = await subtitleFileApi.syncFix(media, lang, s.variant === "sdh" ? "sdh" : "");
+      const r = await subtitleFileApi.syncFix(media, lang, s.variant === "sdh" ? "sdh" : "", s.name);
       toast(`Measuring ${r.file} against the audio, then moving it into sync`);
       if (r.job_id) setCheckJob(r.job_id); else setBusy(null);
     } catch (e) { toast((e as Error).message, { tone: "error" }); setBusy(null); }
@@ -406,7 +406,7 @@ function SidecarCard({ media, s, kept, langLabel, onChanged, toast }: {
             <Button size="sm" variant="ghost" onClick={check} busy={busy === "check"} busyLabel="Checking…" disabled={busy !== null} title="Measure how well it lines up with the speech in the audio">Check sync</Button>
           )}
           {checkable && s.shiftable && pending === 0 && (
-            <Button size="sm" variant="ghost" onClick={fix} busy={busy === "fix"} busyLabel="Fixing…" disabled={busy !== null} title="Measure it against the speech, then move it into sync. It's only moved when the measurement is sure, and more than about a tenth of a second off.">Fix sync</Button>
+            <Button size="sm" variant="ghost" onClick={fix} busy={busy === "fix"} busyLabel="Fixing…" disabled={busy !== null} title="Measure it against the speech, then move it into sync. It's only moved when the measurement is sure.">Fix sync</Button>
           )}
           <Button size="sm" variant="ghost" onClick={remove} busy={busy === "delete"} busyLabel="Deleting…" disabled={busy !== null || pending !== 0} style={{ color: "var(--reject-text)" }}>Delete…</Button>
         </span>

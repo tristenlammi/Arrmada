@@ -65,7 +65,7 @@ for (const scheme of ["dark", "light"] as const) {
       await drawer.getByRole("button", { name: "Reset" }).click();
       // Fix sync measures it and moves it; the request names the file by its title and language.
       await drawer.getByRole("button", { name: "Fix sync" }).first().click();
-      await expect.poll(() => api.callsTo("POST", "/api/v1/subtitles/sync-fix").map((c) => c.body)).toEqual([{ kind: "movie", movie_id: 1, lang: "en", variant: "" }]);
+      await expect.poll(() => api.callsTo("POST", "/api/v1/subtitles/sync-fix").map((c) => c.body)).toEqual([{ kind: "movie", movie_id: 1, lang: "en", variant: "", name: "Fixture Film (2020).en.srt" }]);
 
       await drawer.getByRole("button", { name: "Delete…" }).first().click();
       const confirm = page.getByRole("dialog", { name: /Delete Fixture Film \(2020\)\.en\.srt\?/ });

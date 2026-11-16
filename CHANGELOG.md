@@ -11,6 +11,20 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+### Added
+
+- **Fix sync, for one subtitle or a whole show.** Check sync could say a subtitle ran late, but the only way to move it was half a second at a time, one episode at a time.
+  - **Fix sync** on a subtitle's card measures it against the speech and moves it into sync.
+  - **Fix subtitle sync…** in a show's ⋯ menu does that for every episode's `.srt`, as one background job. Each change is listed under Subtitles → Logs.
+  - It moves a subtitle only when the measurement is sure. Small offsets (from about 0.12 s) are settled by where lines start against where speech starts, so lines that linger on screen don't throw it. Where that can't be told (music under everything, loosely timed subtitles, audio in more than one language), only an offset over 0.3 s or a frame-rate mismatch is moved.
+  - A show-wide fix passes over subtitles taken from the video itself (its own track, AI made from its audio, a hash-matched download). Subtitles inside the video file are never touched.
+  - A subtitle that changes while it's being measured is left alone.
+- **Finer timing buttons**: −0.1 s and +0.1 s beside the half-second and one-second steps.
+
+### Changed
+
+- **Sub-second timing reads exactly**: "shifted −0.45 s", "runs 0.45 s late", where it used to round to a tenth.
+
 ## [0.5.0] - 2026-11-15
 
 ### Highlights

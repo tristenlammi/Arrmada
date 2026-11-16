@@ -91,10 +91,12 @@ type Service struct {
 	nextID  int64
 	runs    map[int64]*runHandle // running jobs' stop levers, by job id (Stop button)
 	busy    map[string]*Job      // files a job is working on (Job.key()); no second job may start on one
-	lanes   bool                 // Run's GPU worker is up: a job's AI part moves to the GPU lane
-	rtfMu   sync.Mutex           // serialises updates of the measured AI speed (noteRTF)
-	logMu   sync.Mutex
-	logBuf  []LogLine // recent activity console lines, for the Logs tab
+	// fixing holds the sidecar paths a sync fix is measuring or moving (syncfix.go): one at a time.
+	fixing sync.Map
+	lanes  bool       // Run's GPU worker is up: a job's AI part moves to the GPU lane
+	rtfMu  sync.Mutex // serialises updates of the measured AI speed (noteRTF)
+	logMu  sync.Mutex
+	logBuf []LogLine // recent activity console lines, for the Logs tab
 
 	onJobDone func(Job) // SetJobDoneHook; under mu
 

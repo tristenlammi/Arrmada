@@ -76,9 +76,7 @@ func healthOf(f SubtitleFile) LangHealth {
 		parts = append(parts, shiftWords(h.ShiftMs, scale))
 	case h.State == HealthBad:
 		parts = append(parts, "doesn't match the speech")
-	case abs(h.OffsetMs) > syncFixTolMs:
-		// Said from where Fix sync would move it, not from where a download is shifted on
-		// its own (syncTolMs): 250 ms late is late, and reads as late.
+	case abs(h.OffsetMs) > syncTolMs:
 		parts = append(parts, "runs "+lateWords(h.OffsetMs))
 	default:
 		parts = append(parts, "in sync")
@@ -96,9 +94,9 @@ func healthOf(f SubtitleFile) LangHealth {
 // lateWords says which way a subtitle is off: "3.0 s late", "1.5 s early".
 func lateWords(offsetMs int) string {
 	if offsetMs < 0 {
-		return secondsWords(-offsetMs) + " early"
+		return fmt.Sprintf("%.1f s early", float64(-offsetMs)/1000)
 	}
-	return secondsWords(offsetMs) + " late"
+	return fmt.Sprintf("%.1f s late", float64(offsetMs)/1000)
 }
 
 func abs(n int) int {

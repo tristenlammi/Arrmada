@@ -133,8 +133,9 @@ export const subtitleFileApi = {
   syncCheck: (m: SubMediaRef, lang: string, variant = "") =>
     req<{ job_id?: number; file: string }>("/api/v1/subtitles/sync-check", { method: "POST", body: JSON.stringify({ ...m, lang, variant }) }),
   // Check sync, then move the file onto the speech when the measurement is trusted. A job.
-  syncFix: (m: SubMediaRef, lang: string, variant = "") =>
-    req<{ job_id?: number; file: string }>("/api/v1/subtitles/sync-fix", { method: "POST", body: JSON.stringify({ ...m, lang, variant }) }),
+  // name is the file's card that was clicked: the server refuses if the language resolves to another file.
+  syncFix: (m: SubMediaRef, lang: string, variant: string, name: string) =>
+    req<{ job_id?: number; file: string }>("/api/v1/subtitles/sync-fix", { method: "POST", body: JSON.stringify({ ...m, lang, variant, name }) }),
   // The same for every episode of a show (or one season), one after another. A long job.
   syncFixSeries: (seriesId: number, season?: number) =>
     req<{ job_id?: number }>(`/api/v1/subtitles/sync-fix/series/${seriesId}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),

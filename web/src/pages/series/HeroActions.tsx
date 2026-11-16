@@ -220,7 +220,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
           title={<>Fix subtitle sync for “{name}”?</>}
           body={
             <p className="m-0">
-              Each episode's .srt subtitles are measured against the speech in its audio, and moved into sync where the measurement is sure and they're more than about a tenth of a second off. Ones it can't be sure about are left as they are. Subtitles inside the video file aren't touched. It reads every episode's soundtrack, so a long show takes a while; it carries on if you leave this page.
+              Each episode's .srt subtitles are measured against the speech in its audio, and moved into sync where the measurement is sure. Ones it can't be sure about are left as they are, and so are subtitles taken from the video itself. Subtitles inside the video file aren't touched. It reads every episode's soundtrack, so a long show takes a while. It carries on if you leave this page, and each change is listed under Subtitles → Logs.
             </p>
           }
           confirmLabel="Fix sync"
@@ -233,7 +233,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
               const r = await subtitleFileApi.syncFixSeries(series.id);
               if (r.job_id) setSyncJob(r.job_id);
               close();
-              flash("Checking every episode's subtitles — this shows the result when it's done.");
+              flash("Checking every episode's subtitles. Stay on this page to see the result, or read it under Subtitles → Logs.");
             } catch (e) {
               setSyncError((e as Error).message);
             } finally {
