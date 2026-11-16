@@ -773,3 +773,29 @@ func TestAPIKeysStayOutOfLogsAndBundle(t *testing.T) {
 		}
 	}
 }
+
+// A staff key reads history and a title's detail, the way a media server's scanner asks
+// what changed; from outside the LAN too, as staff are. A requester's key still can't, and
+// the rest of the staff library stays closed to keys.
+func TestAPIKeyStaffLibraryReads(t *testing.T) {
+	s := newRouteServer(t, nil)
+	_, mc := s.user(t, "mgr@example.com", auth.RoleManager)
+	_, kc := s.user(t, "kid@example.com", auth.RoleRequester)
+	staff := s.makeKey(t, mc, "media server", "read", 0)
+	kid := s.makeKey(t, kc, "kid", "full", 0)
+
+	for _, path := range []string{"/api/v1/history", "/api/v1/movies/999", "/api/v1/series/999"} {
+		for _, ip := range []string{"", "203.0.113.7"} {
+			rec := s.withKey(keyReq{method: "GET", path: path, key: staff.Key, ip: ip})
+			if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
+				t.Errorf("staff read-only key, GET %s from %q: HTTP %d %s", path, ip, rec.Code, rec.Body)
+			}
+		}
+		if rec := s.withKey(keyReq{method: "GET", path: path, key: kid.Key}); rec.Code != http.StatusForbidden {
+			t.Errorf("requester key, GET %s: HTTP %d, want 403", path, rec.Code)
+		}
+	}
+	if rec := s.withKey(keyReq{method: "GET", path: "/api/v1/queue", key: staff.Key}); rec.Code != http.StatusForbidden {
+		t.Errorf("staff key, GET /api/v1/queue: HTTP %d, want 403 (not opened to keys)", rec.Code)
+	}
+}

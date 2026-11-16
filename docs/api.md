@@ -93,13 +93,15 @@ logs, outside services' API keys and every admin page.
 | Your limits and shelf | `GET /api/v1/me/quota`, `GET /api/v1/me/books` |
 | Reporting a problem | `GET` and `POST /api/v1/issues` |
 | Your inbox | `GET /api/v1/me/notifications`, `POST /api/v1/me/notifications/read-all`, `POST /api/v1/me/notifications/{id}/read` |
+| Library changes (staff) | `GET /api/v1/history`, `GET /api/v1/movies/{id}`, `GET /api/v1/series/{id}`: what a media server's scanner reads to rescan only what changed |
 
 The exact list is the source of truth: routes marked `key` in
 [`internal/httpapi/testdata/routes.golden`](../internal/httpapi/testdata/routes.golden), which
 are the ones in [`internal/httpapi/apikey_routes.go`](../internal/httpapi/apikey_routes.go).
-The rule for adding one: it must already be open to callers from outside the home network
-(marked `ext` there), it must be something a script needs, and it must not be about signing
-in or account security. A test holds the list to that.
+The rule for adding one: it must be open to callers from outside the home network (marked
+`ext` there; staff routes can be, as staff are never limited to the outside view), it must be
+something a script needs, and it must not be about signing in or account security. A test
+holds the list to that.
 
 There's no OpenAPI description yet; the golden file above lists every route and who may
 call it.
@@ -119,8 +121,9 @@ call it.
 ### Planned
 
 The owner has deferred an **Admin** access level: a staff account's key that also reaches
-the staff library routes — adding and searching titles, the queue, wanted — the way a
-script drives Radarr's or Sonarr's API. It would never reach security or settings (sign-in,
+the rest of the staff library routes — adding and searching titles, the queue, wanted — the
+way a script drives Radarr's or Sonarr's API. Reading history and a title's detail is
+already open to staff keys (above). It would never reach security or settings (sign-in,
 sessions, passwords, two-factor, keys, people, outside services' keys, folders, backups,
 logs). Until then, keys reach only the routes above.
 

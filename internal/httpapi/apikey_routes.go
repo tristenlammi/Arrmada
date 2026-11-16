@@ -12,7 +12,8 @@ package httpapi
 //     couldn't (TestAPIKeyRoutesAreExternal);
 //   - and of those, only what a script has a use for: Discover and title lookups,
 //     requests (and, for staff, approving and declining them), reporting problems, your
-//     inbox, your shelf and quota, and who you are.
+//     inbox, your shelf and quota, who you are, and for staff, reading history and a
+//     movie's or show's detail.
 //
 // Never here, whatever their marks (TestAPIKeyRoutesExcludeAccountSecurity):
 //   - signing in and out, sessions, passwords and two-factor sign-in;
@@ -82,6 +83,14 @@ var apiKeyRoutes = map[string]bool{
 	"GET /api/v1/issues":                 true,
 	"POST /api/v1/issues":                true,
 	"GET /api/v1/issues/episodes/{tmdb}": true,
+
+	// Reading the library's history and a title's files, for staff keys: what a media
+	// server's scanner needs to rescan only what changed. Read-only; staff scope still
+	// applies, so a requester's or read-only account's key gets 403. ext() on these changes
+	// nothing for staff, whom the external gate never limits (external.go).
+	"GET /api/v1/history":     true,
+	"GET /api/v1/movies/{id}": true,
+	"GET /api/v1/series/{id}": true,
 
 	// Your inbox.
 	"GET /api/v1/me/notifications":            true,
