@@ -242,3 +242,34 @@ func TestSetupChecklistDismiss(t *testing.T) {
 		}
 	}
 }
+
+// Restore brings the Getting started card back after a manual dismiss, so an admin can
+// return to remaining steps. A fully completed checklist is re-dismissed on the next GET.
+func TestSetupChecklistRestore(t *testing.T) {
+	a := checklistAPI(t)
+
+	rec := httptest.NewRecorder()
+	a.handleDismissSetupChecklist(rec, httptest.NewRequest(http.MethodPost, "/api/v1/setup/checklist/dismiss", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss HTTP %d: %s", rec.Code, rec.Body)
+	}
+	if c := getChecklist(t, a); !c.Dismissed {
+		t.Fatal("dismissed checklist came back as not dismissed")
+	}
+
+	rec = httptest.NewRecorder()
+	a.handleRestoreSetupChecklist(rec, httptest.NewRequest(http.MethodPost, "/api/v1/setup/checklist/restore", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var restored setupChecklist
+	if err := json.Unmarshal(rec.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Dismissed {
+		t.Fatal("restore returned a dismissed checklist")
+	}
+	if c := getChecklist(t, a); c.Dismissed {
+		t.Fatal("restored checklist was dismissed again while steps remain")
+	}
+}
