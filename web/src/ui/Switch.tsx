@@ -31,7 +31,7 @@ export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(function Switch
       type={type}
       role="switch"
       aria-checked={checked}
-      aria-label={children || rest["aria-labelledby"] ? undefined : label}
+      aria-label={children ? undefined : label}
       onClick={(e) => { onClick?.(e); if (!e.defaultPrevented) onChange(!checked); }}
       className={children ? `inline-flex items-center gap-2 text-base font-semibold disabled:opacity-50 ${className ?? ""}` : `inline-flex flex-none rounded-full disabled:opacity-60 ${className ?? ""}`}
       {...rest}
