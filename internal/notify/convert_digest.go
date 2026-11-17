@@ -61,12 +61,27 @@ type digestState struct {
 	SavedBytes int64 `json:"saved_bytes"`
 	// ProblemKeys are the files that failed or stalled, each once ("movie:12").
 	ProblemKeys []string `json:"problem_keys,omitempty"`
+	// seen is a lazily-built set of ProblemKeys for O(1) duplicate checks. It is
+	// rebuilt from ProblemKeys on first use and is not serialized.
+	seen map[string]struct{} `json:"-"`
 	// ExtraProblems counts problems past maxProblemKeys.
 	ExtraProblems int64 `json:"extra_problems,omitempty"`
 	// Since is when the first of these happened (unix seconds; 0 = nothing yet).
 	Since int64 `json:"since,omitempty"`
 	// LastSent is the local date ("2026-10-12") of the last summary sent.
 	LastSent string `json:"last_sent,omitempty"`
+}
+
+// seenSet returns the set of ProblemKeys, building it from the slice on first use.
+// It is not serialized; it is a fast path for duplicate checks only.
+func (st *digestState) seenSet() map[string]struct{} {
+	if st.seen == nil {
+		st.seen = make(map[string]struct{}, len(st.ProblemKeys))
+		for _, k := range st.ProblemKeys {
+			st.seen[k] = struct{}{}
+		}
+	}
+	return st.seen
 }
 
 func (st digestState) problems() int64 { return int64(len(st.ProblemKeys)) + st.ExtraProblems }
@@ -143,16 +158,18 @@ func (st *digestState) addProblem(key string) {
 		st.ExtraProblems++
 		return
 	}
-	for _, k := range st.ProblemKeys {
-		if k == key {
-			return
-		}
+	// seenSet rebuilds from the slice on first use, so state loaded from an older
+	// JSON (no map) still dedupes correctly.
+	seen := st.seenSet()
+	if _, ok := seen[key]; ok {
+		return
 	}
 	if len(st.ProblemKeys) >= maxProblemKeys {
 		st.ExtraProblems++
 		return
 	}
 	st.ProblemKeys = append(st.ProblemKeys, key)
+	seen[key] = struct{}{}
 }
 
 // update changes the counts and saves them at once.
