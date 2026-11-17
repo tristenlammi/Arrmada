@@ -32,10 +32,15 @@ import (
 // v2TriggerAllows reports whether an upgrade decided by key k is worth a re-download under
 // a profile's trigger. Unlike classic ranking's triggerAllows, "any" is a list too: the
 // keys that never upgrade stay out of it. Leaving the avoided tier (KeyAvoid) counts under
-// every trigger: the profile already said it doesn't want that file.
+// every trigger: the profile already said it doesn't want that file. TriggerLanguage takes
+// only a language gain — the target's language, or a preferred/required one the file
+// lacks — under both rankings.
 func v2TriggerAllows(trigger string, k RankKey) bool {
 	if k == KeyAvoid {
 		return true
+	}
+	if NormalizeTrigger(trigger) == TriggerLanguage {
+		return k == KeyLanguage
 	}
 	switch NormalizeTrigger(trigger) {
 	case TriggerSource:
@@ -46,7 +51,7 @@ func v2TriggerAllows(trigger string, k RankKey) bool {
 		return k == KeyResolution
 	}
 	switch k {
-	case KeyResolution, KeyPreferences, KeyCustom, KeySource, KeyProper, KeyAvoid:
+	case KeyResolution, KeyPreferences, KeyCustom, KeySource, KeyProper, KeyAvoid, KeyLanguage:
 		return true
 	}
 	return false
