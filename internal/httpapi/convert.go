@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/jobs"
@@ -217,7 +218,11 @@ func (a *api) handleConvertCompareFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("name")+`"`)
+	name := r.PathValue("name")
+	name = strings.ReplaceAll(name, `"`, "")
+	name = strings.ReplaceAll(name, "\r", "")
+	name = strings.ReplaceAll(name, "\n", "")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	http.ServeFile(w, r, path)
 }
 
