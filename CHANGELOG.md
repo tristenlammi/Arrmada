@@ -31,6 +31,9 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 - **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
   - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
   - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed.
+- **"External internet access denied" on the bundled SABnzbd's page, over Tailscale.** With Tailscale on the server and on a computer, even one on the same network reaches the server from a Tailscale address, which SABnzbd counted as the internet.
+  - Its page now answers Tailscale's range (100.64.0.0/10) as well as home-network addresses. Anything else is still refused, and the page keeps its login.
+  - New installs start that way. On an existing one, `update.sh` sets it and restarts SABnzbd once; the all-in-one image sets it at its next start. A SABnzbd where you set `local_ranges` yourself is left alone.
 - **`install.sh --with-sabnzbd` (or `--with-prowlarr`) on an install that's already there.**
   - Running it again after a failed first try starts the companion. It used to see the setting already saved, update Arrmada and start nothing.
   - An install set up by an older installer gets its media folder mounted into SABnzbd. The installer couldn't read that older file and skipped the mount without saying so, leaving SABnzbd's downloads in Arrmada's own storage. The mount is added to the file as it is, so lines of your own in it stay.

@@ -181,6 +181,19 @@ func (s *SABnzbd) EnsureWebLogin(ctx context.Context, dc Client) (bool, error) {
 	return true, nil
 }
 
+// SABLocalRanges is who the bundled SABnzbd's own page answers without treating them as
+// the outside world: the private ranges SABnzbd allows when nothing is set, and
+// 100.64.0.0/10, the range Tailscale gives its devices. SABnzbd counts that range as the
+// internet and refuses it ("External internet access denied"), and with Tailscale on both
+// ends even a computer on the same network arrives from it. Real internet addresses stay
+// refused, and the page keeps its login.
+//
+// It's only ever written to SABnzbd's settings file, while SABnzbd is stopped: the first
+// settings (docker-compose.yml, internal/aio), and update.sh for a SABnzbd from before
+// them. SABnzbd refuses to change local_ranges through its API (a protected setting),
+// and Arrmada has its settings file read-only.
+const SABLocalRanges = "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10"
+
 // SABTuned is what TuneBundledSAB changed in the bundled SABnzbd.
 type SABTuned struct {
 	Categories []string // Arrmada categories it created

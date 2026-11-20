@@ -253,6 +253,7 @@ services:
   #       username = arrmada
   #       password = $$pw
   #       host_whitelist = arrmada-sabnzbd,
+  #       local_ranges = 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10
   #       download_dir = /media/downloads/usenet/incomplete
   #       complete_dir = /media/downloads/usenet/complete
   #       auto_browser = 0

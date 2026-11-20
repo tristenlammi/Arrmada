@@ -425,6 +425,12 @@ provider in SABnzbd" until there's a news server. Open SABnzbd by the server's I
 it only answers to the names in its `host_whitelist` (Config → Special), which starts with
 just `arrmada-sabnzbd`; add your server's name there to use that instead.
 
+Its page answers your home network and Tailscale addresses (100.64.0.0/10), and refuses
+anything else with "External internet access denied". That list is SABnzbd's
+`local_ranges` (Config → Special). SABnzbd only lets it be changed on its own page or in
+`sabnzbd.ini`, so a bundled SABnzbd from before Arrmada set it gets it from `update.sh`,
+which restarts SABnzbd once. Ranges you set yourself are never changed.
+
 Removed in Arrmada, the bundled SABnzbd stays removed (even after a restart) until **Restore
 bundled SABnzbd** in Settings → Connections. To stop running it at all, take `sabnzbd` out of
 `COMPOSE_PROFILES` in `.env` and run `docker compose rm -sf arrmada-sabnzbd`.

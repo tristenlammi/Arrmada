@@ -312,7 +312,8 @@ services:
   # One-shot, with SABnzbd: its first settings, only if it has none yet — English (its
   # failure reasons are read by Arrmada), Arrmada's categories with folders of their own,
   # downloads on the shared volume (Arrmada moves them into its Downloads folder once it
-  # sees SABnzbd can reach that), the name Arrmada uses for it allowed, every job repaired,
+  # sees SABnzbd can reach that), the name Arrmada uses for it allowed, its page open to
+  # your network and to Tailscale-style addresses (100.64.0.0/10), every job repaired,
   # unpacked and deleted after (pp=3), a new random API key, and a login for its own web
   # page (user arrmada, a random password: its page is on your network). Arrmada reads both
   # from the config volume (an admin sees the login on SABnzbd's card in Settings →
@@ -346,6 +347,7 @@ services:
         username = arrmada
         password = $$pw
         host_whitelist = arrmada-sabnzbd,
+        local_ranges = 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10
         download_dir = /media/downloads/usenet/incomplete
         complete_dir = /media/downloads/usenet/complete
         auto_browser = 0

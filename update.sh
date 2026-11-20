@@ -461,6 +461,49 @@ reopen_bundled_qbit() {
   say "    docker compose restart arrmada-app" >&2
 }
 
+# admit_tailnet_to_sabnzbd: the bundled SABnzbd's own page only answers addresses it
+# counts as local, and one set up before Arrmada seeded that list counts only the usual
+# home ranges. With Tailscale on the server and on a computer, even one on the same
+# network arrives from Tailscale's range (100.64.0.0/10) and gets "External internet
+# access denied". A SABnzbd with no ranges of its own is given the seeded ones (the home
+# ranges and Tailscale's; the internet stays refused, and the page keeps its login).
+# SABnzbd won't take this setting through its API, so it's written to its settings file
+# while it's stopped, over the same file so its owner stays. Ranges you set are left alone,
+# and so is a SABnzbd that isn't the bundled one. Never fails the update.
+admit_tailnet_to_sabnzbd() {
+  # By the file, not `docker compose config --services`: that leaves out a service whose
+  # profile isn't switched on in .env, as with a SABnzbd started by hand.
+  grep -q '^  arrmada-sabnzbd-init:' docker-compose.yml 2>/dev/null || return 0
+  docker inspect Arrmada-sabnzbd >/dev/null 2>&1 || return 0
+  _lr='10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10'
+  _state=$(docker compose run --rm --no-deps -T --entrypoint sh arrmada-sabnzbd-init -c '
+    f=/config/sabnzbd.ini
+    [ -f "$f" ] || { echo none; exit 0; }
+    if ! grep -q "^local_ranges" "$f"; then echo absent
+    elif grep -q "^local_ranges *= *,\{0,1\} *$" "$f"; then echo empty
+    else echo set; fi' 2>/dev/null </dev/null | tr -d '\r' | tail -n 1)
+  case "$_state" in absent | empty) ;; *) return 0 ;; esac
+  _was=$(docker inspect -f '{{.State.Running}}' Arrmada-sabnzbd 2>/dev/null || true)
+  if [ "$_was" = true ]; then docker compose stop arrmada-sabnzbd >/dev/null 2>&1 || return 0; fi
+  if docker compose run --rm --no-deps -T -e "LR=$_lr" --entrypoint sh arrmada-sabnzbd-init -c '
+    f=/config/sabnzbd.ini
+    if grep -q "^local_ranges" "$f"; then
+      sed "s#^local_ranges *= *,\{0,1\} *\$#local_ranges = $LR#" "$f" > "$f.arrmada"
+    else
+      awk -v lr="$LR" "{ print } \$0 == \"[misc]\" && !done { print \"local_ranges = \" lr; done = 1 }" "$f" > "$f.arrmada"
+    fi
+    grep -q "^local_ranges = $LR\$" "$f.arrmada" && cat "$f.arrmada" > "$f"
+    rm -f "$f.arrmada"
+    grep -q "^local_ranges = $LR\$" "$f"' >/dev/null 2>&1 </dev/null; then
+    say "  SABnzbd: its own page now answers Tailscale addresses (100.64.0.0/10) as well as your"
+    say "  home network. It used to refuse them with \"External internet access denied\"."
+  fi
+  if [ "$_was" = true ]; then
+    docker compose start arrmada-sabnzbd >/dev/null 2>&1 ||
+      say "! SABnzbd didn't start again. Run: docker compose up -d arrmada-sabnzbd" >&2
+  fi
+}
+
 # tighten_env: .env can hold a key or token (ARRMADA_PLEX_TOKEN), and new installs make it
 # readable by its owner only. An older one is tightened the same way when it's yours and
 # you're not root: the owner keeps reading and writing it (so docker compose and this
@@ -1252,6 +1295,8 @@ if [ -n "$_app_media" ]; then
     fi
   done
 fi
+
+admit_tailnet_to_sabnzbd || true
 
 # A build kept by an earlier --rollback is superseded by this one.
 docker image rm arrmada:rolled-back >/dev/null 2>&1 || true
