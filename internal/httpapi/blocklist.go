@@ -30,6 +30,33 @@ func (a *api) handleListAllBlocks(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": rows, "total": total})
 }
 
+// bulkUnblockRequest carries the ids to unblock.
+type bulkUnblockRequest struct {
+	IDs []int64 `json:"ids"`
+}
+
+// handleBulkUnblock unblocks many blocklist entries at once.
+func (a *api) handleBulkUnblock(w http.ResponseWriter, r *http.Request) {
+	var req bulkUnblockRequest
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.IDs) == 0 {
+		a.writeError(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(req.IDs) > 1000 {
+		a.writeError(w, http.StatusBadRequest, "too many ids")
+		return
+	}
+	n, err := a.deps.Automation.RemoveBlockEntries(r.Context(), req.IDs)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not remove blocklist entries")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"removed": n})
+}
+
 // handleUnblockAny unblocks one entry of any kind: the release becomes
 // grabbable again on the next search.
 func (a *api) handleUnblockAny(w http.ResponseWriter, r *http.Request) {
