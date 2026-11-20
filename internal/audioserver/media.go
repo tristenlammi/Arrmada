@@ -61,30 +61,55 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, key, ino stri
 		writeError(w, http.StatusNotFound, "File not found")
 		return
 	}
+	s.sendTrack(w, r, it.Path, f, attach)
+}
+
+// sendTrack streams one track: a file as it is, or a chapter track of a very long file,
+// cut on first asking (clips.go) and from then on a file like any other.
+func (s *Server) sendTrack(w http.ResponseWriter, r *http.Request, root string, f AudioFile, attach bool) {
+	path := f.Path
+	if f.Clip != nil {
+		p, err := s.clips.get(r.Context(), f)
+		if err != nil {
+			if r.Context().Err() == nil {
+				// No title, no user: only that it failed and why.
+				s.log.Warn("audiobook server: couldn't prepare a chapter of a long audiobook", "err", err)
+			}
+			writeError(w, http.StatusServiceUnavailable, "Couldn't prepare this chapter")
+			return
+		}
+		path = p
+		// The next chapter is cut now, so the app finds it ready when this one ends, even
+		// if the disk the book is on has gone to sleep by then.
+		if files, err := s.probe.files(r.Context(), root, false); err == nil {
+			if next, ok := nextTrack(files, f); ok {
+				s.clips.begin(next)
+			}
+		}
+	}
 	w.Header().Set("Content-Type", mimeFor(f.Ext))
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	if attach {
 		w.Header().Set("Content-Disposition", attachment(f.Name))
 	}
-	http.ServeFile(w, r, f.Path)
+	http.ServeFile(w, r, path)
 }
 
-// cachedFileByIno finds one of an item's audio files in its (cached) file list, if it's
-// still on disk.
+// cachedFileByIno finds one of an item's tracks (an audio file, or a chapter track of a
+// very long one) from its cached file list, if the file is still on disk.
 func (s *Server) cachedFileByIno(ctx context.Context, root, ino string) (AudioFile, bool) {
 	files, err := s.probe.files(ctx, root, false)
 	if err != nil {
 		return AudioFile{}, false
 	}
-	for _, f := range files {
-		if f.Ino == ino {
-			if _, err := s.probe.statPath(f.Path); err == nil {
-				return f, true
-			}
-			break
-		}
+	f, ok := trackByIno(files, ino)
+	if !ok {
+		return AudioFile{}, false
 	}
-	return AudioFile{}, false
+	if _, err := s.probe.statPath(f.Path); err != nil {
+		return AudioFile{}, false
+	}
+	return f, true
 }
 
 // handleItemDownload sends the whole audiobook: the file itself, or a zip of its files.

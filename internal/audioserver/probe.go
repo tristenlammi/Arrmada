@@ -31,6 +31,9 @@ type AudioFile struct {
 	Title    string
 	Narrator string // from the file's tags (narratorFromTags); "" when none says
 	Chapters []Chapter
+	// Clip is set on a chapter track of a very long file (chaptertracks.go): Path is then
+	// the file it's cut from. Never set on a file as listed from disk.
+	Clip *clipSpan
 }
 
 // metaVersion is what this probe stores per file. Version 2 added the narrator; a
@@ -79,6 +82,7 @@ type known struct {
 	Chapters int     // embedded chapter markers across them
 	Stale    int     // files probed before narrators were read (metaVersion), due a re-read
 	Narrator string  // the narrator the first file (by path) names, if any does
+	First    string  // the first probed file by path: the file itself when there's only one
 }
 
 // underRange is the primary-key range holding root and everything below it: root+sep up
@@ -102,9 +106,10 @@ func (p *prober) knownUnder(ctx context.Context, root string) known {
 		        COALESCE(SUM(meta_version < ?), 0),
 		        COALESCE((SELECT narrator FROM audio_file_meta
 		                   WHERE narrator != '' AND duration > 0 AND (path = ? OR (path >= ? AND path < ?))
-		                   ORDER BY path LIMIT 1), '')
+		                   ORDER BY path LIMIT 1), ''),
+		        COALESCE(MIN(path), '')
 		   FROM audio_file_meta WHERE duration > 0 AND (path = ? OR (path >= ? AND path < ?))`,
-		metaVersion, clean, from, to, clean, from, to).Scan(&k.Files, &k.Seconds, &k.Bytes, &k.Chapters, &k.Stale, &k.Narrator)
+		metaVersion, clean, from, to, clean, from, to).Scan(&k.Files, &k.Seconds, &k.Bytes, &k.Chapters, &k.Stale, &k.Narrator, &k.First)
 	return k
 }
 

@@ -24,6 +24,13 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 ### Changed
 
 - **Sub-second timing reads exactly**: "shifted −0.45 s", "runs 0.45 s late", where it used to round to a tenth.
+- **Very long single-file audiobooks reach listening apps as one track per chapter.** This applies to an `.m4b`/`.m4a` of 32 hours or more that has chapter marks. Apps that already downloaded such a book will see it as changed and may download it again; saved places carry over.
+
+### Fixed
+
+- **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
+  - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
+  - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed.
 
 ## [0.5.0] - 2026-11-15
 

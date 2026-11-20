@@ -3,6 +3,7 @@ package audioserver
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -85,6 +86,10 @@ func (s *Server) itemMinified(ctx context.Context, it Item, progress map[string]
 		chapters = k.Files
 		if k.Files == 1 {
 			chapters = max(k.Chapters, 1)
+			// A very long single file is told to apps as a track per chapter (chapterTracks).
+			if k.Seconds >= splitMinSeconds && k.Chapters >= 2 && splittable(filepath.Ext(k.First)) {
+				numFiles = k.Chapters
+			}
 		}
 	}
 	o := obj{
@@ -116,10 +121,13 @@ func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progres
 // (for replies listing many items, which mustn't wait on ffprobe for each).
 func (s *Server) itemFull(ctx context.Context, it Item, p *listening.Progress, probe bool) (obj, []AudioFile) {
 	files, _ := s.probe.filesFor(ctx, it.Path, it.Book.Author, probe)
+	// What apps play: the files, or a very long file's chapters as tracks (chapterTracks).
+	// Lengths, sizes and chapters below stay the book's own.
+	played, _ := chapterTracks(files)
 	audio := []obj{}
 	tracks := []obj{}
 	offset := 0.0
-	for _, f := range files {
+	for _, f := range played {
 		meta := obj{"filename": f.Name, "ext": f.Ext, "path": f.Path, "relPath": f.Name, "size": f.Size,
 			"mtimeMs": f.MTimeMs, "ctimeMs": f.MTimeMs, "birthtimeMs": f.MTimeMs}
 		af := obj{
@@ -155,17 +163,17 @@ func (s *Server) itemFull(ctx context.Context, it Item, p *listening.Progress, p
 	}
 	o := obj{
 		"id": it.Key, "ino": inoFor(it.Key), "oldLibraryItemId": nil, "libraryId": libraryID, "folderId": libraryID,
-		"path": it.Path, "relPath": it.Title, "isFile": len(files) == 1, "mtimeMs": it.AddedAt, "ctimeMs": it.AddedAt,
+		"path": it.Path, "relPath": it.Title, "isFile": len(played) == 1, "mtimeMs": it.AddedAt, "ctimeMs": it.AddedAt,
 		"birthtimeMs": it.AddedAt, "addedAt": it.AddedAt, "updatedAt": it.updatedAt(), "lastScan": it.AddedAt, "scanVersion": ServerVersion,
 		"isMissing": false, "isInvalid": false, "mediaType": "book",
 		"media": obj{
 			"id": "m" + it.Key, "libraryItemId": it.Key, "metadata": metadataExpanded(it, filesNarrator(it, files)), "coverPath": coverPath(it),
 			"tags": []string{}, "audioFiles": audio, "chapters": chapters, "duration": totalDuration(files),
-			"size": totalSize(files), "tracks": tracks, "ebookFile": ebookFile, "ebookFormat": ebookFormat, "numTracks": len(files),
-			"numAudioFiles": len(files), "numChapters": len(chapters),
+			"size": totalSize(files), "tracks": tracks, "ebookFile": ebookFile, "ebookFormat": ebookFormat, "numTracks": len(played),
+			"numAudioFiles": len(played), "numChapters": len(chapters),
 		},
 		// Since Audiobookshelf 2.36 the expanded item carries every list field too.
-		"libraryFiles": libraryFiles, "numFiles": len(files), "size": totalSize(files),
+		"libraryFiles": libraryFiles, "numFiles": len(played), "size": totalSize(files),
 	}
 	if p != nil {
 		o["userMediaProgress"] = mediaProgress(*p)
