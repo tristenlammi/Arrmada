@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/toolrun"
 )
@@ -28,6 +29,10 @@ import (
 // past clipMaxBytes the least recently used go first. Someone listening through a book
 // keeps a few chapters here; an app downloading a whole book fills it with that book for
 // a few days.
+//
+// It lives in Arrmada's data folder, beside the database, which on many servers is a small
+// disk. So it never takes that disk's last clipFreeFloor: short of room, the tracks asked
+// for longest ago go first, and if that isn't enough the track isn't cut at all.
 type clipCache struct {
 	dir    string
 	ffmpeg string
@@ -35,6 +40,8 @@ type clipCache struct {
 	now    func() time.Time
 	// cut writes the stretch [start, start+dur) of src to dst as an MP4 (nil = ffmpeg).
 	cut func(ctx context.Context, src string, start, dur float64, title, dst string) error
+	// free reports the free space on the disk the cache is on (nil = ask the system).
+	free func() (uint64, bool)
 
 	maxBytes int64
 	maxAge   time.Duration
@@ -60,7 +67,26 @@ const (
 	// array disk adds its spin-up.
 	clipCutTimeout = 3 * time.Minute
 	clipSweepEvery = 10 * time.Minute
+	// clipFreeFloor is the free space the cache always leaves on its disk.
+	clipFreeFloor = 1 << 30
 )
+
+var errClipNoRoom = errors.New("not enough free space in Arrmada's data folder to prepare a chapter (it keeps 1 GB free)")
+
+// freeOf is the free space on the cache's disk, when that can be told.
+func (c *clipCache) freeOf() (uint64, bool) {
+	if c.free != nil {
+		return c.free()
+	}
+	u, ok := diskspace.Of(c.dir)
+	return u.FreeBytes, ok
+}
+
+// room reports whether a cut of about size bytes fits above the floor.
+func (c *clipCache) room(size int64) bool {
+	free, ok := c.freeOf()
+	return !ok || free >= uint64(clipFreeFloor)+uint64(max(size, 0))
+}
 
 func newClipCache(dir, ffmpeg string, log *slog.Logger) *clipCache {
 	if ffmpeg == "" {
@@ -164,6 +190,12 @@ func (c *clipCache) make(f AudioFile, dst string) error {
 	if err := os.MkdirAll(c.dir, 0o755); err != nil {
 		return err
 	}
+	if !c.room(f.Size) {
+		c.sweepFor(f.Size)
+		if !c.room(f.Size) {
+			return errClipNoRoom
+		}
+	}
 	tmp, err := os.CreateTemp(c.dir, "cut-*.tmp")
 	if err != nil {
 		return err
@@ -231,7 +263,11 @@ func (c *clipCache) sweepSometimes() {
 // sweep removes tracks nobody has asked for in maxAge, then the least recently asked for
 // until the cache is under maxBytes (leaving alone ones asked for in the last clipBusy),
 // and any half-written cut a crash left behind. It returns how many files it removed.
-func (c *clipCache) sweep() int {
+func (c *clipCache) sweep() int { return c.sweepFor(0) }
+
+// sweepFor is sweep, also making room for a cut of need bytes above clipFreeFloor when the
+// disk is short of it.
+func (c *clipCache) sweepFor(need int64) int {
 	entries, err := os.ReadDir(c.dir)
 	if err != nil {
 		return 0
@@ -267,9 +303,15 @@ func (c *clipCache) sweep() int {
 			total += info.Size()
 		}
 	}
+	limit := c.maxBytes
+	if free, ok := c.freeOf(); ok {
+		if want := uint64(clipFreeFloor) + uint64(max(need, 0)); free < want {
+			limit = min(limit, total-int64(want-free))
+		}
+	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].at.Before(kept[j].at) })
 	for _, k := range kept {
-		if total <= c.maxBytes || now.Sub(k.at) < clipBusy {
+		if total <= limit || now.Sub(k.at) < clipBusy {
 			break
 		}
 		if os.Remove(k.path) == nil {
