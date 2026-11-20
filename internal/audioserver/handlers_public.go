@@ -43,11 +43,11 @@ func (s *Server) handleSessionTrack(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Track not found")
 		return
 	}
-	for _, f := range files {
+	// The tracks the session was given: a very long file's chapters, otherwise the files.
+	played, _ := chapterTracks(files)
+	for _, f := range played {
 		if f.Index == index {
-			w.Header().Set("Content-Type", mimeFor(f.Ext))
-			w.Header().Set("Cache-Control", "private, max-age=86400")
-			http.ServeFile(w, r, f.Path)
+			s.sendTrack(w, r, it.Path, f, false)
 			return
 		}
 	}

@@ -45,6 +45,7 @@ type Server struct {
 	log      *slog.Logger
 	probe    *prober
 	images   *imageCache
+	clips    *clipCache // chapter tracks cut from very long files (clips.go)
 	coverDir string
 	Accounts *Accounts
 	limiter  *loginLimiter // only while no throttle is set (tests, tools)
@@ -66,6 +67,7 @@ type Options struct {
 	Settings *settings.Service
 	Log      *slog.Logger
 	FFprobe  string
+	FFmpeg   string // "" = ffmpeg on the PATH
 	DataDir  string
 }
 
@@ -75,6 +77,7 @@ func New(o Options) *Server {
 		db: o.DB, books: o.Books, listen: o.Listen, users: o.Users, settings: o.Settings, log: o.Log,
 		probe:    &prober{db: o.DB, ffprobe: o.FFprobe},
 		images:   newImageCache(filepath.Join(o.DataDir, "audioserver", "images")),
+		clips:    newClipCache(filepath.Join(o.DataDir, "audioserver", "chapters"), o.FFmpeg, o.Log),
 		coverDir: filepath.Join(o.DataDir, "covers"),
 		limiter:  newLoginLimiter(),
 	}
