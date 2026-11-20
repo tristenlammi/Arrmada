@@ -134,6 +134,12 @@ func (c *clipCache) start(f AudioFile, dst string) *clipMake {
 		return m
 	}
 	m := &clipMake{done: make(chan struct{})}
+	// A cut that finished between the caller's look at the disk and now is the answer:
+	// without this second look, under the lock, it would be cut again.
+	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
+		close(m.done)
+		return m
+	}
 	c.making[dst] = m
 	safego.Go(c.log, "audiobook chapter track", func() {
 		m.err = c.make(f, dst)
