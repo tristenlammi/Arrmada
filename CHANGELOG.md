@@ -31,6 +31,10 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 - **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
   - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
   - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed.
+- **`install.sh --with-sabnzbd` (or `--with-prowlarr`) on an install that's already there.**
+  - Running it again after a failed first try starts the companion. It used to see the setting already saved, update Arrmada and start nothing.
+  - An install set up by an older installer gets its media folder mounted into SABnzbd. The installer couldn't read that older file and skipped the mount without saying so, leaving SABnzbd's downloads in Arrmada's own storage. The mount is added to the file as it is, so lines of your own in it stay.
+  - A download the registry refuses for a moment ("toomanyrequests") is tried again, and when Docker can't start something beside a running Arrmada the installer says that, where it said Arrmada didn't start.
 
 ## [0.5.0] - 2026-11-15
 
