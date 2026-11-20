@@ -309,6 +309,7 @@ func TestClipCacheCutsOnceAndSweeps(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	c.now = func() time.Time { return now }
 	c.lastSweep = now // no sweep of its own after a cut: the test runs them by hand
+	c.free = func() (uint64, bool) { return 0, false }
 	var calls atomic.Int32
 	release := make(chan struct{})
 	c.cut = func(_ context.Context, _ string, _, _ float64, _, dst string) error {
@@ -387,6 +388,75 @@ func TestClipCacheCutsOnceAndSweeps(t *testing.T) {
 	c.maxBytes = 1
 	if n := c.sweep(); n != 1 || !c.ready(tracks[4]) || !c.ready(tracks[5]) {
 		t.Fatalf("swept %d; tracks asked for in the last few minutes must stay", n)
+	}
+}
+
+// The cache shares a disk with the database. Short of room it gives up its oldest tracks
+// first, never one being read, and failing that doesn't cut: it never takes the last 1 GB.
+func TestClipCacheLeavesTheDataDiskRoom(t *testing.T) {
+	dir := t.TempDir()
+	c := newClipCache(dir, "", nil)
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	c.lastSweep = now
+	const cutSize = 1000
+	c.cut = func(_ context.Context, _ string, _, _ float64, _, dst string) error {
+		return os.WriteFile(dst, bytes.Repeat([]byte("a"), cutSize), 0o644)
+	}
+	onDisk := func() uint64 {
+		var n uint64
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if info, err := e.Info(); err == nil && strings.HasSuffix(e.Name(), ".m4a") {
+				n += uint64(info.Size())
+			}
+		}
+		return n
+	}
+	var disk atomic.Uint64 // what's free with the cache empty
+	disk.Store(1 << 40)
+	c.free = func() (uint64, bool) { return disk.Load() - onDisk(), true }
+	tracks, _ := chapterTracks([]AudioFile{longBook(40*3600, 6)})
+	for _, tr := range tracks[:3] {
+		if _, err := c.get(context.Background(), tr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age := func(tr AudioFile, d time.Duration) {
+		at := now.Add(-d)
+		if err := os.Chtimes(c.pathFor(tr), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	age(tracks[0], 3*time.Hour)
+	age(tracks[1], 2*time.Hour)
+	age(tracks[2], time.Minute) // being read
+
+	// 1500 bytes short of the floor plus the next track: the two oldest (2000) make room.
+	disk.Store(uint64(clipFreeFloor) + uint64(tracks[3].Size) + 3*cutSize - 1500)
+	if _, err := c.get(context.Background(), tracks[3]); err != nil {
+		t.Fatalf("with old tracks to give up: %v", err)
+	}
+	for i, want := range []bool{false, false, true, true} {
+		if got := c.ready(tracks[i]); got != want {
+			t.Errorf("track %d kept=%v, want %v", i+1, got, want)
+		}
+	}
+
+	age(tracks[3], 0) // just cut, by the test's clock
+
+	// A disk with no room, and only tracks being read: no cut, and they stay.
+	disk.Store(uint64(clipFreeFloor) / 2)
+	if _, err := c.get(context.Background(), tracks[4]); !errors.Is(err, errClipNoRoom) {
+		t.Fatalf("on a full disk: %v", err)
+	}
+	if c.ready(tracks[4]) || !c.ready(tracks[2]) || !c.ready(tracks[3]) {
+		t.Fatal("a full disk must leave what's being read and cut nothing new")
+	}
+	// Room again: it's cut.
+	disk.Store(1 << 40)
+	if _, err := c.get(context.Background(), tracks[4]); err != nil {
+		t.Fatal(err)
 	}
 }
 
