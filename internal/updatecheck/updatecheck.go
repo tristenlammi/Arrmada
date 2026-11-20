@@ -387,7 +387,6 @@ func (c *Checker) latestRelease(ctx context.Context) (*Release, error) {
 		return nil, nil
 	case http.StatusOK:
 	default:
-		return nil, httpError{resp.StatusCode}
 	}
 	var body struct {
 		TagName     string    `json:"tag_name"`

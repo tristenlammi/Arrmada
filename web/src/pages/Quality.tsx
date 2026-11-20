@@ -119,6 +119,7 @@ const UPGRADE_TRIGGERS: { v: UpgradeTrigger; l: string; short: string; detail: s
   { v: "source", l: "A better source or a format you prefer", short: "better source or format", detail: "Also a higher resolution. A PROPER only when it fixes the release you have. A file from a release you avoid is always replaced." },
   { v: "format", l: "A format you prefer or a higher resolution", short: "format or resolution", detail: "A better source alone (WEB-DL → BluRay) isn't worth a re-download. A PROPER only when it fixes the release you have. A file from a release you avoid is always replaced." },
   { v: "resolution", l: "Higher resolution only", short: "resolution only", detail: "Only a resolution gain, or a PROPER that fixes the release you have. A file from a release you avoid is always replaced." },
+  { v: "language", l: "An audio language the profile asks for", short: "audio language only", detail: "Only a release that gives the profile more of the audio languages it asks for — a preferred or required language the file lacks, or the target's language. Resolution, formats and source never count on their own. A file from a release you avoid is always replaced." },
 ];
 
 // How strongly smaller files win among equals (StoredProfile.small_bias).

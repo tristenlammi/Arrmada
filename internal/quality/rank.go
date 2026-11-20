@@ -18,6 +18,7 @@ const (
 	KeyCustom      RankKey = "custom"      // custom formats, keywords and the other built-in formats
 	KeySource      RankKey = "source"      // a better source (WEB → BluRay → Remux)
 	KeyProper      RankKey = "proper"      // a PROPER or REPACK
+	KeyLanguage    RankKey = "language"    // an audio language the profile asks for
 	KeyGroup       RankKey = "group"       // the release group
 	KeyBitrate     RankKey = "bitrate"     // a heavier encode
 	KeyHealth      RankKey = "health"      // seeders
@@ -30,12 +31,13 @@ const (
 	TriggerSource     = "source"     // resolution, preferences, custom formats or a better source
 	TriggerFormat     = "format"     // resolution, preferences or custom formats
 	TriggerResolution = "resolution" // resolution only
+	TriggerLanguage   = "language"   // audio language only
 )
 
 // ValidTrigger reports whether t is a trigger a profile may be saved with ("" is TriggerAny).
 func ValidTrigger(t string) bool {
 	switch t {
-	case "", TriggerAny, TriggerSource, TriggerFormat, TriggerResolution:
+	case "", TriggerAny, TriggerSource, TriggerFormat, TriggerResolution, TriggerLanguage:
 		return true
 	}
 	return false
@@ -51,8 +53,8 @@ func NormalizeTrigger(t string) string {
 }
 
 // improvementKey is the most significant way cand beats cur, checked in the order
-// resolution, preferences, custom, source, proper. "" when none of those improved — the
-// score gain came from somewhere no trigger names (a size lean), which only TriggerAny
+// resolution, preferences, custom, source, proper, language. "" when none of those improved —
+// the score gain came from somewhere no trigger names (a size lean), which only TriggerAny
 // accepts.
 //
 // Only gains count, not the balance: a release that trades a preferred format for a better
@@ -70,18 +72,36 @@ func improvementKey(cand, cur Evaluation) RankKey {
 		return KeySource
 	case isProper(cr) && !isProper(kr):
 		return KeyProper
+	case languageGain(cand, cur):
+		return KeyLanguage
 	}
 	return ""
 }
 
+// languageGain reports whether cand is better on the languages the profile asks for: more
+// matching languages when the file lacks one (or has only the original), or a target whose
+// language the file lacks. A file that already has them all — including the original, so
+// German releases of an English show still count — is not a language gain.
+func languageGain(cand, cur Evaluation) bool {
+	if cand.langPrefs != cur.langPrefs {
+		return cand.langPrefs > cur.langPrefs
+	}
+	return cand.langShort != cur.langShort && !cand.langShort
+}
+
 // triggerAllows reports whether a gain of kind k is worth replacing a file for under a
 // profile's trigger. TriggerAny takes every gain, keyed or not, exactly as upgrades
-// behaved before triggers existed. Leaving a file the profile avoids (KeyAvoid: a
-// low-quality group's encode) counts under every trigger: the profile already said it
-// doesn't want that file, so a clean copy that gives nothing up is always worth having.
+// behaved before triggers existed. TriggerLanguage takes only a language gain (plus a
+// same-group PROPER and leaving an avoided file). Leaving a file the profile avoids
+// (KeyAvoid: a low-quality group's encode) counts under every trigger: the profile already
+// said it doesn't want that file, so a clean copy that gives nothing up is always worth
+// having.
 func triggerAllows(trigger string, k RankKey) bool {
 	if k == KeyAvoid {
 		return true
+	}
+	if NormalizeTrigger(trigger) == TriggerLanguage {
+		return k == KeyLanguage
 	}
 	switch NormalizeTrigger(trigger) {
 	case TriggerSource:
