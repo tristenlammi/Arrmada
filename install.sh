@@ -238,8 +238,34 @@ wait_healthy() {
   return 1
 }
 
+# compose_up starts the stack. A registry that's busy refuses downloads for a moment
+# ("toomanyrequests"), which fails the whole start, so it's tried three times.
+compose_up() {
+  _tries=0
+  until docker compose up -d "$@" </dev/null; do
+    _tries=$((_tries + 1))
+    if [ "$_tries" -ge 3 ]; then return 1; fi
+    say "  That didn't go through. If a download was refused, the registry was busy: trying again in 20 seconds…"
+    sleep 20
+  done
+}
+
+# is_running NAME -> true when that container is up.
+is_running() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ]
+}
+
 # fail_start prints why the app didn't come up and exits non-zero.
 fail_start() {
+  # Arrmada answering means it wasn't the app that failed: Docker couldn't start something
+  # beside it, most often because an image download was refused.
+  if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878/api/health" 2>/dev/null; then
+    err ""
+    err "✗ Docker couldn't start everything (its own message is just above). Arrmada itself is"
+    err "  running. If a download was refused (\"toomanyrequests\"), wait a few minutes and run the"
+    err "  installer again, or: docker compose up -d"
+    exit 1
+  fi
   err ""
   err "✗ Arrmada didn't start. The last lines of its log:"
   docker compose logs --tail 40 arrmada-app >&2 </dev/null || true
@@ -382,9 +408,10 @@ override_generated() {
   [ ! -f docker-compose.override.yml ] || head -n 1 docker-compose.override.yml | grep -q "^$OVERRIDE_MARK"
 }
 
-# override_value TARGET -> the host folder the generated override mounts at TARGET.
+# override_value TARGET -> the host folder the generated override mounts at TARGET. The
+# path is quoted in what the installer writes now and bare in what older ones wrote.
 override_value() {
-  sed -n "s#^      - \"\\(.*\\):$1\"\$#\\1#p" docker-compose.override.yml 2>/dev/null | head -n 1
+  sed -n "s#^      - \"\\{0,1\\}\\(.*\\):$1\"\\{0,1\\}\$#\\1#p" docker-compose.override.yml 2>/dev/null | head -n 1
 }
 
 # ── the image ───────────────────────────────────────────────────────────────────
@@ -511,11 +538,22 @@ existing_install() {
     # one written by hand is left alone, with a word on what to add.
     _m=$(override_value /storage)
     if [ -n "$_m" ] && override_generated && ! grep -q '^  arrmada-sabnzbd:' docker-compose.override.yml; then
-      _t=$(override_value /transcode)
-      _g=""; grep -q '/dev/dri:/dev/dri' docker-compose.override.yml 2>/dev/null && _g=1
+      # Added to the end of the file as it is (it holds only services), not written afresh:
+      # an older install's file has lines of its own, like the GPU's group, that must stay.
       cp docker-compose.override.yml docker-compose.override.yml.bak
-      write_override "$_m" "$_t" "$_g"
+      _nl=""; [ -n "$(tail -c 1 docker-compose.override.yml)" ] && _nl=1
+      {
+        if [ -n "$_nl" ]; then say ""; fi
+        say "  arrmada-sabnzbd:"
+        say "    volumes:"
+        say "      - \"$_m:/storage\""
+      } >> docker-compose.override.yml
+      say "✓ SABnzbd sees your media folder ($_m → /storage)."
       _changed=1
+    elif [ -z "$_m" ] && override_generated && [ -f docker-compose.override.yml ] && grep -q ':/storage' docker-compose.override.yml && ! grep -q '^  arrmada-sabnzbd:' docker-compose.override.yml; then
+      say "! Couldn't read your media folder from docker-compose.override.yml. Mount it into"
+      say "  arrmada-sabnzbd at /storage there too, as it is for arrmada-app, so SABnzbd's downloads"
+      say "  can go in your downloads folder (until then they stay in Arrmada's own storage)."
     elif ! override_generated && ! grep -q 'arrmada-sabnzbd' docker-compose.override.yml; then
       say "! docker-compose.override.yml was written by hand. If it mounts your media folder into"
       say "  arrmada-app, mount it into arrmada-sabnzbd at the same path too, so SABnzbd's downloads"
@@ -534,6 +572,11 @@ existing_install() {
       _changed=1
     fi
   fi
+  # A companion asked for that isn't running is started now, even when .env already lists
+  # it: a first try that failed while its image was downloading leaves exactly that behind,
+  # and running the installer again used to update Arrmada and start nothing.
+  if [ -n "$SABNZBD" ] && ! is_running Arrmada-sabnzbd; then _changed=1; fi
+  if [ -n "$PROWLARR" ] && ! is_running Arrmada-prowlarr; then _changed=1; fi
 
   if [ -n "$_changed" ] || ! docker inspect Arrmada-app >/dev/null 2>&1; then
     # New mounts or companions, or nothing running at all: (re)start the whole stack on
@@ -553,7 +596,7 @@ existing_install() {
         0.0.0.0:* | "[::]:"* | :::*) _qbit_open=1 ;;
       esac
     fi
-    docker compose up -d </dev/null || fail_start
+    compose_up || fail_start
     wait_healthy || fail_start
     say ""
     say "✓ Arrmada is running.  Open http://$(host_ip):$(env_get ARRMADA_PORT)"
@@ -847,11 +890,11 @@ new_install() {
   export ARRMADA_APP_IMAGE
   if [ -n "$IMAGE_REF" ]; then
     say "Starting Arrmada…"
-    docker compose up -d --no-build </dev/null || fail_start
+    compose_up --no-build || fail_start
   else
     stamp_build
     say "Compiling and starting Arrmada… (the first build compiles everything — this takes a while)"
-    docker compose up -d --build </dev/null || fail_start
+    compose_up --build || fail_start
   fi
   wait_healthy || fail_start
 
