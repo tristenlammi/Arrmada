@@ -193,6 +193,8 @@ func TestSeedSABnzbd(t *testing.T) {
 		"username = arrmada\n",
 		// DNS-rebinding protection stays on: the whitelist is set, never switched off.
 		"host_whitelist = 9f3a2b1c0d4e,\n",
+		// The page answers the home network and Tailscale-style addresses, nothing wider.
+		"local_ranges = 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10\n",
 		"download_dir = /storage/downloads/usenet/incomplete\n",
 		"complete_dir = /storage/downloads/usenet/complete\n",
 		"auto_browser = 0\n",

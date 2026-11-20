@@ -202,7 +202,7 @@ func TestComposeExampleSABnzbdInit(t *testing.T) {
 			strings.Join(main, "\n"), strings.Join(ex, "\n"))
 	}
 	joined := strings.Join(main, "\n")
-	for _, want := range []string{"api_key = $$key", "language = en", "host_whitelist = arrmada-sabnzbd,", "pp = 3", "[[arrmada-tv]]", "[[arrmada-books]]", "[[arrmada-music]]", "[[arrmada]]"} {
+	for _, want := range []string{"api_key = $$key", "language = en", "host_whitelist = arrmada-sabnzbd,", "local_ranges = 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, fc00::/7, fe80::/10, 100.64.0.0/10", "pp = 3", "[[arrmada-tv]]", "[[arrmada-books]]", "[[arrmada-music]]", "[[arrmada]]"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the SABnzbd init script has no %q", want)
 		}
