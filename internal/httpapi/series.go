@@ -1184,6 +1184,50 @@ func (a *api) handleSeriesRename(w http.ResponseWriter, r *http.Request) {
 
 // handleSeriesMisplaced previews putting the show's misplaced episode files back into its
 // folder; handleSeriesMisplacedApply does exactly the previewed items it's sent.
+// handleSeriesBorrowed lists the files recorded for a show that look like another library
+// show's (series.BorrowedFiles), for its page to offer forgetting them.
+func (a *api) handleSeriesBorrowed(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	items, err := a.deps.Series.BorrowedFiles(r.Context(), id)
+	if errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not check the show's files")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleSeriesBorrowedForget forgets the listed files the person confirmed. It never
+// touches a file.
+func (a *api) handleSeriesBorrowedForget(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	n, err := a.deps.Series.ForgetBorrowedFiles(r.Context(), id, req.Paths)
+	if errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not forget the files")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]int{"cleared": n})
+}
+
 func (a *api) handleSeriesMisplaced(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

@@ -13,6 +13,9 @@ export interface MisplacedItem {
   note?: string;
 }
 
+/** A file recorded for a show that looks like another library show's (owner). */
+export interface BorrowedFile { season: number; episode: number; path: string; owner: string }
+
 /** GET /series/{id}/misplaced: where the show's misplaced files go. why: nothing can go back. */
 export interface MisplacedPlan { show_folder: string; new_folder?: boolean; why?: string; items: MisplacedItem[] }
 
@@ -36,6 +39,9 @@ export const seriesApi = {
     req<{ renamed: number; skipped: RenameSkip[] }>(`/api/v1/series/${id}/rename`, { method: "POST", body: JSON.stringify({ items }) }),
   // Episode files outside the show's folder (#56): a preview, then putting back exactly the
   // previewed items — anything that changed in between is skipped and reported.
+  borrowedFiles: (id: number) => req<{ items: BorrowedFile[] }>(`/api/v1/series/${id}/borrowed`),
+  forgetBorrowedFiles: (id: number, paths: string[]) =>
+    req<{ cleared: number }>(`/api/v1/series/${id}/borrowed/forget`, { method: "POST", body: JSON.stringify({ paths }) }),
   misplacedPreview: (id: number) => req<MisplacedPlan>(`/api/v1/series/${id}/misplaced`),
   putMisplacedBack: (id: number, items: MisplacedItem[]) =>
     req<MisplacedResult>(`/api/v1/series/${id}/misplaced`, { method: "POST", body: JSON.stringify({ items }) }),

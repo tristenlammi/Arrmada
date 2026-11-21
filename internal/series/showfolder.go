@@ -1232,7 +1232,7 @@ var ErrNoShowFolder = errors.New("no safe folder for the show")
 func (e *ShowFolderError) Unwrap() error { return ErrNoShowFolder }
 
 func (e *ShowFolderError) Error() string {
-	return fmt.Sprintf("Can't tell which folder %s lives in (%s), so nothing was imported. Move the show's files into a folder of its own (the show's page offers to put misplaced files back), then use Refresh & rescan on its page.", e.Title, e.Why)
+	return fmt.Sprintf("Can't tell which folder %s lives in (%s), so nothing was imported. Move the show's files into a folder of its own (the show's page offers to put misplaced files back, or to forget files that are another show's), then use Refresh & rescan on its page.", e.Title, e.Why)
 }
 
 // ImportDir is the folder the show's own folder sits in — the TV folder, normally — for
