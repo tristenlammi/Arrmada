@@ -1406,6 +1406,19 @@ func (r *Repo) ClearEpisodeFile(ctx context.Context, seriesID int64, season, epi
 	return err
 }
 
+// ClearEpisodeFileAt is ClearEpisodeFile only while the episode's recorded file is still
+// path, and returns how many rows it cleared.
+func (r *Repo) ClearEpisodeFileAt(ctx context.Context, seriesID int64, season, episode int, path string) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET has_file = 0, file_path = '', size_bytes = 0, upgrade_hold = 0, source_release = '', converted_from_release = '', converted_from_size = 0
+		  WHERE series_id = ? AND season_number = ? AND episode_number = ? AND has_file = 1 AND file_path = ?`,
+		seriesID, season, episode, path)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // EpisodeFilePath returns the on-disk path of one episode's file (empty if none).
 // EpisodeFile describes the file an episode currently has, for upgrade decisions.
 // Path is "" when the episode has no file.
@@ -1649,6 +1662,46 @@ func (r *Repo) OtherSeriesUnder(ctx context.Context, seriesID int64, dir string,
 	}
 	if rows.Err() != nil && len(out) == 0 {
 		return []int64{0}
+	}
+	return out
+}
+
+// RecordedEpisodeFiles is every episode of the series that has a file recorded: its
+// numbers and the file's path.
+func (r *Repo) RecordedEpisodeFiles(ctx context.Context, seriesID int64) []Episode {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT season_number, episode_number, file_path FROM episodes
+		 WHERE series_id = ? AND has_file = 1 AND file_path <> '' ORDER BY season_number, episode_number`, seriesID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Episode
+	for rows.Next() {
+		e := Episode{HasFile: true}
+		if rows.Scan(&e.SeasonNumber, &e.EpisodeNumber, &e.FilePath) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// OtherSeriesWithFile is every other series that has the very file at path recorded on an
+// episode.
+func (r *Repo) OtherSeriesWithFile(ctx context.Context, seriesID int64, path string) []int64 {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT series_id FROM episodes WHERE series_id <> ?1 AND has_file = 1 AND file_path = ?2`,
+		seriesID, path)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			out = append(out, id)
+		}
 	}
 	return out
 }

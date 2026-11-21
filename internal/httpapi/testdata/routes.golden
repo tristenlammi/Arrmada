@@ -275,6 +275,7 @@ GET /api/v1/series/unmatched staff -
 GET /api/v1/series/{id} staff -
 GET /api/v1/series/{id}/aliases staff -
 GET /api/v1/series/{id}/blocklist staff -
+GET /api/v1/series/{id}/borrowed staff -
 GET /api/v1/series/{id}/delete-preview staff -
 GET /api/v1/series/{id}/downloads staff -
 GET /api/v1/series/{id}/duplicates staff -
@@ -514,6 +515,7 @@ POST /api/v1/series/scan staff -
 POST /api/v1/series/{id}/aliases staff -
 POST /api/v1/series/{id}/autograb staff -
 POST /api/v1/series/{id}/blocklist staff -
+POST /api/v1/series/{id}/borrowed/forget staff -
 POST /api/v1/series/{id}/forget-missing staff -
 POST /api/v1/series/{id}/grab staff -
 POST /api/v1/series/{id}/grabtorrent staff -

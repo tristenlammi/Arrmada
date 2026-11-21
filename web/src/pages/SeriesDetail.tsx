@@ -5,6 +5,7 @@ import { CastRow } from "../components/CastRow";
 import { shownTitle } from "../lib/displayTitle";
 import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MisplacedBanner } from "./series/MisplacedFiles";
+import { BorrowedBanner } from "./series/BorrowedFiles";
 import { usePoll } from "../lib/usePoll";
 import { useLiveConnected, useLiveEvent } from "../lib/live";
 import { QUEUE_CHANGED, QUEUE_PROGRESS, progressByHash, queueChangedFor } from "../lib/queueLive";
@@ -168,6 +169,7 @@ export function SeriesDetail() {
 
       <Page className="pb-10">
         <MisplacedBanner seriesId={s.id} title={s.title} refreshKey={s.last_event_id} onChange={load} />
+        <BorrowedBanner seriesId={s.id} title={shownTitle(s)} monitored={s.monitored} refreshKey={s.last_event_id} onChange={load} flash={say} />
         <Tabs tabs={tabs} value={tab} onChange={setTab} idPrefix="series" label="Series sections" className="mb-4 mt-1 border-b" />
 
         {tab === "episodes" && (
