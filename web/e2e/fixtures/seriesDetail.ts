@@ -180,6 +180,8 @@ export function routes(): MockRoute[] {
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/scene-map$/, body: { overrides: [] } },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/numbering$/, respond: ({ params }) => numbering[id(params)] ?? { source: "tmdb", pending: null } },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/rename$/, body: { items: [], matches: true } },
+    // No show here holds another show's files.
+    { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/borrowed$/, body: { items: [] } },
     { method: "GET", path: /^\/api\/v1\/series\/(\d+)\/misplaced$/, respond: ({ params }) => misplaced[id(params)] ?? { show_folder: "", items: [] } },
     {
       method: "POST", path: /^\/api\/v1\/series\/(\d+)\/misplaced$/,
