@@ -29,6 +29,8 @@ The target (`IdealFile.Language`) maps a base code, or `original` (the title's T
 
 A title whose original language isn't known, with a release that names none, can't be judged: no rule applies to it (a Must doesn't refuse it), and an `original` entry is dropped for that title. TMDB's `xx` (no spoken language) counts as unknown; its `cn` and `yue` (Cantonese, most Hong Kong films) read as Chinese (`langs.AudioBase`). A MULTi or Dual naming nothing is still refused under a Must when the original isn't known.
 
+**Subtitles named after the word (issue #58, second report).** Italian trackers write "ENG Sub ITA" / "Sub-ITA": English audio, Italian subtitles. The languages straight after Sub/Subs/Subbed are subtitles, and a language before such a word is the audio when subtitle languages follow it ("ENG.Sub.ITA" → English); with nothing after ("ENG.SUBS", "German.Subbed") it stays subtitles, as before. The old reading took "ENG.Sub.ITA" for Italian audio, so English-only releases passed an Italian Must and the files kept passing it. This reading applies to files on disk too (unlike the new spellings below): it only moves verdicts for profiles with a rule on the subtitle's language, toward what the file really carries.
+
 The spellings added with #58 (FRA, DEU, NLD, ESP, JAP, VFB — capitals, never where an episode title sits) count for releases on offer only: a library file is read without them (`parser.Release.ForFile`), so the update moves no file's verdict.
 
 **A file on disk** (`fileLangs`) is never judged on an assumption:
