@@ -711,6 +711,18 @@ func (s *Service) MarkReadyIfAvailable(ctx context.Context, id int64) error {
 	return s.markReady(ctx, req.ID)
 }
 
+// OnShelf reports whether a movie or whole show is already complete in the library, by the
+// same rule a request is judged ready by. An import keeps an old, finished request only
+// when it is: one for a title the library doesn't have would add it and download it again.
+func (s *Service) OnShelf(ctx context.Context, mediaType string, tmdbID int) (bool, error) {
+	rq := Request{MediaType: mediaType, TMDBID: tmdbID}
+	lk, err := s.lookupReady(ctx, []Request{rq})
+	if err != nil {
+		return false, err
+	}
+	return lk.ready(ctx, s, rq), nil
+}
+
 // markReady stamps a request's ready_at (first time only) and lets the Needs-you feed
 // know a request moved.
 func (s *Service) markReady(ctx context.Context, id int64) error {
