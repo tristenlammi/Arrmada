@@ -79,7 +79,8 @@ test.describe("admin", () => {
     await expect(card.getByText("Attic · Emby 4.8.10.0")).toBeVisible();
     await expect(card.getByRole("list", { name: "What Arrmada uses Emby for" })).toHaveText("Watch linksLibrary updates");
     await expect(card.getByText("Jellyfin", { exact: true })).toHaveCount(0);
-    // The Server choice opens on Emby.
+    // Editing it, the Server choice opens on Emby.
+    await card.getByRole("button", { name: "Edit" }).click();
     await expect(card.getByRole("form", { name: "Emby connection" }).getByLabel("Server", { exact: true })).toHaveValue("emby");
   });
 });
