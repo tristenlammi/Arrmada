@@ -31,7 +31,7 @@ func dvP8(kbps int) *MediaInfo {
 func TestAutoPreviewCounts(t *testing.T) {
 	ctx := context.Background()
 	s := newTestService(t)
-	set(t, s, map[string]string{keyDropCommentary: "true"})
+	set(t, s, map[string]string{keyDropCommentary: "true", keyDolbyVision: DVDrop})
 	comm := func() AudioStream { a := aud("ac3", "eng", 2); a.Commentary = true; return a }
 
 	indexMovie(t, s, 1, "DV One", dvP8(60000))
@@ -73,6 +73,20 @@ func TestAutoPreviewCounts(t *testing.T) {
 	}
 	if none := s.AutoPreview(ctx, PreviewFilter{SeriesID: 99, Season: -1}); none.Files != 0 {
 		t.Errorf("unknown show: %+v", none)
+	}
+
+	// Left alone (a new install's default), the Dolby Vision files drop out of the summary
+	// and it says how many there are and why.
+	set(t, s, map[string]string{keyDolbyVision: DVSkip})
+	s.invalidateLibraryCache()
+	if p := s.AutoPreview(ctx, PreviewFilter{Season: -1}); p.Files != 4 || p.DVFiles != 0 || p.DVLeftAlone != 3 {
+		t.Errorf("left alone: %+v, want 4 files, 3 Dolby Vision files left alone", p)
+	}
+	if p := s.AutoPreview(ctx, PreviewFilter{SeriesID: 10, Season: 2}); p.DVLeftAlone != 0 {
+		t.Errorf("season 2 has no Dolby Vision: %+v", p)
+	}
+	if p := s.AutoPreview(ctx, PreviewFilter{SeriesID: 10, Season: -1}); p.DVLeftAlone != 1 {
+		t.Errorf("show 10: %+v, want 1 left alone", p)
 	}
 }
 

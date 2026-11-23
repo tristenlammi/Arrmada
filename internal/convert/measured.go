@@ -18,6 +18,12 @@ type measurement struct {
 	VideoBytes int64 // the whole file's video at that setting, projected
 	SSIM       float64
 	Source     string
+	// Encoder is the kind of encoder the test ran on ("cpu", "vaapi", "qsv", "nvenc"). A GPU's
+	// files come out bigger than the CPU's at the same target, so a measurement only speaks
+	// for the encoder that made it: switching encoders measures afresh, and a GPU's verdict
+	// never holds a file back from the CPU. "" = measured before this was recorded, which
+	// speaks for no encoder (the next test encode measures it again).
+	Encoder string
 }
 
 // measureStore persists measurements (convert_measured).
@@ -32,7 +38,7 @@ func (m *measureStore) all(ctx context.Context) map[string]measurement {
 	if m == nil || m.db == nil {
 		return out
 	}
-	rows, err := m.db.QueryContext(ctx, `SELECT path, codec, size_bytes, crf, video_bytes, ssim, source FROM convert_measured`)
+	rows, err := m.db.QueryContext(ctx, `SELECT path, codec, size_bytes, crf, video_bytes, ssim, source, encoder FROM convert_measured`)
 	if err != nil {
 		return out
 	}
@@ -40,7 +46,7 @@ func (m *measureStore) all(ctx context.Context) map[string]measurement {
 	for rows.Next() {
 		var path, codec string
 		var r measurement
-		if rows.Scan(&path, &codec, &r.Size, &r.CRF, &r.VideoBytes, &r.SSIM, &r.Source) == nil {
+		if rows.Scan(&path, &codec, &r.Size, &r.CRF, &r.VideoBytes, &r.SSIM, &r.Source, &r.Encoder) == nil {
 			out[measureKey(path, codec)] = r
 		}
 	}
@@ -52,12 +58,12 @@ func (m *measureStore) put(ctx context.Context, path, codec string, r measuremen
 		return
 	}
 	_, _ = m.db.ExecContext(ctx,
-		`INSERT INTO convert_measured (path, codec, size_bytes, crf, video_bytes, ssim, source, measured_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO convert_measured (path, codec, size_bytes, crf, video_bytes, ssim, source, encoder, measured_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path, codec) DO UPDATE SET size_bytes = excluded.size_bytes, crf = excluded.crf,
-		   video_bytes = excluded.video_bytes, ssim = excluded.ssim, source = excluded.source,
+		   video_bytes = excluded.video_bytes, ssim = excluded.ssim, source = excluded.source, encoder = excluded.encoder,
 		   measured_at = excluded.measured_at`,
-		path, codec, r.Size, r.CRF, r.VideoBytes, r.SSIM, r.Source, time.Now().Unix())
+		path, codec, r.Size, r.CRF, r.VideoBytes, r.SSIM, r.Source, r.Encoder, time.Now().Unix())
 }
 
 // forget drops a file's measurements — it has been converted, so they describe a file
@@ -79,16 +85,25 @@ func (s *Service) recordMeasurement(ctx context.Context, path, codec string, r m
 // file (path and size), the same format, and taken at the plan's quality target or a
 // tighter one (a tighter setting only makes the file bigger, so it never over-promises).
 // A measurement at a looser setting than today's — the target was raised since — doesn't
-// count.
+// count, and neither does one made on another encoder than the file would use now.
 func (p prefs) measuredFor(mi *MediaInfo, path string, plan Plan) (measurement, bool) {
 	if plan.VideoCodec == "" || path == "" {
 		return measurement{}, false
 	}
 	m, ok := p.measured[measureKey(path, plan.VideoCodec)]
-	if !ok || m.Size != mi.SizeBytes || m.CRF > plan.Quality {
+	if !ok || m.Size != mi.SizeBytes || m.CRF > plan.Quality || m.Encoder == "" || m.Encoder != p.encoderKind(mi, plan.VideoCodec) {
 		return measurement{}, false
 	}
 	return m, true
+}
+
+// encoderKind is the kind of encoder this file would be encoded on now ("cpu" when the
+// prefs weren't read from a Service).
+func (p prefs) encoderKind(mi *MediaInfo, codec string) string {
+	if p.encoderFor == nil {
+		return "cpu"
+	}
+	return p.encoderFor(mi, codec)
 }
 
 // sizeAfter is the expected size of a file after its plan: measured when a test encode

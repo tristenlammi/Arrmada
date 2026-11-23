@@ -102,7 +102,7 @@ func TestIntegrityCheckRealFiles(t *testing.T) {
 		return
 	}
 	out := mustProbe(t, clean)
-	v, err := s.vmafWindow(ctx, clean, src, 0, 0, 10, out.Width, out.Height, out.FrameRateRat, "")
+	v, err := s.vmafWindow(ctx, clean, src, 0, 0, 10, out.Width, out.Height, out.FrameRateRat, refLeg{})
 	if err != nil || v < 80 {
 		t.Fatalf("VMAF of a clean encode: %v, %v", v, err)
 	}

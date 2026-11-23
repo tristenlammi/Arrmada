@@ -37,7 +37,7 @@ func dvRemuxMP4(t *testing.T, s *Service) (string, *MediaInfo) {
 func TestPlanViewDVRemux(t *testing.T) {
 	ctx := context.Background()
 	s := newTestService(t)
-	set(t, s, map[string]string{keyKeepAudioLangs: "en", keyDropCommentary: "true", keyKeepSubLangs: "en", keyImageSubs: ImageSubsWhenText})
+	set(t, s, map[string]string{keyKeepAudioLangs: "en", keyDropCommentary: "true", keyKeepSubLangs: "en", keyImageSubs: ImageSubsWhenText, keyDolbyVision: DVDrop})
 	dvRemuxMP4(t, s)
 
 	v, err := s.PlanView(ctx, movieKey(7))

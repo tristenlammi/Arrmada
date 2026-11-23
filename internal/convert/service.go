@@ -89,6 +89,7 @@ type Job struct {
 	cancel    context.CancelFunc // set while running, so the encode can be stopped mid-flight
 	cancelled bool
 	lane      bool         // running on the request lane (runner_lane.go)
+	encKind   string       // the kind of encoder it encodes on ("cpu", "vaapi", …); "" before one is picked
 	procs     map[int]bool // process groups currently running for this job (for pausing)
 	rec       *jobRecord   // what the ledger keeps about it (see history.go)
 	// activeSecs is how long the full encode has actually been encoding, pauses excluded
@@ -268,6 +269,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		pending: map[string]*Job{},
 		wake:    make(chan struct{}),
 	}
+	s.skips.gpuOn = func(ctx context.Context) bool { return set.GetBool(ctx, keyUseGPU, false) }
 	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the log after a restart
 	s.hdr10plusTool, _ = exec.LookPath("hdr10plus_tool")
 	s.doviTool, _ = exec.LookPath("dovi_tool")
@@ -280,6 +282,10 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		if e.Available {
 			working = append(working, e.Name)
 		}
+	}
+	if cpuWorks("av1", s.encoders) {
+		// How SVT-AV1 is held to the core budget depends on its version (svtCoreLimit).
+		svtLegacyLP.Store(svtLegacyVersion(svtAV1Version(context.Background(), ffmpeg)))
 	}
 	s.vmaf = hasLibVMAF(context.Background(), ffmpeg)
 	log.Info("convert: encoders verified", "working", strings.Join(working, ","), "hdr10plus", s.hdr10plusTool != "", "dovi_tool", s.doviTool != "", "libvmaf", s.vmaf)
@@ -745,7 +751,10 @@ func (s *Service) finishSkip(job *Job, kind, note string) {
 		s.finish(job, StateCancelled, "cancelled")
 		return
 	}
-	attempts := s.skips.record(context.Background(), job.Key, kind, note)
+	s.mu.Lock()
+	enc := job.encKind
+	s.mu.Unlock()
+	attempts := s.skips.recordEnc(context.Background(), job.Key, kind, note, 0, enc)
 	s.record(job).skipKind = kind
 	s.finish(job, StateSkipped, note)
 	s.skipRecorded(job, kind, note, attempts)

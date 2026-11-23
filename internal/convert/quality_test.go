@@ -18,7 +18,7 @@ func stubWindows(t *testing.T, scores []float64) {
 	stubProbe(t, &MediaInfo{VideoCodec: "hevc", Width: 1920, Height: 1080, DurationSec: 7200})
 	old := ssimWindowFn
 	i := 0
-	ssimWindowFn = func(*Service, context.Context, string, string, float64, float64, float64, int, int, string, string) (float64, error) {
+	ssimWindowFn = func(*Service, context.Context, string, string, float64, float64, float64, int, int, string, refLeg) (float64, error) {
 		sc := scores[i%len(scores)]
 		i++
 		if math.IsNaN(sc) {
@@ -44,14 +44,14 @@ func TestSSIMGate(t *testing.T) {
 
 	// One scene that can't be measured is an error, not a skipped scene.
 	stubWindows(t, append(repeat(0.99, 9), math.NaN()))
-	if _, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", ""); err == nil || !strings.Contains(err.Error(), "couldn't be measured") {
+	if _, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", refLeg{}); err == nil || !strings.Contains(err.Error(), "couldn't be measured") {
 		t.Fatalf("an unmeasurable scene must fail the check: %v", err)
 	}
 
 	// A good average can't hide one bad scene.
 	scores := append(repeat(0.99, 9), 0.95)
 	stubWindows(t, scores)
-	res, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", "")
+	res, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", refLeg{})
 	if err != nil || len(res.Scores) != 10 {
 		t.Fatalf("measured %v, err %v", res.Scores, err)
 	}
@@ -67,13 +67,13 @@ func TestSSIMGate(t *testing.T) {
 	}
 
 	stubWindows(t, repeat(0.985, 10))
-	if res, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", ""); err != nil || !res.passes() {
+	if res, err := s.computeSSIM(ctx, "out.mkv", "src.mkv", refLeg{}); err != nil || !res.passes() {
 		t.Fatalf("0.985 everywhere must pass: %+v, %v", res, err)
 	}
 
 	// A low average fails even with every scene above the floor.
 	stubWindows(t, repeat(0.965, 10))
-	if res, _ := s.computeSSIM(ctx, "out.mkv", "src.mkv", ""); res.passes() || !strings.Contains(res.shortfall(), "averaged") {
+	if res, _ := s.computeSSIM(ctx, "out.mkv", "src.mkv", refLeg{}); res.passes() || !strings.Contains(res.shortfall(), "averaged") {
 		t.Fatalf("a mean under the bar must fail: %q", res.shortfall())
 	}
 	if (ssimResult{}).passes() {
@@ -149,11 +149,11 @@ func TestSSIMGateCatchesOneBadScene(t *testing.T) {
 	s := newTestService(t)
 	s.ffmpeg, s.ffprobe = "ffmpeg", "ffprobe"
 	ctx := context.Background()
-	good, err := s.computeSSIM(ctx, ref, ref, "")
+	good, err := s.computeSSIM(ctx, ref, ref, refLeg{})
 	if err != nil || !good.passes() {
 		t.Fatalf("an identical file must pass: %+v, %v", good, err)
 	}
-	res, err := s.computeSSIM(ctx, bad, ref, "")
+	res, err := s.computeSSIM(ctx, bad, ref, refLeg{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,10 @@ const (
 	SkipQualityGate    = "quality_gate"    // the encode couldn't meet the quality threshold
 	SkipCancelled      = "cancelled"       // you cancelled it; left alone for a while
 	SkipAlreadyTarget  = "already_target"  // nothing to do; not worth recording
+	// The test encode put the file just short of the saving rule — close enough that its
+	// 60-second sample could be wrong. Tested again later on other scenes (preflight.go)
+	// before it's given up on.
+	SkipBorderline = "borderline"
 
 	// Conditions that clear on their own (someone frees space, a file reappears). They back
 	// off instead of being retried on the very next pick — that used to hot-loop the runner.
@@ -67,6 +71,8 @@ func retryDelay(kind string, attempts int) time.Duration {
 		return 30 * 24 * time.Hour
 	case SkipBinFull, SkipHoldFull:
 		return 24 * time.Hour
+	case SkipBorderline:
+		return borderlineRetest
 	}
 	if backoffSkip(kind) {
 		switch {
@@ -96,7 +102,63 @@ func permanentSkip(kind string) bool {
 
 // skipStore persists why files were skipped, so the reasons survive a restart and can be
 // shown to the user instead of scrolling out of an in-memory job list.
-type skipStore struct{ db *sql.DB }
+//
+// A skip is about a FILE (migration 0355): each row records the path and size the library
+// index had for its title when it was written, and it only holds while the index still has
+// that file. An upgrade, a remux or any other replacement is judged afresh rather than
+// inheriting "not smaller" from the file before it. A row with no file recorded (written
+// before 0355 for a title with no indexed file, or a "reverted" skip, which is title-wide
+// on purpose) holds for any file, as all of them used to.
+//
+// A "not smaller" or "quality" verdict a GPU encode reached also records the encoder, and
+// holds only while the GPU is in use (gpuOn): the CPU makes smaller files at the same
+// quality, so turning the GPU off gives those files their own chance.
+type skipStore struct {
+	db    *sql.DB
+	gpuOn func(context.Context) bool // nil = the GPU is off
+}
+
+// fileVerdictHolds is the SQL condition under which a skip or failure row of table still
+// applies: no file recorded, or the index still has exactly that file.
+func fileVerdictHolds(table string) string {
+	return `(` + table + `.file_path = '' OR EXISTS (SELECT 1 FROM convert_library l
+	          WHERE l.path = ` + table + `.file_path AND l.size_bytes = ` + table + `.file_size))`
+}
+
+// holds is the full condition for a skip row: its file, and — for a GPU's verdict — the GPU.
+func (st *skipStore) holds(ctx context.Context) (string, []any) {
+	gpu := st.gpuOn != nil && st.gpuOn(ctx)
+	return fileVerdictHolds("convert_skips") + ` AND (convert_skips.encoder IN ('', 'cpu') OR ?)`, []any{gpu}
+}
+
+// indexedFile is the file the library index has for an item key now, or "" and 0.
+func indexedFile(ctx context.Context, db *sql.DB, key string) (string, int64) {
+	b := Blocked{Key: key}
+	parseItemKey(&b)
+	var row *sql.Row
+	switch b.Kind {
+	case "movie":
+		row = db.QueryRowContext(ctx, `SELECT path, size_bytes FROM convert_library
+			WHERE media_type = 'movie' AND movie_id = ? AND version_id = ? LIMIT 1`, b.MovieID, b.VersionID)
+	case "episode":
+		row = db.QueryRowContext(ctx, `SELECT path, size_bytes FROM convert_library
+			WHERE media_type = 'episode' AND series_id = ? AND season = ? AND episode = ? LIMIT 1`, b.SeriesID, b.Season, b.Episode)
+	default:
+		return "", 0
+	}
+	var path string
+	var size int64
+	if row.Scan(&path, &size) != nil {
+		return "", 0
+	}
+	return path, size
+}
+
+// encoderVerdict reports whether a skip kind is a verdict on what an encoder produced, and
+// so belongs to that encoder.
+func encoderVerdict(kind string) bool {
+	return kind == SkipNotSmaller || kind == SkipQualityGate || kind == SkipBorderline
+}
 
 // Skipped is one skipped file, for the Problems list.
 type Skipped struct {
@@ -130,6 +192,14 @@ func (st *skipStore) record(ctx context.Context, key, kind, reason string) int {
 // recordAt is record with the retry time given (unix seconds) instead of worked out from
 // the kind; 0 works it out as record does.
 func (st *skipStore) recordAt(ctx context.Context, key, kind, reason string, retryAt int64) int {
+	return st.recordEnc(ctx, key, kind, reason, retryAt, "")
+}
+
+// recordEnc is recordAt for a verdict an encoder reached: encoder is its kind ("cpu",
+// "vaapi", …), kept for the "not smaller" and quality verdicts (encoderVerdict) so a GPU's
+// holds only while the GPU is in use. The row is tied to the file the index has for the
+// item now; a "reverted" skip is title-wide (see migration 0355).
+func (st *skipStore) recordEnc(ctx context.Context, key, kind, reason string, retryAt int64, encoder string) int {
 	if key == "" || kind == "" || kind == SkipAlreadyTarget {
 		return 0 // "already the target codec" isn't a problem, it's success
 	}
@@ -137,11 +207,19 @@ func (st *skipStore) recordAt(ctx context.Context, key, kind, reason string, ret
 	if permanentSkip(kind) {
 		perm = 1
 	}
+	path, size := "", int64(0)
+	if kind != SkipReverted {
+		path, size = indexedFile(ctx, st.db, key)
+	}
+	if !encoderVerdict(kind) {
+		encoder = ""
+	}
 	attempts := 1
-	var prevKind string
+	var prevKind, prevPath string
 	var prevAttempts int
-	if st.db.QueryRowContext(ctx, `SELECT kind, attempts FROM convert_skips WHERE item_key = ?`, key).
-		Scan(&prevKind, &prevAttempts) == nil && prevKind == kind {
+	var prevSize int64
+	if st.db.QueryRowContext(ctx, `SELECT kind, attempts, file_path, file_size FROM convert_skips WHERE item_key = ?`, key).
+		Scan(&prevKind, &prevAttempts, &prevPath, &prevSize) == nil && prevKind == kind && prevPath == path && prevSize == size {
 		attempts = prevAttempts + 1
 	}
 	retry := retryAt
@@ -149,13 +227,24 @@ func (st *skipStore) recordAt(ctx context.Context, key, kind, reason string, ret
 		retry = time.Now().Add(d).Unix()
 	}
 	_, _ = st.db.ExecContext(ctx,
-		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, attempts, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, attempts, file_path, file_size, encoder, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		 ON CONFLICT(item_key) DO UPDATE SET
 		   kind = excluded.kind, reason = excluded.reason, permanent = excluded.permanent,
-		   retry_after = excluded.retry_after, attempts = excluded.attempts, updated_at = datetime('now')`,
-		key, kind, reason, perm, retry, attempts)
+		   retry_after = excluded.retry_after, attempts = excluded.attempts, file_path = excluded.file_path,
+		   file_size = excluded.file_size, encoder = excluded.encoder, updated_at = datetime('now')`,
+		key, kind, reason, perm, retry, attempts, path, size, encoder)
 	return attempts
+}
+
+// attemptsOf is how many times in a row an item has hit kind on its current file (0 when
+// its skip is another kind, or about another file).
+func (st *skipStore) attemptsOf(ctx context.Context, key, kind string) int {
+	cond, args := st.holds(ctx)
+	var n int
+	_ = st.db.QueryRowContext(ctx, `SELECT attempts FROM convert_skips WHERE item_key = ? AND kind = ? AND `+cond,
+		append([]any{key, kind}, args...)...).Scan(&n)
+	return n
 }
 
 // clear forgets an item's skip — called when it converts successfully, or when the user
@@ -182,7 +271,8 @@ func (st *skipStore) clearKind(ctx context.Context, kind string) int64 {
 // keysOfKind returns the items currently skipped for one reason.
 func (st *skipStore) keysOfKind(ctx context.Context, kind string) map[string]bool {
 	out := map[string]bool{}
-	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE kind = ?`, kind)
+	cond, args := st.holds(ctx)
+	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE kind = ? AND `+cond, append([]any{kind}, args...)...)
 	if err != nil {
 		return out
 	}
@@ -200,7 +290,8 @@ func (st *skipStore) keysOfKind(ctx context.Context, kind string) map[string]boo
 // be left out of the reclaimable total.
 func (st *skipStore) permanentKeys(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
-	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE permanent = 1`)
+	cond, args := st.holds(ctx)
+	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE permanent = 1 AND `+cond, args...)
 	if err != nil {
 		return out
 	}
@@ -218,8 +309,9 @@ func (st *skipStore) permanentKeys(ctx context.Context) map[string]bool {
 // temporary ones whose retry time hasn't come.
 func (st *skipStore) waitingKeys(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
+	cond, args := st.holds(ctx)
 	rows, err := st.db.QueryContext(ctx,
-		`SELECT item_key FROM convert_skips WHERE permanent = 1 OR retry_after > ?`, time.Now().Unix())
+		`SELECT item_key FROM convert_skips WHERE (permanent = 1 OR retry_after > ?) AND `+cond, append([]any{time.Now().Unix()}, args...)...)
 	if err != nil {
 		return out
 	}
@@ -234,9 +326,12 @@ func (st *skipStore) waitingKeys(ctx context.Context) map[string]bool {
 }
 
 func (st *skipStore) list(ctx context.Context) ([]Skipped, error) {
+	// Only the skips that still hold: one about a file since replaced is history.
+	cond, args := st.holds(ctx)
 	rows, err := st.db.QueryContext(ctx,
 		`SELECT item_key, kind, reason, permanent, updated_at, retry_after, attempts FROM convert_skips
-		 ORDER BY permanent DESC, kind, updated_at DESC`)
+		 WHERE `+cond+`
+		 ORDER BY permanent DESC, kind, updated_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}

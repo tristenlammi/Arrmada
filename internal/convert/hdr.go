@@ -31,19 +31,28 @@ import (
 // HDR10+ pipeline couldn't fit.
 
 // hasHDR10Plus returns an error (and writes nothing usable) if the file carries no HDR10+.
-func (s *Service) hasHDR10Plus(ctx context.Context, src, jsonOut string) error {
-	return s.extractHDR10Plus(ctx, src, jsonOut, 100)
+// videoIndex is the film's own video stream (MediaInfo.VideoIndex): cover art is a video
+// stream too and can come first, and reading the picture's metadata out of a JPEG found
+// "no HDR10+" — the file then converted as plain HDR10 and lost it.
+func (s *Service) hasHDR10Plus(ctx context.Context, src string, videoIndex int, jsonOut string) error {
+	return s.extractHDR10Plus(ctx, src, videoIndex, jsonOut, 100)
 }
 
 // readHDR10Plus reads the metadata for the whole film into jsonOut.
-func (s *Service) readHDR10Plus(ctx context.Context, src, jsonOut string) error {
-	return s.extractHDR10Plus(ctx, src, jsonOut, 0)
+func (s *Service) readHDR10Plus(ctx context.Context, src string, videoIndex int, jsonOut string) error {
+	return s.extractHDR10Plus(ctx, src, videoIndex, jsonOut, 0)
+}
+
+// hdr10PlusExtractArgs is the ffmpeg half of the extraction: the film's video stream, as a
+// raw HEVC stream on stdout.
+func hdr10PlusExtractArgs(src string, videoIndex int) []string {
+	return []string{"-loglevel", "error", "-i", src,
+		"-map", fmt.Sprintf("0:v:%d", max(videoIndex, 0)), "-c", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-"}
 }
 
 // extractHDR10Plus extracts up to limit frames' metadata (0 = all of them).
-func (s *Service) extractHDR10Plus(ctx context.Context, src, jsonOut string, limit int) error {
-	ff := s.tool(ctx, nil, toolrun.Idle, s.ffmpeg, "-loglevel", "error", "-i", src,
-		"-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-")
+func (s *Service) extractHDR10Plus(ctx context.Context, src string, videoIndex int, jsonOut string, limit int) error {
+	ff := s.tool(ctx, nil, toolrun.Idle, s.ffmpeg, hdr10PlusExtractArgs(src, videoIndex)...)
 	args := []string{"extract", "-o", jsonOut}
 	if limit > 0 {
 		args = append(args, "--limit", strconv.Itoa(limit))

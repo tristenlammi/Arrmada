@@ -45,14 +45,17 @@ type Settings struct {
 	ScanAt      string `json:"scan_at"`
 
 	// Read-only context for the page.
-	ServerTime    string `json:"server_time"` // the hours are read on this clock
-	ServerTZ      string `json:"server_tz"`
-	PlexWatching  bool   `json:"plex_watching_known"` // Plex monitoring is on, so pausing can work
-	CanPause      bool   `json:"can_pause"`           // running encodes can be frozen on this platform
-	HasGPU        bool   `json:"has_gpu"`             // a working hardware encoder exists
-	GPUDoesAV1    bool   `json:"gpu_does_av1"`
-	HDR10PlusTool bool   `json:"hdr10plus_tool"`
-	DoviTool      bool   `json:"dovi_tool"` // Dolby Vision can be kept through a conversion
+	ServerTime   string `json:"server_time"` // the hours are read on this clock
+	ServerTZ     string `json:"server_tz"`
+	PlexWatching bool   `json:"plex_watching_known"` // Plex monitoring is on, so pausing can work
+	CanPause     bool   `json:"can_pause"`           // running encodes can be frozen on this platform
+	HasGPU       bool   `json:"has_gpu"`             // a working hardware encoder exists
+	GPUDoesAV1   bool   `json:"gpu_does_av1"`
+	// GPUTenBit says every hardware encoder Convert would use can write 10-bit, so "always
+	// 10-bit" applies on the GPU too. False with a GPU: its encodes of 8-bit files stay 8-bit.
+	GPUTenBit     bool `json:"gpu_ten_bit"`
+	HDR10PlusTool bool `json:"hdr10plus_tool"`
+	DoviTool      bool `json:"dovi_tool"` // Dolby Vision can be kept through a conversion
 }
 
 // GetSettings reads the current settings.
@@ -61,8 +64,9 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 	g := s.settings
 	cores, _ := strconv.Atoi(g.Get(ctx, keyCPUCores, "0"))
 	zone, _ := time.Now().Zone()
-	_, hasHEVC := hardwareFor("hevc", s.encoders)
-	_, hasAV1 := hardwareFor("av1", s.encoders)
+	hwHEVC, hasHEVC := hardwareFor("hevc", s.encoders)
+	hwAV1, hasAV1 := hardwareFor("av1", s.encoders)
+	gpuTenBit := (hasHEVC || hasAV1) && (!hasHEVC || hwHEVC.TenBit) && (!hasAV1 || hwAV1.TenBit)
 	return Settings{
 		Auto: p.auto, HoursStart: p.start, HoursEnd: p.end,
 		AllowAV1: p.allowAV1, UseGPU: p.useGPU, PauseWatching: p.pauseWatching,
@@ -74,7 +78,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		CPUCores: cores, Workers: s.workerCount(ctx), ScanAt: g.Get(ctx, keyScanAt, defaultScanAt),
 		ServerTime: time.Now().Format("15:04"), ServerTZ: zone,
 		PlexWatching: s.watchingKnown(), CanPause: canSuspend,
-		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, HDR10PlusTool: s.hdr10plusTool != "", DoviTool: s.doviTool != "",
+		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, GPUTenBit: gpuTenBit, HDR10PlusTool: s.hdr10plusTool != "", DoviTool: s.doviTool != "",
 	}
 }
 
@@ -167,6 +171,12 @@ func (s *Service) UpdateSettings(ctx context.Context, p SettingsPatch) (Settings
 	if p.HoldMaxGB != nil && (*p.HoldMaxGB < 0 || *p.HoldMaxGB > maxHoldGB) {
 		return Settings{}, fmt.Errorf("the originals hold can be 0–%d GB", maxHoldGB)
 	}
+
+	// The defaults that depend on whether this install has used Convert before are settled
+	// before this save can make it look as if it had: a new install's first save switching
+	// Auto on must not turn its Dolby Vision default into "drop".
+	s.dvChoice(ctx)
+	s.tenBitChoice(ctx)
 
 	g := s.settings
 	var errs []string

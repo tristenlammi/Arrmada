@@ -62,7 +62,7 @@ func (s *Service) checkBeforeSwap(ctx context.Context, job *Job, src, dst string
 		s.finishAfterEncode(job, kind, reason+" — kept the original")
 		return false
 	}
-	s.measureVMAF(ctx, job, src, dst, out, plan)
+	s.measureVMAF(ctx, job, src, dst, mi, out, plan)
 	return ctx.Err() == nil
 }
 
@@ -292,7 +292,7 @@ func filtersHaveVMAF(out string) bool {
 
 // measureVMAF scores the converted file with VMAF on the final check's scenes and records
 // the mean in the ledger. Advisory: whatever happens here, the swap decision has been made.
-func (s *Service) measureVMAF(ctx context.Context, job *Job, src, dst string, out *MediaInfo, plan Plan) {
+func (s *Service) measureVMAF(ctx context.Context, job *Job, src, dst string, mi, out *MediaInfo, plan Plan) {
 	if !s.vmaf || plan.VideoCodec == "" || out == nil || out.Width <= 0 || out.Height <= 0 {
 		return
 	}
@@ -301,7 +301,7 @@ func (s *Service) measureVMAF(ctx context.Context, job *Job, src, dst string, ou
 	var sum float64
 	wins := verifyWindows(out.DurationSec)
 	for _, w := range wins {
-		v, err := vmafWindowFn(s, vctx, dst, src, w.start, w.start, w.dur, out.Width, out.Height, out.FrameRateRat, plan.Crop.filter())
+		v, err := vmafWindowFn(s, vctx, dst, src, w.start, w.start, w.dur, out.Width, out.Height, out.FrameRateRat, refLegOf(mi, plan))
 		if err != nil {
 			if ctx.Err() == nil {
 				s.event("warn", fmt.Sprintf("%s: VMAF couldn't be measured (%v) — it's advisory; SSIM and the full-decode check passed", job.Title, err))
@@ -319,8 +319,8 @@ func (s *Service) measureVMAF(ctx context.Context, job *Job, src, dst string, ou
 
 // vmafWindow scores one scene with VMAF, paired with the source exactly as ssimWindow pairs
 // it (same seek, re-timing, crop and scaling). libvmaf takes the distorted input first.
-func (s *Service) vmafWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate, crop string) (float64, error) {
-	args := pairedArgs(distorted, reference, dStart, rStart, dur, w, h, rate, crop,
+func (s *Service) vmafWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate string, ref refLeg) (float64, error) {
+	args := pairedArgs(distorted, reference, dStart, rStart, dur, w, h, rate, ref,
 		"libvmaf=n_threads="+strconv.Itoa(s.cpuCores(ctx)))
 	out, _ := s.tool(ctx, nil, toolrun.Idle, s.ffmpeg, args...).CombinedOutput()
 	return parseVMAF(string(out))

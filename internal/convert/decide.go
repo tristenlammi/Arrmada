@@ -87,6 +87,9 @@ type prefs struct {
 	resumable bool
 	// measured holds what test encodes measured (see measured.go), keyed by measureKey.
 	measured map[string]measurement
+	// encoderFor is the kind of encoder a file would be encoded on now (encoderChoice), so
+	// a measurement made on another one doesn't count. Nil = the CPU.
+	encoderFor func(mi *MediaInfo, codec string) string
 }
 
 func (s *Service) prefs(ctx context.Context) prefs {
@@ -108,9 +111,11 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		tenBit:         s.tenBitChoice(ctx),
 		resumable:      g.GetBool(ctx, keyResumable, false),
 		measured:       s.measured.all(ctx),
-		dolbyVision:    dvPolicy(g.Get(ctx, keyDolbyVision, "")),
+		dolbyVision:    s.dvChoice(ctx),
 		doviTool:       s.doviTool != "",
 	}
+	useGPU := p.useGPU
+	p.encoderFor = func(mi *MediaInfo, codec string) string { return s.encoderChoice(mi, codec, useGPU).Kind }
 	p.keepSubs = s.keepSubLangs(ctx, p.keepSubsSaved)
 	if p.subRules = s.subRulesFor(ctx, p.keepSubsSaved); p.subRules != nil && s.subProfiles.Key != nil {
 		p.subKey = s.subProfiles.Key(ctx)
@@ -128,10 +133,11 @@ func (s *Service) prefs(ctx context.Context) prefs {
 }
 
 // cacheKey identifies the settings that change which files need work, for cached views —
-// and resumable, which changes the scratch space each one needs.
+// and resumable, which changes the scratch space each one needs, and the GPU switch, which
+// changes which test-encode measurements apply.
 func (p prefs) cacheKey() string {
-	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v|%v|%s", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
-		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable, p.subRules != nil, p.subKey)
+	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v|%v|%s|%v", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
+		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable, p.subRules != nil, p.subKey, p.useGPU)
 }
 
 // Needs is the gap between a file and the target.

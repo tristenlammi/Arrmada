@@ -47,6 +47,8 @@ type TrialSide struct {
 	Bytes    int64   `json:"bytes"`     // all clips together
 	SSIM     float64 `json:"ssim"`      // mean score vs the original
 	EstBytes int64   `json:"est_bytes"` // the whole file, extrapolated (video only)
+
+	kind string // the encoder kind the clips were made on (after any fall-back to the CPU)
 }
 
 // TrialResult is the outcome of a side-by-side test.
@@ -113,7 +115,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 	run := func(codec string) TrialSide {
 		side := TrialSide{Codec: codec}
 		enc := s.encoderChoice(mi, codec, p.useGPU)
-		side.Encoder = enc.Label
+		side.Encoder, side.kind = enc.Label, enc.Kind
 		cp := plan
 		cp.VideoCodec, cp.Quality = codec, maxQualityCRF(codec, mi)
 		var scores []float64
@@ -122,7 +124,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 			if err := s.encodeClip(ctx, job, src, out, mi, enc, cp, c, cores); err != nil {
 				if enc.Hardware && ctx.Err() == nil { // one go on the CPU before giving up
 					enc = cpuEncoder(codec)
-					side.Encoder = enc.Label
+					side.Encoder, side.kind = enc.Label, enc.Kind
 					err = s.encodeClip(ctx, job, src, out, mi, enc, cp, c, cores)
 				}
 				if err != nil {
@@ -132,7 +134,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 			}
 			side.Bytes += fileSize(out)
 			if di, err := probe(ctx, s.ffprobe, out); err == nil && di.Width > 0 {
-				if sc, err := s.ssimWindow(ctx, out, src, 0, c.start, c.dur, di.Width, di.Height, di.FrameRateRat, cp.Crop.filter()); err == nil {
+				if sc, err := s.ssimWindow(ctx, out, src, 0, c.start, c.dur, di.Width, di.Height, di.FrameRateRat, refLegOf(mi, cp)); err == nil {
 					scores = append(scores, sc)
 				}
 			}
@@ -183,7 +185,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 			video *= hdr10plusStreamCost // converts through the HDR10+ pipeline
 		}
 		s.recordMeasurement(ctx, src, side.Codec, measurement{Size: mi.SizeBytes, CRF: maxQualityCRF(side.Codec, mi),
-			VideoBytes: int64(video), SSIM: side.SSIM, Source: source})
+			VideoBytes: int64(video), SSIM: side.SSIM, Source: source, Encoder: side.kind})
 	}
 	if keepDir != "" {
 		// The original clips, for comparing by eye. A stream copy starts on the nearest

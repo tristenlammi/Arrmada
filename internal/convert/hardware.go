@@ -25,6 +25,11 @@ type Encoder struct {
 	Available bool `json:"available"`
 	// Note carries why an encoder was rejected, so the UI can explain it.
 	Note string `json:"note,omitempty"`
+	// TenBit means a hardware encoder VERIFIED it can write 10-bit (Main10) at startup, so
+	// "always 10-bit" applies to it. Older GPUs can't (Intel before Kaby Lake, NVIDIA before
+	// Pascal); their encodes of 8-bit sources stay 8-bit, and Settings says so. CPU encoders
+	// always can.
+	TenBit bool `json:"ten_bit"`
 }
 
 // knownEncoders lists the encoders we know how to drive, per target codec, best hardware
@@ -114,24 +119,37 @@ func verifyEncoders(ctx context.Context, ffmpeg string, encs []Encoder) {
 		wg.Add(1)
 		go func(e *Encoder) {
 			defer wg.Done()
-			if err := probeEncoder(ctx, ffmpeg, *e); err != nil {
+			if err := probeEncoder(ctx, ffmpeg, *e, false); err != nil {
 				e.Available = false
 				e.Note = firstLine(err.Error())
+				return
 			}
+			// 10-bit is a second, separate test: a GPU that encodes 8-bit fine may have no
+			// Main10 at all, and finding that out on a real file costs the encode.
+			e.TenBit = !e.Hardware || probeEncoder(ctx, ffmpeg, *e, true) == nil
 		}(&encs[i])
 	}
 	wg.Wait()
 }
 
-// probeEncoder encodes one tiny frame, proving the encoder actually runs on this machine.
-func probeEncoder(ctx context.Context, ffmpeg string, e Encoder) error {
+// probeEncoder encodes one tiny frame, proving the encoder actually runs on this machine —
+// at 10-bit when tenBit is set, with the same options a 10-bit encode uses (hwTenBitArgs).
+func probeEncoder(ctx context.Context, ffmpeg string, e Encoder, tenBit bool) error {
 	args := []string{"-hide_banner", "-loglevel", "error"}
 	args = append(args, globalArgs(e, false, "")...)
 	args = append(args, "-f", "lavfi", "-i", "testsrc=d=0.1:s=320x240")
 	if e.Kind == "vaapi" {
-		args = append(args, "-vf", "format=nv12,hwupload")
+		pix := "nv12"
+		if tenBit {
+			pix = "p010"
+		}
+		args = append(args, "-vf", "format="+pix+",hwupload")
 	}
-	args = append(args, "-c:v", e.Name, "-f", "null", "-")
+	args = append(args, "-c:v", e.Name)
+	if tenBit {
+		args = append(args, hwTenBitArgs(e)...)
+	}
+	args = append(args, "-f", "null", "-")
 	cmd := toolrun.Command(ctx, toolrun.Normal, ffmpeg, args...)
 	cmd.Env = libvaEnv(args) // the same VA driver a real encode on this device gets
 	out, err := cmd.CombinedOutput()

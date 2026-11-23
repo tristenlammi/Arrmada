@@ -255,7 +255,7 @@ func TestVMAFRecordedInLedger(t *testing.T) {
 	r, src, dst, mi, plan := finalizeRig(t)
 	r.vmaf = true
 	old := vmafWindowFn
-	vmafWindowFn = func(*Service, context.Context, string, string, float64, float64, float64, int, int, string, string) (float64, error) {
+	vmafWindowFn = func(*Service, context.Context, string, string, float64, float64, float64, int, int, string, refLeg) (float64, error) {
 		return 95, nil
 	}
 	t.Cleanup(func() { vmafWindowFn = old })
