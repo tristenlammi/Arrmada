@@ -580,7 +580,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/books/series-backfill", a.requireRole(auth.RoleManager, a.handleBackfillBookSeries))
 
 	// Import history
-	mux.HandleFunc("GET /api/v1/history", a.requireRole(auth.RoleManager, a.handleHistory))
+	mux.HandleFunc("GET /api/v1/history", a.requireRole(auth.RoleManager, a.handleHistory).ext())
 
 	// Import review — downloads held because their content didn't match what they
 	// were grabbed for (admin-only).
@@ -621,7 +621,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("PUT /api/v1/movies/bulk", a.requireRole(auth.RoleManager, a.handleBulkUpdateMovies))
 	mux.HandleFunc("POST /api/v1/movies/bulk/regrab", a.requireRole(auth.RoleManager, a.handleBulkRegrabMovies))
 	mux.HandleFunc("DELETE /api/v1/movies/bulk", a.requireRole(auth.RoleManager, a.handleBulkDeleteMovies))
-	mux.HandleFunc("GET /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie))
+	mux.HandleFunc("GET /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie).ext())
 	// Who has played it on Plex: staff only, never a requester.
 	mux.HandleFunc("GET /api/v1/movies/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleMovieWatchStats))
 	mux.HandleFunc("POST /api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))
@@ -668,7 +668,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/series/{id}/borrowed/forget", a.requireRole(auth.RoleManager, a.handleSeriesBorrowedForget))
 	mux.HandleFunc("GET /api/v1/series/{id}/misplaced", a.requireRole(auth.RoleManager, a.handleSeriesMisplaced))
 	mux.HandleFunc("POST /api/v1/series/{id}/misplaced", a.requireRole(auth.RoleManager, a.handleSeriesMisplacedApply))
-	mux.HandleFunc("GET /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries))
+	mux.HandleFunc("GET /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries).ext())
 	mux.HandleFunc("GET /api/v1/series/{id}/watch-stats", a.requireRole(auth.RoleManager, a.handleSeriesWatchStats))
 	mux.HandleFunc("GET /api/v1/series/{id}/downloads", a.requireRole(auth.RoleManager, a.handleSeriesDownloads))
 	mux.HandleFunc("PUT /api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
