@@ -35,6 +35,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - What a join stopped by a restart leaves in the TV folder's hidden .arrmada-join folder is cleared within the hour.
   - A season with an extra episode the list doesn't have (Family Guy season 6's "100th Episode Special") is still held.
 - **Reject on downloads held for "Titles disagree" or "Numbering".** Those cards only offered Map files…, Choose different show… and Dismiss; Reject & find another removes the download, blocklists the release for that show and searches again.
+- **Delete many requests at once.** Staff can tick requests on any tab of the Requests page (not only Needs approval), or **Select all** to take every request the tab, type and search match, beyond the rows loaded so far, then **Delete** them in one go. As with deleting one request, the library is left as it is: titles they added stay in Movies and Series and are still looked for, downloads carry on and files are kept. The confirmation says so; to stop looking for them, select them in Movies and choose **Unmonitor**, or in Series and choose **Searching off**.
 
 ### Changed
 
@@ -52,6 +53,12 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - Files already in the library are read the same way: one that came in under such a name now shows a red badge and, with upgrades on, is replaced when a release with Italian audio turns up. Only profiles with an Audio language rule for the subtitle's language are affected.
   - The "MULTi and Dual Audio releases count" switch lets more through, not less: on, a MULTi or Dual release that doesn't name Italian is taken as maybe having it. Leave it off for a strict Italian Must.
 - **Settings stopped opening after a library scan until Arrmada was restarted** (#136). A TV folder the scan found nothing for went on the needs-review list without an empty list of matches, and the page crashed reading it; a reload brought the same list back. The list now always comes with one, the page shows such a folder as "No candidates", and if the needs-review list ever can't be shown, the rest of Settings → Library still works.
+- **Importing from Overseerr, Jellyseerr or Seerr brought back requests for titles you had deleted, and searched for all of them at once** ([#130](https://github.com/tristenlammi/Arrmada/issues/130)). A request whose media was later deleted from the server (shown as removed or deleted in Seerr) came in as a new approved request, and every imported title was searched on the next sweep.
+  - Requests whose media was deleted or blocklisted, and declined ones, are left out.
+  - Finished requests (completed, or already available) come in as ready only when the title is already in Arrmada's library, and are never searched. Import your Radarr and Sonarr library first so they find their titles.
+  - Pending and failed requests become pending requests for you to decide.
+  - Approved requests still on their way are added to the library and searched a few at a time, like a Radarr or Sonarr import, not hundreds at once.
+  - Already imported too much? Delete the requests in bulk from the Requests page, then select the titles they added in Movies (**Unmonitor**) and Series (**Searching off**) so they aren't looked for.
 - **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
   - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
   - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed. They never take that disk's last 1 GB: short of room the oldest go first, and failing that the chapter isn't cut and the app is told it isn't available.

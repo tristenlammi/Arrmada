@@ -37,7 +37,7 @@ function OverseerrImport() {
     setMsg(null);
     try {
       const r = await importApi.importOverseerr(url.trim(), key.trim());
-      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background, quietly: nobody is notified about their old requests. Approved titles are added to your library and the regular searches pick them up. They appear on the Requests page as they process.` });
+      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background, quietly: nobody is notified about their old requests. Approved titles still on their way are added to your library and searched a few at a time; deleted, declined and finished ones you don’t have are left out. They appear on the Requests page as they process.` });
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     } finally {
@@ -46,7 +46,7 @@ function OverseerrImport() {
   };
 
   return (
-    <Section id="overseerr-import" title="Import from Overseerr / Jellyseerr" subtitle="Migrating in? Pull your existing request history into Arrmada's Requests, then retire the old container. Approved/available titles are added to the library for the regular searches to pick up; pending ones become pending requests here. It's quiet: nobody gets a notification for an old request. Each request is attributed to its Plex requester — a Plex-linked account is created for them, so when they Sign in with Plex they see their own history. Safe to run more than once — anything already requested is skipped.">
+    <Section id="overseerr-import" title="Import from Overseerr / Jellyseerr" subtitle="Migrating in? Pull your existing request history into Arrmada's Requests, then retire the old container. Approved titles still on their way are added to the library and searched a few at a time; pending ones become pending requests here. Finished requests come in as ready only for titles already in your library (import your Radarr and Sonarr library first), and declined requests and ones whose media was deleted from the server are left out — nothing finished or deleted is downloaded again. It's quiet: nobody gets a notification for an old request. Each request is attributed to its Plex requester — a Plex-linked account is created for them, so when they Sign in with Plex they see their own history. Safe to run more than once — anything already requested is skipped.">
       <Field label="Overseerr / Jellyseerr URL">
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.50.247:5055" className={input} style={inputStyle} autoComplete="off" />
       </Field>

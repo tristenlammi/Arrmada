@@ -47,6 +47,20 @@ type seriesLib interface {
 	SearchStatesFor(ctx context.Context, ids []int64) (map[int64]series.SearchStamp, error)
 }
 
+// pacedMovies and pacedSeries are how an approval that leaves the search to the sweeps (an
+// import's DeferSearch) marks what it adds to be searched in its turn, a few per sweep
+// (automation's paced sweeps), as a Radarr or Sonarr import does. The concrete services
+// have them; a fake without them adds titles as before.
+type pacedMovies interface {
+	AddImported(ctx context.Context, tmdbID int, o movies.AddOptions, file, source string) (movies.Movie, error)
+	SetSearchPaced(ctx context.Context, id int64, on bool) error
+}
+
+type pacedSeries interface {
+	SetSearchPaced(ctx context.Context, seriesID int64, on bool) error
+	SetMonitored(ctx context.Context, id int64, monitored bool) error
+}
+
 // bookLib is the Books module, narrowed.
 type bookLib interface {
 	Add(ctx context.Context, olKey, qualityProfile string, monitored bool, fallback metadata.BookResult) (books.Book, error)
@@ -82,8 +96,10 @@ type searcher interface {
 
 // The concrete services are what main wires in.
 var (
-	_ movieLib  = (*movies.Service)(nil)
-	_ seriesLib = (*series.Service)(nil)
-	_ bookLib   = (*books.Service)(nil)
-	_ searcher  = (*automation.Coordinator)(nil)
+	_ movieLib    = (*movies.Service)(nil)
+	_ seriesLib   = (*series.Service)(nil)
+	_ pacedMovies = (*movies.Service)(nil)
+	_ pacedSeries = (*series.Service)(nil)
+	_ bookLib     = (*books.Service)(nil)
+	_ searcher    = (*automation.Coordinator)(nil)
 )

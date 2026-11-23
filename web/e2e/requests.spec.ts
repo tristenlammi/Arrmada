@@ -1,4 +1,5 @@
 import { test, expect } from "./mockApi";
+import * as discover from "./fixtures/discover";
 
 // REQ-05: the routed Requests page. Staff decide pending requests in bulk from plain
 // buttons; the tab, filters and an open request live in the address.
@@ -22,6 +23,46 @@ test.describe("admin", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].body).toEqual({ action: "approve", ids: [1] });
     expect(errors).toEqual([]);
+  });
+
+  // Issue #130: staff can clear many requests at once from any tab, and are told first
+  // that the library is left as it is.
+  test("deletes the ticked requests in one go after saying what stays", async ({ page, api }) => {
+    await page.goto("/requests?tab=active");
+    await page.getByLabel("Select all on this page").check();
+    await page.getByRole("button", { name: "Delete 4" }).click();
+    const dialog = page.getByRole("alertdialog").or(page.getByRole("dialog"));
+    await expect(dialog.getByText(/Nothing in the library changes/)).toBeVisible();
+    await expect(dialog.getByText(/files already downloaded are kept/)).toBeVisible();
+    await dialog.getByRole("button", { name: "Delete 4" }).click();
+    await expect(page.getByText("Deleted 4 of 4")).toBeVisible();
+    const calls = api.callsTo("POST", "/api/v1/requests/bulk");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ action: "delete", ids: [1, 2, 3, 4] });
+  });
+
+  test("Select all takes every matching request, not only the loaded page, and sends them in batches", async ({ page, api }) => {
+    // 150 approved requests in progress: the page loads 50, Select all fetches the rest.
+    const row = (id: number) => ({ ...discover.requests.requests[1], id, tmdb_id: 5000 + id, title: `Film ${id}` });
+    const all = Array.from({ length: 150 }, (_, i) => row(i + 1));
+    await page.route((u) => u.pathname === "/api/v1/requests", (route) => {
+      const url = new URL(route.request().url());
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({
+        ...discover.requests, counts: { needs_approval: 0, in_progress: 150, ready: 0, declined: 0 }, total: 150,
+        requests: all.slice(offset, offset + limit),
+      }) });
+    });
+    await page.goto("/requests?tab=active");
+    await page.getByRole("button", { name: "Select all 150" }).click();
+    await expect(page.getByText("150 selected")).toBeVisible();
+    await page.getByRole("button", { name: "Delete 150" }).click();
+    await page.getByRole("alertdialog").or(page.getByRole("dialog")).getByRole("button", { name: "Delete 150" }).click();
+    await expect(page.getByText("Deleted 150 of 150")).toBeVisible();
+    const calls = api.callsTo("POST", "/api/v1/requests/bulk");
+    expect(calls.map((c) => (c.body as { ids: number[] }).ids.length)).toEqual([100, 50]);
+    expect(calls.every((c) => (c.body as { action: string }).action === "delete")).toBe(true);
   });
 
   // REQ-08: a row's Decline opens the request on its reason box; the reason goes with it.

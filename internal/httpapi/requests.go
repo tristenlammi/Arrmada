@@ -176,10 +176,12 @@ func (a *api) handleUnsubscribeRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleBulkRequests approves or declines up to 100 pending requests at once. Each is
-// decided on its own, so the answer says how each one went: {results: [{id, ok, error}]}.
+// handleBulkRequests approves or declines up to 100 pending requests at once, or deletes up
+// to 100 requests of any status (staff only, as the route is: the same as deleting one as
+// staff, so the library is left alone). Each is handled on its own, so the answer says how
+// each one went: {results: [{id, ok, error}]}.
 //
-//	POST /api/v1/requests/bulk {action: approve|decline, ids, quality_profile?, reason?}
+//	POST /api/v1/requests/bulk {action: approve|decline|delete, ids, quality_profile?, reason?}
 func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action         string  `json:"action"`
@@ -194,8 +196,8 @@ func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if req.Action != requests.BulkApprove && req.Action != requests.BulkDecline {
-		a.writeError(w, http.StatusBadRequest, "action must be approve or decline")
+	if req.Action != requests.BulkApprove && req.Action != requests.BulkDecline && req.Action != requests.BulkDelete {
+		a.writeError(w, http.StatusBadRequest, "action must be approve, decline or delete")
 		return
 	}
 	// Each id once, in the order given.

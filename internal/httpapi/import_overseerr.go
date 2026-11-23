@@ -17,11 +17,15 @@ import (
 
 // handleImportOverseerr migrates an existing Overseerr/Jellyseerr request history
 // into Arrmada. It fetches the request list up front (so it can report how many
-// were found), then imports them in the background — approved/available ones are
-// added to the library and searched, pending ones become pending requests here.
+// were found), then imports them in the background (overseerr.Classify decides each):
+//   - approved and still being fetched: added to the library, searched a few per sweep;
+//   - pending or failed: a pending request here, for staff to decide;
+//   - finished (completed or available): kept, as ready, only when the library already
+//     has the title — otherwise it would be downloaded again — and never searched;
+//   - declined, or deleted from the server since: left out.
+//
 // Requests are attributed to a matching Arrmada user (by username) or to the admin
-// running the import. Declined requests are skipped. Re-running is safe: media
-// already requested is left alone.
+// running the import. Re-running is safe: media already requested is left alone.
 func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL    string `json:"url"`
@@ -66,15 +70,31 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 		Fn: func(bg context.Context, p *jobs.Progress) (any, error) {
 			client := overseerr.New(req.URL, req.APIKey)
 			plexUsers := map[int]int64{} // requester's Plex account id → Arrmada user id (cached)
-			var imported, skipped, declined, failed int
+			var imported, skipped, declined, removed, finished, failed int
 			for i := range items {
 				if bg.Err() != nil {
 					break
 				}
 				it := items[i]
-				if it.Status == "declined" {
+				switch it.Status {
+				case overseerr.StatusDeclined:
 					declined++
 					continue
+				case overseerr.StatusRemoved:
+					// Fetched, then deleted from the server (or blocklisted): nobody wants it now.
+					removed++
+					continue
+				case overseerr.StatusFinished:
+					// Old, finished history: kept only for a title the library already has, so
+					// it shows as ready. Anything else would add it and download it again.
+					on, err := a.deps.Requests.OnShelf(bg, it.MediaType, it.TMDBID)
+					if err != nil {
+						a.deps.Log.Warn("overseerr import: couldn't check the library", "tmdb", it.TMDBID, "err", err)
+					}
+					if !on {
+						finished++
+						continue
+					}
 				}
 				client.Details(bg, &it)
 				// Attribute to the requester. A Plex requester gets a real Plex-linked account
@@ -108,10 +128,12 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 				}
 				// Silent: these are old requests, and their requesters mustn't get an inbox
 				// full of 'approved' (or, from the next ready sweep, 'ready') for them.
-				// DeferSearch: approved titles join the library monitored and the missing
-				// sweeps find them on their schedule, not hundreds of searches at once.
+				// DeferSearch: approved titles join the library monitored and marked to be
+				// searched in their turn, a few per missing sweep, never hundreds at once. A
+				// finished one is already on the shelf, so approving it searches nothing.
 				created, subscribed, err := a.deps.Requests.Create(bg, in, requests.CreateOptions{
-					AutoApprove: it.Status == "approved", Silent: true, DeferSearch: true,
+					AutoApprove: it.Status == overseerr.StatusApproved || it.Status == overseerr.StatusFinished,
+					Silent:      true, DeferSearch: true,
 				})
 				switch {
 				case errors.Is(err, requests.ErrExists), subscribed:
@@ -128,9 +150,17 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			a.deps.Log.Info("overseerr import finished",
-				"imported", imported, "skipped", skipped, "declined", declined, "failed", failed, "total", len(items))
-			p.SetMessage(fmt.Sprintf("Imported %d of %d requests", imported, len(items)))
-			return map[string]int{"imported": imported, "skipped": skipped, "declined": declined, "failed": failed, "total": len(items)}, nil
+				"imported", imported, "skipped", skipped, "declined", declined, "removed", removed,
+				"finished_not_in_library", finished, "failed", failed, "total", len(items))
+			msg := fmt.Sprintf("Imported %d of %d requests", imported, len(items))
+			if left := declined + removed + finished; left > 0 {
+				msg += fmt.Sprintf(" — %d left out (declined, deleted from the server, or finished and not in your library)", left)
+			}
+			p.SetMessage(msg)
+			return map[string]int{
+				"imported": imported, "skipped": skipped, "declined": declined, "removed": removed,
+				"finished": finished, "failed": failed, "total": len(items),
+			}, nil
 		}})
 	if !ok {
 		return

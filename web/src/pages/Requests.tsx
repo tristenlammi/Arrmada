@@ -49,6 +49,10 @@ const SECTION_TAB: Record<string, Tab> = {
 };
 const TABS: Tab[] = ["needs", "active", "ready", "declined", "issues"];
 const PAGE = 50;
+// Selecting every matching request reads them this many at a time (the server's page cap),
+// and a bulk action sends at most BULK_MAX per call (requests.BulkMax).
+const SELECT_PAGE = 200;
+const BULK_MAX = 100;
 const TYPES = [
   { key: "", label: "All" },
   { key: "movie", label: "Movies" },
@@ -133,11 +137,31 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
   useEffect(() => { void loadIssueCounts(); }, [loadIssueCounts]);
   useLiveRefresh(loadIssueCounts, { topics: ISSUE_TOPICS, fallbackMs: 5 * 60_000, enabled: !issuesTab });
 
-  const pendingIDs = useMemo(() => (items ?? []).filter((rq) => rq.status === "pending").map((rq) => rq.id), [items]);
-  const selectable = staff && tab === "needs";
-  const allSelected = selectable && pendingIDs.length > 0 && pendingIDs.every((id) => selected.has(id));
+  // Staff tick requests on every tab: on Needs approval to approve, decline or delete them,
+  // elsewhere to delete them.
+  const selectable = staff && !issuesTab;
+  const deciding = tab === "needs";
+  const pageIDs = useMemo(() => (items ?? []).filter((rq) => !deciding || rq.status === "pending").map((rq) => rq.id), [items, deciding]);
+  const allSelected = selectable && pageIDs.length > 0 && pageIDs.every((id) => selected.has(id));
   const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pendingIDs));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pageIDs));
+  // Every request this tab, type and search would list, not only the rows loaded so far.
+  const selectEvery = async () => {
+    setBusy("select-all");
+    try {
+      const ids = new Set<number>();
+      for (let offset = 0; ; offset += SELECT_PAGE) {
+        const r = await api.requests({ section: TAB_SECTION[tab as Exclude<Tab, "issues">], limit: SELECT_PAGE, offset, media_type: type || undefined, q: q || undefined });
+        for (const rq of r.requests) if (!deciding || rq.status === "pending") ids.add(rq.id);
+        if (r.requests.length < SELECT_PAGE || offset + SELECT_PAGE >= (r.total ?? 0)) break;
+      }
+      setSelected(ids);
+    } catch (e) {
+      toast((e as Error).message, { tone: "error" });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   // One approve or decline, from a row. A decline opens the request's sheet on its reason
   // box, which is where it's confirmed.
@@ -161,24 +185,42 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
     }
   };
 
-  // Bulk: each request is decided on its own server-side; a failure stays on its row.
-  const bulk = async (action: "approve" | "decline") => {
+  // Bulk: each request is handled on its own server-side; a failure stays on its row. The
+  // server takes BULK_MAX at a time, so a bigger selection goes in turns.
+  const bulk = async (action: "approve" | "decline" | "delete") => {
     const ids = [...selected];
     if (ids.length === 0) return;
+    const n = `${ids.length} request${ids.length === 1 ? "" : "s"}`;
     if (action === "decline") {
-      const yes = await confirm({ title: `Decline ${ids.length} request${ids.length === 1 ? "" : "s"}?`, body: "Each requester is told.", confirmLabel: `Decline ${ids.length}`, tone: "danger" });
+      const yes = await confirm({ title: `Decline ${n}?`, body: "Each requester is told.", confirmLabel: `Decline ${ids.length}`, tone: "danger" });
+      if (!yes) return;
+    }
+    if (action === "delete") {
+      // As deleting one request: the requests go, the library stays as it is.
+      const yes = await confirm({
+        title: `Delete ${n}?`,
+        body: "They’re removed for everyone following them. Nothing in the library changes: titles they added stay in Movies and Series and are still looked for, anything downloading carries on, and files already downloaded are kept. To stop looking for them, select them in Movies and choose Unmonitor, or in Series and choose Searching off.",
+        confirmLabel: `Delete ${ids.length}`,
+        tone: "danger",
+      });
       if (!yes) return;
     }
     setBusy(`bulk:${action}`);
     try {
-      const r = await api.bulkRequests({ action, ids, ...(action === "decline" && bulkReason.trim() ? { reason: bulkReason.trim() } : {}) });
+      const results: { id: number; ok: boolean; error?: string }[] = [];
+      for (let i = 0; i < ids.length; i += BULK_MAX) {
+        const chunk = ids.slice(i, i + BULK_MAX);
+        const r = await api.bulkRequests({ action, ids: chunk, ...(action === "decline" && bulkReason.trim() ? { reason: bulkReason.trim() } : {}) });
+        results.push(...r.results);
+      }
       if (action === "decline") setBulkReason("");
       const failed: Record<number, string> = {};
-      for (const res of r.results) if (!res.ok) failed[res.id] = res.error || "Didn’t go through";
-      const ok = r.results.length - Object.keys(failed).length;
+      for (const res of results) if (!res.ok) failed[res.id] = res.error || "Didn’t go through";
+      const ok = results.length - Object.keys(failed).length;
       setRowErrors(failed);
       setSelected(new Set(Object.keys(failed).map(Number)));
-      toast(`${action === "approve" ? "Approved" : "Declined"} ${ok} of ${ids.length}`, Object.keys(failed).length ? { tone: "error" } : undefined);
+      const done = action === "approve" ? "Approved" : action === "decline" ? "Declined" : "Deleted";
+      toast(`${done} ${ok} of ${ids.length}`, Object.keys(failed).length ? { tone: "error" } : undefined);
       refreshAttention();
       await load();
     } catch (e) {
@@ -255,11 +297,18 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
             <EmptyState title={emptyTitle(tab, staff, !!(q || type))} body={emptyBody(tab, staff, !!(q || type))} />
           ) : (
             <>
-              {selectable && (
-                <label className="mb-2 flex min-h-[36px] w-fit items-center gap-2 text-sm text-ink-dim">
-                  <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-4 w-4" />
-                  Select all on this page
-                </label>
+              {selectable && pageIDs.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <label className="flex min-h-[36px] w-fit items-center gap-2 text-sm text-ink-dim">
+                    <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-4 w-4" />
+                    Select all on this page
+                  </label>
+                  {total > items.length && (
+                    <Button variant="ghost" size="sm" className="min-h-[36px]" onClick={() => { void selectEvery(); }} busy={busy === "select-all"} busyLabel="Selecting…" disabled={!!busy}>
+                      Select all {total}
+                    </Button>
+                  )}
+                </div>
               )}
               <ul className="m-0 flex list-none flex-col gap-2 p-0">
                 {items.map((rq) => (
@@ -269,7 +318,7 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
                     staff={staff}
                     own={!!user && rq.requested_by === user.id}
                     queueKnown={queueKnown}
-                    selectable={selectable && rq.status === "pending"}
+                    selectable={selectable && (!deciding || rq.status === "pending")}
                     selected={selected.has(rq.id)}
                     onSelect={() => toggle(rq.id)}
                     busy={busy}
@@ -293,17 +342,22 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       {selectable && selected.size > 0 && (
         <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-center gap-2 px-4 py-3" style={{ background: "var(--panel)", borderTop: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
           <span className="text-sm text-ink-dim">{selected.size} selected</span>
-          <Button variant="primary" className="min-h-[40px]" onClick={() => bulk("approve")} busy={busy === "bulk:approve"} busyLabel="Approving…" disabled={!!busy}>Approve {selected.size}</Button>
-          <input
-            value={bulkReason}
-            onChange={(e) => setBulkReason(e.target.value.slice(0, DECLINE_REASON_MAX))}
-            maxLength={DECLINE_REASON_MAX}
-            placeholder="Decline reason (optional)"
-            aria-label="Reason for declining the selected requests"
-            className="min-h-[40px] w-full rounded-lg px-3 text-base sm:w-[220px]"
-            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
-          />
-          <Button className="min-h-[40px]" onClick={() => bulk("decline")} busy={busy === "bulk:decline"} busyLabel="Declining…" disabled={!!busy}>Decline {selected.size}</Button>
+          {deciding && (
+            <>
+              <Button variant="primary" className="min-h-[40px]" onClick={() => bulk("approve")} busy={busy === "bulk:approve"} busyLabel="Approving…" disabled={!!busy}>Approve {selected.size}</Button>
+              <input
+                value={bulkReason}
+                onChange={(e) => setBulkReason(e.target.value.slice(0, DECLINE_REASON_MAX))}
+                maxLength={DECLINE_REASON_MAX}
+                placeholder="Decline reason (optional)"
+                aria-label="Reason for declining the selected requests"
+                className="min-h-[40px] w-full rounded-lg px-3 text-base sm:w-[220px]"
+                style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              />
+              <Button className="min-h-[40px]" onClick={() => bulk("decline")} busy={busy === "bulk:decline"} busyLabel="Declining…" disabled={!!busy}>Decline {selected.size}</Button>
+            </>
+          )}
+          <Button variant="danger" className="min-h-[40px]" onClick={() => bulk("delete")} busy={busy === "bulk:delete"} busyLabel="Deleting…" disabled={!!busy}>Delete {selected.size}</Button>
           <Button variant="ghost" className="min-h-[40px]" onClick={() => setSelected(new Set())} disabled={!!busy}>Clear</Button>
         </div>
       )}

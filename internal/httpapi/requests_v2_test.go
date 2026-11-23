@@ -201,7 +201,7 @@ func TestRequestsAPIBulk(t *testing.T) {
 	if rec := s.doJSON("POST", "/api/v1/requests/bulk", requester, body); rec.Code != http.StatusForbidden {
 		t.Fatalf("a requester's bulk action: HTTP %d, want 403", rec.Code)
 	}
-	if rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, `{"action":"delete","ids":[1]}`); rec.Code != http.StatusBadRequest {
+	if rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, `{"action":"remove","ids":[1]}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("an unknown action: HTTP %d, want 400", rec.Code)
 	}
 	if rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, `{"action":"approve","ids":[]}`); rec.Code != http.StatusBadRequest {
@@ -222,6 +222,46 @@ func TestRequestsAPIBulk(t *testing.T) {
 	}
 	if b := getList(t, s, "/api/v1/requests?section=declined", manager); b.Total != 2 {
 		t.Errorf("declined = %d, want 2", b.Total)
+	}
+}
+
+// Bulk delete (issue #130): staff delete requests of any status at once, as they can one
+// at a time; a requester can't, not even their own pending ones (they withdraw one by one).
+func TestRequestsAPIBulkDelete(t *testing.T) {
+	s := requestsServer(t)
+	alice, requester := s.user(t, "alice@example.com", auth.RoleRequester)
+	_, manager := s.user(t, "boss@example.com", auth.RoleManager)
+	own := addRequest(t, s, 1, "One", "pending", alice.ID, "alice")
+	approved := addRequest(t, s, 2, "Two", "approved", alice.ID, "alice")
+	declined := addRequest(t, s, 3, "Three", "declined", 7, "bob")
+	body := fmt.Sprintf(`{"action":"delete","ids":[%d,%d,999,%d]}`, own, approved, declined)
+	if rec := s.doJSON("POST", "/api/v1/requests/bulk", requester, body); rec.Code != http.StatusForbidden {
+		t.Fatalf("a requester's bulk delete: HTTP %d, want 403", rec.Code)
+	}
+	if b := getList(t, s, "/api/v1/requests?section=all", manager); b.Total != 3 {
+		t.Fatalf("after the refused delete: %d requests, want 3", b.Total)
+	}
+	rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk delete: HTTP %d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Results []requests.BulkResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, true, false, true}
+	if len(got.Results) != len(want) {
+		t.Fatalf("results = %+v", got.Results)
+	}
+	for i, r := range got.Results {
+		if r.OK != want[i] {
+			t.Errorf("result %d = %+v, want ok %v", i, r, want[i])
+		}
+	}
+	if b := getList(t, s, "/api/v1/requests?section=all", manager); b.Total != 0 {
+		t.Errorf("left after bulk delete = %d, want 0", b.Total)
 	}
 }
 

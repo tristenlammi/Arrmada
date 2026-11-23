@@ -335,7 +335,8 @@ type CreateOptions struct {
 	Silent bool
 	// DeferSearch adds an approved title to the library but leaves the search to the
 	// scheduled sweeps, so an import of hundreds spreads its searches out instead of
-	// queuing them all at once.
+	// queuing them all at once. A movie or show it adds (or starts wanting) carries the
+	// paced-search mark, so each sweep takes only a few of them (automation/paced.go).
 	DeferSearch bool
 	// QuotaExempt skips the request limits (quota.go): staff. Silent imports are exempt
 	// too.
@@ -727,7 +728,8 @@ type ApproveOptions struct {
 	Auto bool
 	// Silent tells nobody and publishes nothing (an import).
 	Silent bool
-	// DeferSearch leaves the search to the scheduled sweeps.
+	// DeferSearch leaves the search to the scheduled sweeps, a few titles per sweep (see
+	// CreateOptions.DeferSearch).
 	DeferSearch bool
 	// FolderID is the library folder staff chose for the title when approving (0 = the
 	// default); nil lets the folder rules pick. Requesters never choose one. Ignored for a
@@ -847,7 +849,13 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 			m      movies.Movie
 			addErr error
 		)
-		if mw, ok := s.movies.(movieAdderWith); ok && o.FolderID != nil {
+		pm, paced := s.movies.(pacedMovies)
+		paced = paced && o.DeferSearch
+		if paced {
+			// Left to the sweeps (an import): marked before it's monitored, so however many
+			// an import approves, each sweep searches only a few of them.
+			m, addErr = pm.AddImported(ctx, req.TMDBID, movies.AddOptions{QualityProfile: profile, Monitored: true, FolderID: o.FolderID, SearchPaced: true}, "", "")
+		} else if mw, ok := s.movies.(movieAdderWith); ok && o.FolderID != nil {
 			m, addErr = mw.AddWith(ctx, req.TMDBID, movies.AddOptions{QualityProfile: profile, Monitored: true, FolderID: o.FolderID})
 		} else {
 			m, addErr = s.movies.Add(ctx, req.TMDBID, profile, true)
@@ -867,6 +875,11 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 			if m.HasFile {
 				m.ID = 0
 			} else if !m.Monitored {
+				if paced {
+					if err := pm.SetSearchPaced(ctx, m.ID, true); err != nil {
+						return Request{}, err
+					}
+				}
 				if err := s.movies.SetMonitored(ctx, m.ID, true); err != nil {
 					return Request{}, err
 				}
@@ -902,13 +915,35 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 			}
 			addOpts.Seasons, addOpts.MonitorNewSeasons = only, &off
 		}
+		ps, paced := s.series.(pacedSeries)
+		paced = paced && o.DeferSearch
+		if paced {
+			// Left to the sweeps (an import): added paused, marked to be searched in its
+			// turn, then monitored, as a Sonarr import does.
+			addOpts.Monitored = false
+		}
 		sr, addErr := s.series.AddWith(ctx, req.TMDBID, profile, addOpts)
 		if addErr != nil && !errors.Is(addErr, series.ErrExists) {
 			return Request{}, addErr
 		}
+		if addErr == nil && paced {
+			if err := ps.SetSearchPaced(ctx, sr.ID, true); err != nil {
+				return Request{}, fmt.Errorf("added, but couldn't be marked to be searched in its turn (left paused): %w", err)
+			}
+			if err := ps.SetMonitored(ctx, sr.ID, true); err != nil {
+				return Request{}, fmt.Errorf("added, but couldn't be monitored (left paused): %w", err)
+			}
+			sr.Monitored = true
+		}
 		if errors.Is(addErr, series.ErrExists) {
 			// Already in the library: make it fetch what was asked for, unless it's all
 			// on disk already.
+			wasMonitored := true
+			if paced {
+				if before, err := s.series.GetByTMDB(ctx, req.TMDBID); err == nil {
+					wasMonitored = before.Monitored
+				}
+			}
 			existing, wants, err := s.monitorExistingSeries(ctx, req)
 			if err != nil {
 				return Request{}, err
@@ -916,6 +951,12 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 			sr, addErr = existing, nil
 			if !wants {
 				sr.ID = 0
+			}
+			if wants && paced && !wasMonitored {
+				// A show the sweeps weren't looking for until now waits its turn too.
+				if err := ps.SetSearchPaced(ctx, existing.ID, true); err != nil {
+					s.log.Warn("request: couldn't mark the show to be searched in its turn", "series", existing.ID, "err", err)
+				}
 			}
 		}
 		if addErr == nil && sr.ID > 0 && !o.DeferSearch {
@@ -1173,6 +1214,9 @@ func (s *Service) Decline(ctx context.Context, id int64, o DeclineOptions) error
 const (
 	BulkApprove = "approve"
 	BulkDecline = "decline"
+	// BulkDelete deletes requests whatever their status, as staff's single Delete does:
+	// the request records go, the library is left as it is.
+	BulkDelete = "delete"
 	// BulkMax is the most requests one bulk action takes.
 	BulkMax = 100
 )
@@ -1187,11 +1231,12 @@ type BulkResult struct {
 // ErrNotPending is a bulk decision on a request that isn't waiting for one.
 var ErrNotPending = errors.New("not waiting for approval")
 
-// Bulk approves or declines several pending requests, one after another, each on its own:
-// a failure is reported for that request and the rest still go ahead. Approvals queue
-// their searches like any other approval (the job runner's indexer-search class), so a
-// bulk approve never fans out more than a couple of searches at a time. by is who
-// decided; profile, when set, is used for every approval, and reason for every decline.
+// Bulk approves or declines several pending requests, or deletes several requests of any
+// status, one after another, each on its own: a failure is reported for that request and
+// the rest still go ahead. Approvals queue their searches like any other approval (the job
+// runner's indexer-search class), so a bulk approve never fans out more than a couple of
+// searches at a time. by is who decided; profile, when set, is used for every approval,
+// and reason for every decline. Callers check the caller may delete any request (staff).
 func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile, reason string, by int64, byName string) []BulkResult {
 	out := make([]BulkResult, 0, len(ids))
 	for _, id := range ids {
@@ -1199,6 +1244,8 @@ func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile,
 		req, err := s.repo.Get(ctx, id)
 		switch {
 		case err != nil:
+		case action == BulkDelete:
+			err = s.Delete(ctx, id)
 		case req.Status != StatusPending:
 			err = ErrNotPending
 		case action == BulkApprove:

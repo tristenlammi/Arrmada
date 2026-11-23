@@ -27,7 +27,67 @@ type Item struct {
 	Requester      string // Overseerr display name / username (for attribution)
 	RequesterPlex  int    // requester's Plex account id (0 = none) — links to a Plex sign-in
 	RequesterEmail string
-	Status         string // "approved" | "pending" | "declined"
+	Status         string // one of the Status constants
+}
+
+// What an Overseerr/Jellyseerr request becomes here (Classify).
+const (
+	// StatusPending: still waiting for someone to decide (or it never reached Radarr/Sonarr).
+	// It becomes a pending request; nothing is searched until staff approve it.
+	StatusPending = "pending"
+	// StatusApproved: approved and still being fetched. It becomes an approved request and
+	// its title joins the library, searched a few at a time.
+	StatusApproved = "approved"
+	// StatusFinished: done in Seerr (completed, or already available). It is old history:
+	// kept only when the library here already has it, and never searched.
+	StatusFinished = "finished"
+	// StatusDeclined: declined in Seerr. Left out.
+	StatusDeclined = "declined"
+	// StatusRemoved: the media was deleted from the server after it was fetched (or is
+	// blocklisted). Left out.
+	StatusRemoved = "removed"
+)
+
+// Seerr's numbers, as server/constants/media.ts has them in Overseerr, Jellyseerr and Seerr
+// (they share the API). Older Overseerr (1.32 and before) has no "completed" or "deleted":
+// it reset the media to unknown and removed the requests when the media went away.
+const (
+	reqPending   = 1
+	reqApproved  = 2
+	reqDeclined  = 3
+	reqFailed    = 4
+	reqCompleted = 5
+
+	// 1 unknown, 2 pending, 3 processing and 4 partly available are all still wanted.
+	mediaAvailable = 5
+	// 6 is DELETED in Overseerr; Jellyseerr and Seerr put BLOCKLISTED at 6 and DELETED at 7.
+	// Either way the media is gone or unwanted.
+	mediaGone = 6
+)
+
+// Classify maps a Seerr request's status and its media's status to what the request
+// becomes here (a Status constant). Nothing that is finished or removed in Seerr comes in
+// as something to search for.
+func Classify(requestStatus, mediaStatus int) string {
+	switch {
+	case requestStatus == reqDeclined:
+		return StatusDeclined
+	case requestStatus == reqPending, requestStatus == reqFailed:
+		// Waiting, or failed to reach Radarr/Sonarr: someone still has to decide. A pending
+		// ask for deleted media is someone asking again, so it stays pending too.
+		return StatusPending
+	case mediaStatus >= mediaGone:
+		return StatusRemoved
+	case requestStatus == reqCompleted:
+		return StatusFinished
+	case requestStatus == reqApproved && mediaStatus == mediaAvailable:
+		return StatusFinished
+	case requestStatus == reqApproved:
+		// Not fetched yet, or a show only partly there: still wanted.
+		return StatusApproved
+	}
+	// A status this client doesn't know: wait for a person rather than search.
+	return StatusPending
 }
 
 // Client talks to an Overseerr/Jellyseerr instance with an API key.
@@ -79,12 +139,16 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 
 // reqObj is the subset of an Overseerr request object we read.
 type reqObj struct {
-	Status int    `json:"status"` // 1 pending · 2 approved · 3 declined
+	Status int    `json:"status"` // 1 pending · 2 approved · 3 declined · 4 failed · 5 completed
 	Type   string `json:"type"`   // "movie" | "tv"
+	Is4K   bool   `json:"is4k"`   // a 4K request follows the media's 4K status
 	Media  struct {
 		TmdbID    int    `json:"tmdbId"`
 		MediaType string `json:"mediaType"`
-		Status    int    `json:"status"` // 1 unknown · 2 pending · 3 processing · 4 partial · 5 available
+		// 1 unknown · 2 pending · 3 processing · 4 partial · 5 available · 6/7 deleted or
+		// blocklisted (see mediaGone)
+		Status   int `json:"status"`
+		Status4K int `json:"status4k"`
 	} `json:"media"`
 	RequestedBy struct {
 		DisplayName  string `json:"displayName"`
@@ -131,13 +195,11 @@ func (c *Client) page(ctx context.Context, take, skip int) (items []Item, count 
 		if r.Type == "tv" || r.Media.MediaType == "tv" {
 			mt = "series"
 		}
-		status := "pending"
-		switch {
-		case r.Status == 3:
-			status = "declined"
-		case r.Status == 2 || r.Media.Status >= 4: // approved, or already partially/fully available
-			status = "approved"
+		media := r.Media.Status
+		if r.Is4K {
+			media = r.Media.Status4K
 		}
+		status := Classify(r.Status, media)
 		items = append(items, Item{
 			MediaType:      mt,
 			TMDBID:         r.Media.TmdbID,
