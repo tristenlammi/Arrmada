@@ -502,6 +502,7 @@ POST /api/v1/requests/import/overseerr admin -
 POST /api/v1/requests/{id}/approve staff ext key
 POST /api/v1/requests/{id}/decline staff ext key
 POST /api/v1/requests/{id}/preview staff ext key
+POST /api/v1/blocklist/bulk-unblock staff -
 POST /api/v1/reviews/bulk staff -
 POST /api/v1/reviews/{id}/dismiss staff -
 POST /api/v1/reviews/{id}/import staff -

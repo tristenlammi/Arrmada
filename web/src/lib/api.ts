@@ -3192,6 +3192,7 @@ export const api = {
     return req<{ items: BlocklistRow[]; total: number }>(`/api/v1/blocklist?${p}`);
   },
   unblockAny: (id: number) => req<void>(`/api/v1/blocklist/${id}`, { method: "DELETE" }),
+  bulkUnblock: (ids: number[]) => req<{ removed: number }>(`/api/v1/blocklist/bulk-unblock`, { method: "POST", body: JSON.stringify({ ids }) }),
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
   // One show's held downloads (the series page's files it couldn't place).
   seriesReviews: (id: number) =>

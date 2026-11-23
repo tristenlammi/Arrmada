@@ -140,6 +140,37 @@ func escapeLike(q string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
 }
 
+// RemoveBlockEntries un-blocklists many entries by id. Returns how many were removed.
+func (c *Coordinator) RemoveBlockEntries(ctx context.Context, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	seen := map[int64]bool{}
+	clean := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(clean))
+	args := make([]any, len(clean))
+	for i, id := range clean {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	res, err := c.db.ExecContext(ctx, `DELETE FROM blocklist WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // RemoveBlockEntry un-blocklists one entry of any kind. ErrBlockNotFound when it's gone.
 func (c *Coordinator) RemoveBlockEntry(ctx context.Context, id int64) error {
 	res, err := c.db.ExecContext(ctx, `DELETE FROM blocklist WHERE id = ?`, id)

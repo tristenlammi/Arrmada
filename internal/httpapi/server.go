@@ -597,6 +597,7 @@ func (a *api) registerRoutes(mux *router) {
 	// The blocklist across every media type, global entries included.
 	mux.HandleFunc("GET /api/v1/blocklist", a.requireRole(auth.RoleManager, a.handleListAllBlocks))
 	mux.HandleFunc("DELETE /api/v1/blocklist/{id}", a.requireRole(auth.RoleManager, a.handleUnblockAny))
+	mux.HandleFunc("POST /api/v1/blocklist/bulk-unblock", a.requireRole(auth.RoleManager, a.handleBulkUnblock))
 
 	// Movies
 	mux.HandleFunc("GET /api/v1/movies", a.requireRole(auth.RoleManager, a.handleListMovies))

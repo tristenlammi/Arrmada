@@ -45,6 +45,8 @@ export function BlocklistPanel() {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const confirm = useConfirm();
   const toast = useToast();
 
@@ -58,6 +60,25 @@ export function BlocklistPanel() {
   const { data, error, loading, refetch } = useQuery(key, () => api.blocklistAll({ type, q, limit: PAGE_SIZE, offset: page * PAGE_SIZE }));
   const rows = data?.items;
   const total = data?.total ?? 0;
+  useEffect(() => { setSelected(new Set()); }, [key]);
+
+  const bulkUnblock = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    const ok = await confirm({ title: `Unblock ${ids.length} releases?`, body: "They become grabbable again on the next search.", confirmLabel: "Unblock", tone: "danger" });
+    if (!ok) return;
+    setBulkBusy(true);
+    try {
+      await api.bulkUnblock(ids);
+      toast(`Unblocked ${ids.length}.`);
+      setSelected(new Set());
+    } catch (e) {
+      toast((e as Error).message, { tone: "error" });
+    } finally {
+      setBulkBusy(false);
+      invalidate("blocklist:");
+    }
+  };
 
   const unblock = async (r: BlocklistRow) => {
     const global = r.type === "global";
@@ -123,12 +144,29 @@ export function BlocklistPanel() {
               <EmptyState title={q || type ? "Nothing matches" : "Nothing is blocklisted"}
                 body={q || type ? "No blocklist entries match this filter." : "Releases you block, reject or that stall show up here."} />
             ) : (
-              <div className="flex flex-col gap-2">
+              <>
+                <div className="mb-2 flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={rows.length > 0 && rows.every((r) => selected.has(r.id))} onChange={(e) => {
+                      if (e.target.checked) setSelected(new Set(rows.map((r) => r.id))); else setSelected(new Set());
+                    }} />
+                    Select all on page
+                  </label>
+                  {selected.size > 0 && (
+                    <Button size="sm" variant="danger" busy={bulkBusy} onClick={bulkUnblock}>Unblock selected ({selected.size})</Button>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
                 {rows.map((r) => {
                   const link = itemLink(r);
                   return (
                     <div key={r.id} className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: `1px solid ${r.type === "global" ? "var(--avoid)" : "var(--line)"}` }}>
                       <div className="flex items-start gap-3">
+                        <input type="checkbox" className="mt-1" checked={selected.has(r.id)} onChange={(e) => {
+                          const next = new Set(selected);
+                          if (e.target.checked) next.add(r.id); else next.delete(r.id);
+                          setSelected(next);
+                        }} />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <StatusChip tone={r.type === "global" ? "avoid" : "faint"}>{r.type === "music" && r.discography ? "discography" : KIND_LABEL[r.type]}</StatusChip>
@@ -154,6 +192,7 @@ export function BlocklistPanel() {
                   );
                 })}
               </div>
+              </>
             )}
             {total > PAGE_SIZE && (
               <div className="mt-4 flex items-center justify-between text-sm text-ink-dim">
