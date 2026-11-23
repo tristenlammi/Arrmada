@@ -35,6 +35,15 @@ type BlockFilter struct {
 	Offset int
 }
 
+// BlockPage is one page of the Blocklist. Total counts every entry the filter matches;
+// NewestID is the highest id among them, so "unblock everything matching" can be held to
+// what the person saw and leave out anything blocked after that.
+type BlockPage struct {
+	Items    []BlockRow `json:"items"`
+	Total    int        `json:"total"`
+	NewestID int64      `json:"newest_id"`
+}
+
 // blockTypes are the blocklist's media_type values.
 var blockTypes = map[string]bool{"movie": true, "series": true, "book": true, "music": true, "global": true}
 
@@ -44,41 +53,38 @@ func ValidBlockType(t string) bool { return t == "" || blockTypes[t] }
 // maxBlockPage bounds one page of the Blocklist.
 const maxBlockPage = 200
 
-// ListAllBlocks returns blocklist entries of every kind, newest first, with the title of
-// what each blocks the release for, and how many match in all.
-//
-// Only movie and series rows had a page before, so a book's or an album's block — and the
-// 'global' rows Reject writes for a release tied to nothing, which block it for every
-// title — could be neither seen nor undone.
-func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) ([]BlockRow, int, error) {
-	if f.Limit <= 0 || f.Limit > maxBlockPage {
-		f.Limit = maxBlockPage
-	}
-	if f.Offset < 0 {
-		f.Offset = 0
-	}
-	// Each kind's title comes from its own table (a film's or show's shown title): ids are
-	// only unique per table, so the join must be on the row's own kind.
-	const item = `CASE b.media_type
-			WHEN 'movie' THEN COALESCE(NULLIF(m.display_title, ''), m.title, '')
-			WHEN 'series' THEN COALESCE(NULLIF(s.display_title, ''), s.title, '')
-			WHEN 'book' THEN COALESCE(bk.title, '')
-			WHEN 'music' THEN COALESCE(al.title, '')
-			WHEN '` + mediaMusicArtist + `' THEN COALESCE(ar.name, '')
-			ELSE '' END`
-	// A film's or show's own (TMDB English) title, which a search also finds it by when
-	// it's shown under another name.
-	const canonical = `CASE b.media_type
-			WHEN 'movie' THEN COALESCE(m.title, '')
-			WHEN 'series' THEN COALESCE(s.title, '')
-			ELSE '' END`
-	const from = ` FROM blocklist b
-		LEFT JOIN movies m ON b.media_type = 'movie' AND m.id = b.movie_id
-		LEFT JOIN series s ON b.media_type = 'series' AND s.id = b.movie_id
-		LEFT JOIN books bk ON b.media_type = 'book' AND bk.id = b.movie_id
-		LEFT JOIN albums al ON b.media_type = 'music' AND al.id = b.movie_id
-		LEFT JOIN artists ar ON b.media_type = '` + mediaMusicArtist + `' AND ar.id = b.movie_id
-		WHERE 1 = 1`
+// MaxBulkUnblockIDs bounds one bulk unblock by id: a page's worth. Everything matching a
+// filter goes through RemoveMatchingBlocks instead.
+const MaxBulkUnblockIDs = maxBlockPage
+
+// Each kind's title comes from its own table (a film's or show's shown title): ids are
+// only unique per table, so the join must be on the row's own kind.
+const blockItemTitle = `CASE b.media_type
+		WHEN 'movie' THEN COALESCE(NULLIF(m.display_title, ''), m.title, '')
+		WHEN 'series' THEN COALESCE(NULLIF(s.display_title, ''), s.title, '')
+		WHEN 'book' THEN COALESCE(bk.title, '')
+		WHEN 'music' THEN COALESCE(al.title, '')
+		WHEN '` + mediaMusicArtist + `' THEN COALESCE(ar.name, '')
+		ELSE '' END`
+
+// A film's or show's own (TMDB English) title, which a search also finds it by when it's
+// shown under another name.
+const blockCanonicalTitle = `CASE b.media_type
+		WHEN 'movie' THEN COALESCE(m.title, '')
+		WHEN 'series' THEN COALESCE(s.title, '')
+		ELSE '' END`
+
+const blockFrom = ` FROM blocklist b
+	LEFT JOIN movies m ON b.media_type = 'movie' AND m.id = b.movie_id
+	LEFT JOIN series s ON b.media_type = 'series' AND s.id = b.movie_id
+	LEFT JOIN books bk ON b.media_type = 'book' AND bk.id = b.movie_id
+	LEFT JOIN albums al ON b.media_type = 'music' AND al.id = b.movie_id
+	LEFT JOIN artists ar ON b.media_type = '` + mediaMusicArtist + `' AND ar.id = b.movie_id
+	WHERE 1 = 1`
+
+// blockWhere is the filter's WHERE conditions (after blockFrom's "WHERE 1 = 1") and their
+// arguments. The list and "unblock everything matching" share it, so they always agree.
+func blockWhere(f BlockFilter) (string, []any) {
 	where, args := "", []any{}
 	switch f.Type {
 	case "":
@@ -91,27 +97,45 @@ func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) ([]Block
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
 		like := "%" + escapeLike(strings.ToLower(q)) + "%"
-		where += ` AND (lower(b.title) LIKE ? ESCAPE '\' OR lower(` + item + `) LIKE ? ESCAPE '\'
-			OR lower(` + canonical + `) LIKE ? ESCAPE '\')`
+		where += ` AND (lower(b.title) LIKE ? ESCAPE '\' OR lower(` + blockItemTitle + `) LIKE ? ESCAPE '\'
+			OR lower(` + blockCanonicalTitle + `) LIKE ? ESCAPE '\')`
 		args = append(args, like, like, like)
 	}
-	var total int
-	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*)`+from+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	return where, args
+}
+
+// ListAllBlocks returns blocklist entries of every kind, newest first, with the title of
+// what each blocks the release for, and how many match in all.
+//
+// Only movie and series rows had a page before, so a book's or an album's block — and the
+// 'global' rows Reject writes for a release tied to nothing, which block it for every
+// title — could be neither seen nor undone.
+func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) (BlockPage, error) {
+	if f.Limit <= 0 || f.Limit > maxBlockPage {
+		f.Limit = maxBlockPage
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	where, args := blockWhere(f)
+	page := BlockPage{Items: []BlockRow{}}
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(b.id), 0)`+blockFrom+where, args...).
+		Scan(&page.Total, &page.NewestID); err != nil {
+		return BlockPage{}, err
 	}
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT b.id, b.media_type, b.movie_id, `+item+`, b.title, b.indexer, b.reason, b.created_at`+from+where+
+		`SELECT b.id, b.media_type, b.movie_id, `+blockItemTitle+`, b.title, b.indexer, b.reason, b.created_at`+blockFrom+where+
 			` ORDER BY b.id DESC LIMIT ? OFFSET ?`,
 		append(args, f.Limit, f.Offset)...)
 	if err != nil {
-		return nil, 0, err
+		return BlockPage{}, err
 	}
 	out := []BlockRow{}
 	for rows.Next() {
 		var r BlockRow
 		if err := rows.Scan(&r.ID, &r.Type, &r.ItemID, &r.ItemTitle, &r.Title, &r.Indexer, &r.Reason, &r.CreatedAt); err != nil {
 			rows.Close()
-			return nil, 0, err
+			return BlockPage{}, err
 		}
 		if r.Type == "global" {
 			r.ItemID, r.ItemTitle = 0, ""
@@ -121,7 +145,7 @@ func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) ([]Block
 	err = rows.Err()
 	rows.Close() // closed before the artist lookups below
 	if err != nil {
-		return nil, 0, err
+		return BlockPage{}, err
 	}
 	c.markUsenetBlocks(ctx, len(out), func(i int) string { return out[i].Title }, func(i int, n string) { out[i].Network = n })
 	// A discography is blocked against its artist (media_type music_artist, see
@@ -131,13 +155,64 @@ func (c *Coordinator) ListAllBlocks(ctx context.Context, f BlockFilter) ([]Block
 			out[i].Type, out[i].Discography = "music", true
 		}
 	}
-	return out, total, nil
+	page.Items = out
+	return page, nil
 }
 
 // escapeLike makes q match literally inside a LIKE pattern (ESCAPE '\'), so a search for
 // "100%" or "a_b" isn't a wildcard.
 func escapeLike(q string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+}
+
+// RemoveBlockEntries un-blocklists many entries by id. Returns how many were removed.
+func (c *Coordinator) RemoveBlockEntries(ctx context.Context, ids []int64) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	seen := map[int64]bool{}
+	clean := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(clean))
+	args := make([]any, len(clean))
+	for i, id := range clean {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	res, err := c.db.ExecContext(ctx, `DELETE FROM blocklist WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// RemoveMatchingBlocks un-blocklists every entry the filter matches (its type and search,
+// across all pages; Limit and Offset are ignored) whose id is at most throughID — the
+// newest entry the person saw when they chose "all matching", so a release blocked since
+// stays blocked. throughID must be set. Returns how many were removed.
+func (c *Coordinator) RemoveMatchingBlocks(ctx context.Context, f BlockFilter, throughID int64) (int, error) {
+	if throughID <= 0 {
+		return 0, nil
+	}
+	where, args := blockWhere(f)
+	res, err := c.db.ExecContext(ctx,
+		`DELETE FROM blocklist WHERE id IN (SELECT b.id`+blockFrom+where+` AND b.id <= ?)`,
+		append(args, throughID)...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // RemoveBlockEntry un-blocklists one entry of any kind. ErrBlockNotFound when it's gone.

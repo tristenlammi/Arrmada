@@ -3189,9 +3189,13 @@ export const api = {
     if (opts.q) p.set("q", opts.q);
     if (opts.limit) p.set("limit", String(opts.limit));
     if (opts.offset) p.set("offset", String(opts.offset));
-    return req<{ items: BlocklistRow[]; total: number }>(`/api/v1/blocklist?${p}`);
+    // newest_id is the newest entry the filter matches: "unblock all matching" stops there.
+    return req<{ items: BlocklistRow[]; total: number; newest_id: number }>(`/api/v1/blocklist?${p}`);
   },
   unblockAny: (id: number) => req<void>(`/api/v1/blocklist/${id}`, { method: "DELETE" }),
+  // Unblock the ticked entries, or every entry matching a filter (all pages) up to through_id.
+  bulkUnblock: (sel: { ids: number[] } | { all: true; type: BlockType | ""; q: string; through_id: number }) =>
+    req<{ removed: number }>(`/api/v1/blocklist/bulk-unblock`, { method: "POST", body: JSON.stringify(sel) }),
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
   // One show's held downloads (the series page's files it couldn't place).
   seriesReviews: (id: number) =>

@@ -23,6 +23,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 - **Staff API keys can read history and a title's detail** (#123, thanks @zorcerer). A manager's or admin's personal API key can now call `GET /api/v1/history`, `GET /api/v1/movies/{id}` and `GET /api/v1/series/{id}`, so a media server's scanner or an autoscan tool can rescan only what changed without signing in with a password. A read-only key is enough.
   - Requesters' and read-only accounts' keys still get `403`, and a key loses this the moment its owner stops being staff.
   - Nothing else in the staff library opens to keys: adding, changing and deleting titles, the queue and wanted stay sign-in only.
+- **Unblock many releases at once on the Blocklist** (#133, thanks to the contributor of #134). Tick entries, tick the whole page, or pick **Select all … matching this filter** to take every entry the current type and search match, on every page. One confirm unblocks them all. Anything blocked after you picked "all" stays blocked.
 
 ### Changed
 

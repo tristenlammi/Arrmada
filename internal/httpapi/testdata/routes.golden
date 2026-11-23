@@ -353,6 +353,7 @@ POST /api/v1/auth/login/setup/confirm public ext
 POST /api/v1/auth/logout public ext
 POST /api/v1/auth/plex/pin public ext
 POST /api/v1/auth/setup public -
+POST /api/v1/blocklist/bulk-unblock staff -
 POST /api/v1/books staff -
 POST /api/v1/books/author staff -
 POST /api/v1/books/duplicates/ignore staff -

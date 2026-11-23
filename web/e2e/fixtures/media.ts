@@ -467,12 +467,13 @@ export const reviewImportJob: Job = {
   created_at: new Date(NOW).toISOString(), started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(),
 };
 export const reviewImportStarted = { status: "importing", job_id: reviewImportJob.id, existing: false, title: "Fixture Movie" };
-export const blocklist: { items: BlocklistRow[]; total: number } = {
+export const blocklist: { items: BlocklistRow[]; total: number; newest_id: number } = {
   items: [
     { id: 2, type: "global", item_id: 0, item_title: "", title: "Totally.Legit.2024.1080p.exe", reason: "rejected in review", created_at: "2026-10-01 12:00:00" },
     { id: 1, type: "movie", item_id: 1, item_title: "Fixture Movie", title: "Fixture.Movie.2020.1080p.WEB-DL-GRP", indexer: "Fixture Indexer", reason: "manually blocklisted", created_at: "2026-09-30 08:00:00" },
   ],
   total: 2,
+  newest_id: 2,
 };
 
 // A connection's Test: it answers, and its card comes back working (and set up: a spec may
