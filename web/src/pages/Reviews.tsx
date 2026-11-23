@@ -451,6 +451,8 @@ function ReviewCard({ r, busy: acting, importJob, importError, onImportDone, sel
           <>
             {r.media_type === "series" && <button onClick={onMap} disabled={busy} className={btn} style={primary}>Map files…</button>}
             <button onClick={onReassign} disabled={busy} className={btn} style={accent}>Choose different show…</button>
+            {/* The release numbers its episodes another way: another release may not. */}
+            <button onClick={() => onReject(true)} disabled={busy} className={btn} style={danger}>{linked ? "Reject & find another" : "Reject"}</button>
           </>
         )}
         {r.reason_code === "import_failed" && (

@@ -1138,7 +1138,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// Every file is resolved before any is placed, so the download can be judged as a
 	// whole: a title that moves one file onto an episode another file of the same
 	// download claims is only visible once both are known (titleConflict).
-	var resolved []resolvedVideo
+	var resolved, beyond []resolvedVideo
 	for _, v := range videos {
 		rel := inheritQuality(parser.Parse(filepath.Base(v.Path)), release)
 		// Alias numbering first, exactly as the search side resolves it. Without this a
@@ -1202,10 +1202,38 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
 				"series", s.Title, "file", filepath.Base(v.Path),
 				"resolved_to", refsLabel(refs))
+			if len(numbered) == 1 && sameRefs(refs, numbered) {
+				beyond = append(beyond, resolvedVideo{v: v, rel: rel, numbered: numbered, beyond: true})
+			}
 			continue
 		}
 		resolved = append(resolved, resolvedVideo{v: v, rel: rel, refs: known, numbered: numbered,
 			byTitle: !sameRefs(refs, numbered)})
+	}
+	// An episode the release cut into parts is joined back into one file, and the files
+	// after it are placed that much earlier (splitparts.go). Anime is numbered by other
+	// rules and left alone.
+	if !s.IsAnime() {
+		seasonTitles := map[int]map[int]string{}
+		titles := func(season int) map[int]string {
+			t, ok := seasonTitles[season]
+			if !ok {
+				t = c.series.SeasonEpisodeTitles(ctx, s.ID, season)
+				seasonTitles[season] = t
+			}
+			return t
+		}
+		all := append(append([]resolvedVideo(nil), resolved...), beyond...)
+		if groups := findSplitParts(all, titles); len(groups) > 0 {
+			var moved []string
+			var rescued int
+			resolved, moved, rescued = applySplitParts(all, groups, titles, func(ref series.EpisodeRef) bool {
+				return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
+			})
+			unresolved -= rescued // files whose number was past the season, now placed
+			c.log.Info("series import: the release split episodes into parts and counted each as an episode — the parts will be joined, and the files after them placed that much earlier",
+				"series", s.Title, "split_episodes", len(groups), "moved", strings.Join(moved, "; "))
+		}
 	}
 	if conflict = c.titleConflict(ctx, s, resolved); conflict != "" {
 		// Placing any of it would put at least one file on the wrong episode, and its
@@ -1216,28 +1244,76 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			"series", s.Title, "content_path", contentPath, "why", conflict)
 		return nil, 0, unresolved, failed, conflict, nil
 	}
-	for _, rv := range resolved {
+	// The quality gate, per episode. Gating the whole file on refs[0] alone let a
+	// multi-episode file downgrade its second episode (E01 missing → whole file accepted →
+	// E02's better file superseded too), and conversely blocked E02 entirely when E01
+	// already had the better file.
+	// The name that actually carries the quality tags — a pack's per-file names often carry
+	// none, so fall back to the release folder. SCORING the candidate needs the same name
+	// that gets recorded.
+	type gateAnswer struct {
+		sourceName     string
+		wanted, forced []series.EpisodeRef
+	}
+	gate := func(rv resolvedVideo) gateAnswer {
+		g := gateAnswer{sourceName: filepath.Base(rv.v.Path)}
+		if parser.Parse(g.sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
+			g.sourceName = filepath.Base(contentPath)
+		}
+		g.wanted, g.forced = refsToPlace(rv.refs, force, func(ref series.EpisodeRef) bool {
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rv.rel, g.sourceName, rv.v.Size, len(rv.refs))
+		})
+		return g
+	}
+	// Episodes the release split into parts are joined first, and only those the gate
+	// wants: a join that can't be done holds the whole download before anything of it is
+	// placed, as a disagreement does.
+	gated := map[int]gateAnswer{}
+	joined := map[int]string{}
+	for ri, rv := range resolved {
+		if len(rv.parts) < 2 {
+			continue
+		}
+		g := gate(rv)
+		gated[ri] = g
+		if len(g.wanted) == 0 {
+			continue
+		}
+		path, cleanup, hold, jerr := c.joinSplitParts(ctx, imp, rv)
+		switch {
+		case hold != "":
+			c.log.Warn("series import: an episode's parts can't be joined — holding the download, nothing placed",
+				"series", s.Title, "content_path", contentPath, "why", hold)
+			return nil, 0, unresolved, failed, hold, nil
+		case jerr != nil:
+			// Nothing was written. The rest is placed; this episode is tried again next sweep.
+			failed++
+			c.log.Warn("series import: couldn't join an episode's parts this time — will try again next sweep",
+				"series", s.Title, "file", filepath.Base(rv.v.Path), "err", jerr)
+		default:
+			defer cleanup()
+			joined[ri] = path
+		}
+	}
+	for ri, rv := range resolved {
 		v, rel, refs := rv.v, rv.rel, rv.refs
-		if rv.byTitle {
+		switch {
+		case rv.byShift:
+			c.log.Info("series import: placed earlier than the number in the filename — the release counted an episode's parts as episodes",
+				"series", s.Title, "file", filepath.Base(v.Path),
+				"season", rv.numbered[0].Season, "filename_said", refEpisodes(rv.numbered), "placed_on", refEpisodes(refs))
+		case len(rv.parts) > 1:
+		case rv.byTitle:
 			c.log.Info("series import: placed by episode title, not the number in the filename — the release numbers episodes differently from the metadata",
 				"series", s.Title, "file", filepath.Base(v.Path), "title", parser.EpisodeTitleFrom(filepath.Base(v.Path)),
 				"season", rv.numbered[0].Season, "filename_said", refEpisodes(rv.numbered), "metadata_says", refEpisodes(refs))
 		}
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
-		// Quality gate, PER EPISODE. Gating the whole file on refs[0] alone let a
-		// multi-episode file downgrade its second episode (E01 missing → whole file
-		// accepted → E02's better file superseded too), and conversely blocked E02
-		// entirely when E01 already had the better file.
-		// The name that actually carries the quality tags — a pack's per-file names often
-		// carry none, so fall back to the release folder. Computed here rather than after
-		// the gate because SCORING the candidate needs the same name that gets recorded.
-		sourceName := filepath.Base(v.Path)
-		if parser.Parse(sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
-			sourceName = filepath.Base(contentPath)
+		g, ok := gated[ri]
+		if !ok {
+			g = gate(rv)
 		}
-		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
-			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size, len(refs))
-		})
+		sourceName, wanted, forced := g.sourceName, g.wanted, g.forced
 		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
 				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(forced))
@@ -1251,6 +1327,18 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"series", s.Title, "file", filepath.Base(v.Path),
 				"resolved_to", refsLabel(refs),
 				"candidate_resolution", string(rel.Resolution))
+			continue
+		}
+		if len(rv.parts) > 1 {
+			path, ok := joined[ri]
+			if !ok {
+				continue // couldn't be joined this time: counted as failed above
+			}
+			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, path, wanted, sourceName)
+			placed = append(placed, got...)
+			if bad {
+				failed++
+			}
 			continue
 		}
 		if c.refsAgreeWithFile(ctx, s.ID, rel, refs) {
@@ -1694,6 +1782,15 @@ type resolvedVideo struct {
 	refs     []series.EpisodeRef
 	numbered []series.EpisodeRef
 	byTitle  bool
+	// parts: the files of one episode the release split in two or three, in order, to be
+	// joined into one (splitparts.go). v is then the first of them, with all their sizes.
+	parts []library.FoundVideo
+	// byShift: moved off its number by the parts before it in the season, not by its title.
+	byShift bool
+	// beyond: its number is one the show doesn't have (refs is empty). Counted as
+	// unresolved unless the parts before it in the season account for it: a release that
+	// counts an episode's two parts as two numbers its last episode one past the season.
+	beyond bool
 }
 
 // titleConflict reports, in words for Needs you, whether placing a download by its

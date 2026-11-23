@@ -1116,6 +1116,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	if c.series == nil || c.imp == nil {
 		return
 	}
+	// What joins stopped by a restart left in the TV folders (splitparts.go); the first
+	// sweep after a start, then every few minutes.
+	c.sweepJoinLeftovers(c.series.TVRoots)
 	// Look at every completed download (not just the series category), so a TV pack that
 	// landed in the wrong category — e.g. added straight to qBittorrent uncategorized —
 	// is visible instead of silently ignored.

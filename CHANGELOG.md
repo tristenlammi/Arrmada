@@ -24,6 +24,17 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - Requesters' and read-only accounts' keys still get `403`, and a key loses this the moment its owner stops being staff.
   - Nothing else in the staff library opens to keys: adding, changing and deleting titles, the queue and wanted stay sign-in only.
 - **Unblock many releases at once on the Blocklist** (#133, thanks to the contributor of #134). Tick entries, tick the whole page, or pick **Select all … matching this filter** to take every entry the current type and search match, on every page. One confirm unblocks them all. Anything blocked after you picked "all" stays blocked.
+- **An episode a release split in two is joined back into one.** Some releases cut a double-length episode into "Part 1" and "Part 2" files and count each as an episode (Disney+ rips of Family Guy do), where the show's episode list has it once. Such a download used to be held in Needs you with "Titles disagree", and mapping it by hand couldn't keep both halves.
+  - The parts are joined into one file, placed on the one episode they are. Nothing is re-encoded, and the parts in the download are never changed, so it keeps seeding.
+  - The episodes after them are placed that much earlier, by their titles, or by the count alone where a title names nothing, as long as every title in the season that does name an episode agrees.
+  - Parts are only joined when they have the same tracks, encoded the same way (subtitle styles included), and start on time; the result is checked to have the parts' tracks and be as long as them together. Otherwise the download is held in Needs you and says why.
+  - The joined file keeps the first part's tracks in their order with their default and forced flags, every part's chapters at their place in the whole, and the title. Cover art and timecode tracks are left out.
+  - A join that fails, or whose result doesn't check out, holds the download in Needs you with the reason. It isn't tried again by itself: a join rewrites the whole episode.
+  - Joining needs ffmpeg and ffprobe (the Docker image has them). Without them the download is held and says so.
+  - Joining needs free space in the TV folder for the joined file plus 1 GB, and the TV folder's disk or share to be there. When either isn't, nothing is written; the rest of the download is placed and the join is tried again later. It runs at low priority, like Convert.
+  - What a join stopped by a restart leaves in the TV folder's hidden .arrmada-join folder is cleared within the hour.
+  - A season with an extra episode the list doesn't have (Family Guy season 6's "100th Episode Special") is still held.
+- **Reject on downloads held for "Titles disagree" or "Numbering".** Those cards only offered Map files…, Choose different show… and Dismiss; Reject & find another removes the download, blocklists the release for that show and searches again.
 
 ### Changed
 

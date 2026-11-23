@@ -134,6 +134,8 @@ test.describe("manager", () => {
     await expect(card.getByText("Titles disagree")).toBeVisible();
     await expect(card).toContainText("numbered S01E04, titled \"Brians Wedding\"");
     await expect(card.getByRole("button", { name: "Map files…" })).toBeEnabled();
+    // Another release may number its episodes as the list does.
+    await expect(card.getByRole("button", { name: /^Reject/ })).toBeEnabled();
     await expect(card.getByRole("button", { name: "Import anyway" })).toHaveCount(0);
   });
 });

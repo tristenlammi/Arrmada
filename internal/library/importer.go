@@ -808,6 +808,10 @@ func (im *Importer) InTV(root string) *Importer {
 // TVRoot is the TV library folder, read live.
 func (im *Importer) TVRoot() string { return im.tvDir() }
 
+// CheckTVRoot says why nothing should be written in the TV folder: none is set, or it isn't
+// there (its disk or share is away). nil when it's there.
+func (im *Importer) CheckTVRoot() error { return im.checkRoot(im.tvDir()) }
+
 // MusicDir is where album folders are written.
 func (im *Importer) MusicDir() string { return im.rootFor(im.roots.Music) }
 
