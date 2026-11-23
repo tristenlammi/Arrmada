@@ -102,6 +102,7 @@ export function previewLines(p: ConvertAutoPreview): string[] {
   const split = tidy > 0 ? ` (${p.reencode.toLocaleString()} re-encoded, ${tidy.toLocaleString()} only rewritten to tidy tracks)` : "";
   out.push(`${count(p.files, "file")}${split}: about ${fmtSize(p.bytes)} → ~${fmtSize(p.est_bytes)}`);
   if (p.dv_files) out.push(`${count(p.dv_files, "file")} ${verb(p.dv_files, "lose")} Dolby Vision (kept as HDR10 or HLG)`);
+  if (p.dv_left_alone) out.push(`${count(p.dv_left_alone, "Dolby Vision file")} left as ${p.dv_left_alone === 1 ? "it is" : "they are"} — your Dolby Vision choice in Convert's settings`);
   if (p.cc_files) out.push(`${count(p.cc_files, "file")} ${verb(p.cc_files, "lose")} embedded closed captions`);
   if (p.image_sub_tracks) out.push(`${count(p.image_sub_tracks, "image-subtitle track")} removed`);
   if (p.forced_tracks) out.push(`${count(p.forced_tracks, "forced subtitle track")} removed with nothing to replace ${p.forced_tracks === 1 ? "it" : "them"}`);

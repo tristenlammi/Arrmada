@@ -2842,6 +2842,9 @@ export interface ConvertSettings {
   scratch_dir: string; vaapi_device: string; cpu_cores: number; workers: number; scan_at: string;
   server_time: string; server_tz: string; plex_watching_known: boolean; can_pause: boolean;
   has_gpu: boolean; gpu_does_av1: boolean; hdr10plus_tool: boolean;
+  // Every hardware encoder Convert would use can write 10-bit; false with a GPU means its
+  // encodes of 8-bit files stay 8-bit whatever the 10-bit choice says.
+  gpu_ten_bit?: boolean;
 }
 export interface ConvertTrialSide { codec: string; encoder: string; bytes: number; ssim: number; est_bytes: number }
 export interface ConvertTrialResult { key: string; title: string; src_bytes: number; clips: number; seconds: number; hevc: ConvertTrialSide; av1: ConvertTrialSide; pick: string; why: string; files?: string[] }
@@ -2863,6 +2866,8 @@ export interface ConvertPlan {
 export interface ConvertAutoPreview {
   files: number; reencode: number; bytes: number; est_bytes: number;
   dv_files: number; cc_files: number; image_sub_tracks: number; filtered_audio_tracks: number;
+  // Dolby Vision files left alone by the Dolby Vision choice.
+  dv_left_alone?: number;
   container_changes: number; forced_tracks: number; as_of: number;
 }
 // The answer to a Convert-now request: starting now, or its place among the waiting requests

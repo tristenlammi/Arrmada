@@ -1,13 +1,18 @@
 package convert
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	langtab "github.com/tristenlammi/arrmada/internal/langs" // "langs" is a test helper here
+	"github.com/tristenlammi/arrmada/internal/toolrun"
 )
 
 // langIn reports whether an audio/subtitle language tag matches any wanted language, in
@@ -401,16 +406,25 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 	// Deinterlace first when the source is interlaced — encoding combed fields as
 	// progressive frames bakes the combing in permanently.
 	swVF := swFilterChain(mi, plan)
+	ten := hwOutputTenBit(enc, mi, plan)
 	switch enc.Kind {
 	case "vaapi": // AMD/Intel hardware
 		if hwDecode {
-			// Frames arrive as VAAPI surfaces straight from the hardware decoder.
+			// Frames arrive as VAAPI surfaces straight from the hardware decoder, in the
+			// source's own depth: an 8-bit source written as 10-bit is converted on the GPU.
+			var chain []string
 			if mi.Interlaced {
-				a = append(a, "-vf", "deinterlace_vaapi")
+				chain = append(chain, "deinterlace_vaapi")
+			}
+			if ten && !mi.TenBit {
+				chain = append(chain, "scale_vaapi=format=p010")
+			}
+			if len(chain) > 0 {
+				a = append(a, "-vf", strings.Join(chain, ","))
 			}
 		} else {
 			pix := "nv12"
-			if mi.TenBit {
+			if ten {
 				pix = "p010"
 			}
 			var chain []string
@@ -431,8 +445,8 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		} else {
 			a = append(a, "-qp", strconv.Itoa(hardwareQuality(crf)))
 		}
-		if mi.TenBit {
-			a = append(a, "-profile:v", "main10")
+		if ten {
+			a = append(a, hwTenBitArgs(enc)...)
 		}
 		a = append(a, colourTagArgs(mi)...)
 	case "nvenc":
@@ -443,8 +457,8 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		// default average bitrate (2 Mb/s), which silently overrides the -cq target.
 		a = append(a, "-c:v", enc.Name, "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", strconv.Itoa(hardwareQuality(crf)), "-b:v", "0",
 			"-spatial-aq", "1", "-temporal-aq", "1", "-rc-lookahead", "32")
-		if mi.TenBit {
-			a = append(a, "-pix_fmt", "p010le")
+		if ten {
+			a = append(a, hwTenBitArgs(enc)...)
 		}
 		a = append(a, colourTagArgs(mi)...)
 	case "qsv":
@@ -456,8 +470,8 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		// starved — the blocky-shadows problem fixed-quality hardware encodes are known for.
 		a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(hardwareQuality(crf)), "-preset", "slower",
 			"-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
-		if mi.TenBit {
-			a = append(a, "-pix_fmt", "p010le")
+		if ten {
+			a = append(a, hwTenBitArgs(enc)...)
 		}
 		a = append(a, colourTagArgs(mi)...)
 	default: // CPU
@@ -480,6 +494,34 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		a = append(a, colourTags...)
 	}
 	return a
+}
+
+// hwOutputTenBit reports whether a hardware encode of this file is written as 10-bit: a
+// 10-bit source always is (as before), and an 8-bit one too under "always 10-bit" — when
+// the encoder proved at startup that it can write 10-bit. One that can't stays 8-bit, as
+// Settings tells the owner, rather than failing every file over to the CPU.
+func hwOutputTenBit(enc Encoder, mi *MediaInfo, plan Plan) bool {
+	if mi.TenBit {
+		return true
+	}
+	return enc.TenBit && outputPixFmt(mi, plan) == pixFmt10
+}
+
+// hwTenBitArgs are a hardware encoder's options for 10-bit output (the frames are already
+// 10-bit for VAAPI: p010 is uploaded or converted on the GPU). hevc_vaapi needs Main10 asked
+// for by name; av1_vaapi writes 10-bit from 10-bit frames. NVENC and Quick Sync take p010
+// frames and pick their 10-bit profile from them (hevc_nvenc Main10, av1 Main).
+func hwTenBitArgs(enc Encoder) []string {
+	switch enc.Kind {
+	case "vaapi":
+		if enc.Codec == "av1" || strings.HasPrefix(enc.Name, "av1") {
+			return nil // av1_vaapi has no "main10": AV1's Main profile is already 10-bit
+		}
+		return []string{"-profile:v", "main10"}
+	case "nvenc", "qsv":
+		return []string{"-pix_fmt", "p010le"}
+	}
+	return nil
 }
 
 // trackSummary describes what a plan does to a file's tracks, for the job note and the log
@@ -672,7 +714,7 @@ func stripTuningParams(args []string) []string {
 }
 
 // stripTuningKeys removes the quality-TUNING keys from an x265/SVT-AV1 params string while
-// keeping everything that isn't tuning: the HDR metadata, the pools/lp core budget (dropping
+// keeping everything that isn't tuning: the HDR metadata, the pools/lp/pin core budget (dropping
 // it can crash the encode or unbound it from the budget), and SVT-AV1's visual-quality mode
 // and dark-scene protection (without them AV1 crushes shadows — measured, not assumed).
 func stripTuningKeys(params string) string {
@@ -680,7 +722,7 @@ func stripTuningKeys(params string) string {
 		"hdr10": true, "repeat-headers": true, "colorprim": true, "transfer": true,
 		"colormatrix": true, "master-display": true, "max-cll": true, "chromaloc": true,
 		"mastering-display": true, "content-light": true, // the SVT-AV1 spellings
-		"pools": true, "lp": true,
+		"pools": true, "lp": true, "pin": true,
 		"bframes": true, // the HDR10+ pipeline's bframes=0 is a correctness requirement, not tuning
 		"tune":    true, "enable-variance-boost": true, "luminance-qp-bias": true,
 	}
@@ -708,6 +750,65 @@ func stripTuningKeys(params string) string {
 // scored 29.3 dB XPSNR — visibly crushed shadows; with both protections, 36.0 dB.
 const av1QualityParams = "tune=0:enable-variance-boost=1:luminance-qp-bias=20"
 
+// svtLegacyLP is set at startup when this ffmpeg's SVT-AV1 is older than 2.3 (svtAV1Version).
+// The production image's jellyfin-ffmpeg7 bundles SVT-AV1 3.1.2; Debian's ffmpeg 7.1 has
+// 2.3.0 — both the current form.
+var svtLegacyLP atomic.Bool
+
+// svtCoreLimit is the SVT-AV1 parameter that holds an encode to the core budget, or "" for
+// none. How that's said changed in SVT-AV1 2.3:
+//
+//   - From 2.3, lp is a "level of parallelism" from 0 to 6 that sets how many threads and
+//     picture buffers it allocates; by its own documentation it "does not ... constrain the
+//     encoder to run on a certain number of logical processors". The lp=<cores> this used to
+//     pass meant a level, not cores, and lp=7 or more isn't a level at all — SVT-AV1 warns
+//     and runs at its maximum parallelism. pin=<N> is what keeps it on N cores (the first
+//     N), and with lp left unset it sizes its threads and memory for those N.
+//   - Before 2.3, lp=<N> was a target core count, and only bound the encode with pin=1
+//     (pin was on/off then); without it lp too behaved as a level.
+//
+// pin holds every AV1 encode to the same first N cores: with several conversions at once
+// they share them rather than taking N each — never more than the budget.
+func svtCoreLimit(cores int) string {
+	if cores <= 0 {
+		return ""
+	}
+	if svtLegacyLP.Load() {
+		return fmt.Sprintf("lp=%d:pin=1", cores)
+	}
+	return fmt.Sprintf("pin=%d", cores)
+}
+
+// svtVersion matches the version line SVT-AV1 prints when an encode starts
+// ("SVT [version]: SVT-AV1 Encoder Lib v3.1.2").
+var svtVersion = regexp.MustCompile(`SVT-AV1 Encoder Lib v?(\d+)\.(\d+)`)
+
+// svtAV1Version reads the version of the SVT-AV1 inside this ffmpeg by encoding one tiny
+// frame; 0, 0 when it can't be told (then the current form is used — what the image ships).
+func svtAV1Version(ctx context.Context, ffmpeg string) (major, minor int) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, _ := toolrun.Command(ctx, toolrun.Normal, ffmpeg, "-hide_banner", "-loglevel", "info",
+		"-f", "lavfi", "-i", "testsrc=d=0.04:s=64x64", "-frames:v", "1",
+		"-c:v", "libsvtav1", "-preset", "12", "-f", "null", "-").CombinedOutput()
+	return parseSVTVersion(string(out))
+}
+
+func parseSVTVersion(out string) (major, minor int) {
+	m := svtVersion.FindStringSubmatch(out)
+	if m == nil {
+		return 0, 0
+	}
+	major, _ = strconv.Atoi(m[1])
+	minor, _ = strconv.Atoi(m[2])
+	return major, minor
+}
+
+// svtLegacyVersion reports a known SVT-AV1 older than 2.3, where lp was still a core count.
+func svtLegacyVersion(major, minor int) bool {
+	return major > 0 && (major < 2 || (major == 2 && minor < 3))
+}
+
 // cpuVideoArgs builds the CPU encoder args. cores bounds the encoder's own thread pool so a
 // library conversion can't take the whole machine. Output is 10-bit here: the extra
 // precision near-eliminates the banding on skies, smoke and dark gradients that is the first
@@ -720,7 +821,10 @@ const av1QualityParams = "tune=0:enable-variance-boost=1:luminance-qp-bias=20"
 // HLG base is kept), so that passthrough is switched off explicitly.
 func cpuVideoArgs(name, codec string, crf, cores int, hdrParams string, noNumaPools bool) []string {
 	if codec == "av1" {
-		params := fmt.Sprintf("%s:lp=%d", av1QualityParams, cores)
+		params := av1QualityParams
+		if c := svtCoreLimit(cores); c != "" {
+			params += ":" + c
+		}
 		if hdrParams != "" {
 			params += ":" + hdrParams
 		}

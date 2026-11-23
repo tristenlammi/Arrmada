@@ -215,7 +215,7 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
             Dolby Vision files{dvFiles !== null ? ` (${dvFiles.toLocaleString()} in your library)` : ""} <SavedTick save={dolbyVision} />
           </div>
-          <div className="mb-1.5 text-xs text-ink-faint">A conversion keeps the HDR10 (or HLG) picture under the Dolby Vision layer; the layer itself goes, unless you keep it below. Profile 5 files are never converted — they have no standard picture under the layer.</div>
+          <div className="mb-1.5 text-xs text-ink-faint">New installs leave them alone until you choose. Converting one keeps the HDR10 (or HLG) picture under the Dolby Vision layer; the layer itself goes, unless you keep it below. Profile 5 files are never converted — they have no standard picture under the layer.</div>
           {([["skip", "Leave them alone — for a Dolby Vision TV (their tracks are still tidied)"], ["drop", "Convert and drop the Dolby Vision layer (keeps HDR10)"]] as const).map(([v, label]) => (
             <label key={v} className="flex cursor-pointer items-center gap-2 py-0.5 text-sm">
               <input type="radio" name="dolby_vision" checked={dolbyVision.value === v} onChange={() => void dolbyVision.commit(v)} />{label}
@@ -238,7 +238,7 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
         <TenBitChoice save={tenBit} transcoded={transcodingDevices(devices, "hevc10")} />
         {s.has_gpu && (
           <Toggle save={gpu} label="Use my GPU"
-            hint={`Many times faster, but files come out somewhat bigger for the same quality. HDR always encodes on the CPU (the GPU can't carry its metadata).${s.gpu_does_av1 ? "" : " Your GPU has no AV1 encoder, so GPU mode converts to HEVC."}`} />
+            hint={`Many times faster, but files come out somewhat bigger for the same quality. HDR always encodes on the CPU (the GPU can't carry its metadata).${s.gpu_does_av1 ? "" : " Your GPU has no AV1 encoder, so GPU mode converts to HEVC."}${s.gpu_ten_bit === false ? " Your GPU can't write 10-bit video, so its conversions of 8-bit files stay 8-bit even with \"Always 10-bit\" chosen above." : ""}`} />
         )}
         <Toggle save={crop} label="Remove black bars"
           hint="Widescreen films are encoded without the black bars above and below (or beside) the picture. The picture and its shape stay exactly the same and your TV letterboxes it as before. Files come out slightly smaller, and the quality check judges the picture alone instead of counting the bars as a perfect match. The film is checked about every 25 seconds (40 to 400 places): only what's black in every one of those frames is removed, and if any of them shows a different shape (IMAX or open-matte scenes) the film keeps its full frame. A wider shot shorter than the gap between checks could still be trimmed, which is why this is off unless you turn it on. Files that keep image subtitles keep their bars too — those subtitles are placed on the full frame." />

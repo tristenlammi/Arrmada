@@ -18,14 +18,17 @@ func newTestService(t *testing.T) *Service {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	db := st.DB()
-	return &Service{
-		db: db, settings: settings.NewService(db), log: testLogger(),
+	set := settings.NewService(db)
+	s := &Service{
+		db: db, settings: set, log: testLogger(),
 		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
 		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
 		choices: &choiceStore{db: db}, measured: &measureStore{db: db}, history: &historyStore{db: db},
 		pending: map[string]*Job{}, wake: make(chan struct{}, 1),
 		encoders: workingCPUEncoders(),
 	}
+	s.skips.gpuOn = func(ctx context.Context) bool { return set.GetBool(ctx, keyUseGPU, false) }
+	return s
 }
 
 func workingCPUEncoders() []Encoder {

@@ -790,8 +790,9 @@ function CompareModal({ itemKey, onClose, flash }: { itemKey: string; onClose: (
 const SKIP_LABEL: Record<string, string> = {
   hdr_unsupported: "Their HDR can't be carried through a conversion (Dolby Vision profile 5, HDR10+ that couldn't be read, or Dolby Vision you chose to keep that didn't come through intact), so they were left as they are",
   hardlinked: "Still seeding — Convert won't replace a file your torrent client is sharing. Tried again twice a day",
-  not_smaller: "Converting them didn't save enough to be worth it, so the originals were kept",
-  quality_gate: "The conversion couldn't match the original's quality, so the originals were kept",
+  not_smaller: "Converting them didn't save enough to be worth it, so the originals were kept. A file that's replaced (an upgrade, say) is judged afresh",
+  borderline: "A test encode put them just short of the 20% saving a conversion needs — close enough that a short sample could be wrong. Each is tested again on other scenes a week later, and left alone only after three tests in a row fall short",
+  quality_gate: "The conversion couldn't match the original's quality, so the originals were kept. A file that's replaced is judged afresh",
   cancelled: "You stopped these — they're left alone for a month unless you try them again",
   no_scratch: "The transcode folder hasn't enough free space for these. Each is tried again after an hour, then six, then once a day — or free some space and try them now",
   library_full: "The library disk hasn't room for the converted file next to the original. The originals were kept; each is tried again after an hour, then six, then once a day",

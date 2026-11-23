@@ -181,7 +181,7 @@ func TestMeasuredSizeReplacesEstimate(t *testing.T) {
 		return prefs{measured: map[string]measurement{measureKey(path, "hevc"): m}}
 	}
 	// A test encode predicting 40% of the original's video.
-	good := measurement{Size: mi.SizeBytes, CRF: base.Quality, VideoBytes: (mi.SizeBytes - audio) * 40 / 100, SSIM: 0.996}
+	good := measurement{Size: mi.SizeBytes, CRF: base.Quality, VideoBytes: (mi.SizeBytes - audio) * 40 / 100, SSIM: 0.996, Encoder: "cpu"}
 	_, n := measuredAt(good).planFor(mi, path, "", nil)
 	if !n.Measured || !n.Worth || n.Save != mi.SizeBytes-(good.VideoBytes+audio) {
 		t.Errorf("measured file: %+v, want Save from the measurement (%d)", n, mi.SizeBytes-(good.VideoBytes+audio))
@@ -209,6 +209,24 @@ func TestMeasuredSizeReplacesEstimate(t *testing.T) {
 	if _, n := measuredAt(poor).planFor(mi, path, "", nil); n.Video || !strings.Contains(n.Why, "test encode measured only") {
 		t.Errorf("measured at 10%% smaller: %+v, want the video left alone with the measurement as the reason", n)
 	}
+	// A measurement speaks only for the encoder that made it: a GPU's "only 10% smaller"
+	// must not hold a file back from the CPU, and one from before encoders were recorded
+	// speaks for none.
+	gpuPoor := poor
+	gpuPoor.Encoder = "vaapi"
+	if _, n := measuredAt(gpuPoor).planFor(mi, path, "", nil); n.Measured || !n.Video {
+		t.Errorf("a GPU's measurement judged a CPU encode: %+v", n)
+	}
+	onGPU := measuredAt(gpuPoor)
+	onGPU.encoderFor = func(*MediaInfo, string) string { return "vaapi" }
+	if _, n := onGPU.planFor(mi, path, "", nil); n.Video || !strings.Contains(n.Why, "test encode measured only") {
+		t.Errorf("the GPU's own measurement should count while it encodes: %+v", n)
+	}
+	legacy := good
+	legacy.Encoder = ""
+	if _, n := measuredAt(legacy).planFor(mi, path, "", nil); n.Measured {
+		t.Error("a measurement with no encoder recorded must not count")
+	}
 }
 
 // Measurements persist, reach the decision layer through prefs, and are dropped once the
@@ -216,9 +234,9 @@ func TestMeasuredSizeReplacesEstimate(t *testing.T) {
 func TestMeasureStoreRoundTrip(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
-	s.recordMeasurement(ctx, "/m/a.mkv", "hevc", measurement{Size: 100, CRF: 18, VideoBytes: 40, SSIM: 0.99, Source: "compare"})
+	s.recordMeasurement(ctx, "/m/a.mkv", "hevc", measurement{Size: 100, CRF: 18, VideoBytes: 40, SSIM: 0.99, Source: "compare", Encoder: "qsv"})
 	got, ok := s.prefs(ctx).measured[measureKey("/m/a.mkv", "hevc")]
-	if !ok || got.VideoBytes != 40 || got.CRF != 18 || got.Source != "compare" {
+	if !ok || got.VideoBytes != 40 || got.CRF != 18 || got.Source != "compare" || got.Encoder != "qsv" {
 		t.Fatalf("measurement after a round trip: %+v (found %v)", got, ok)
 	}
 	s.measured.forget(ctx, "/m/a.mkv")

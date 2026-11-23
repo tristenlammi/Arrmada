@@ -211,12 +211,13 @@ func sidecarCoveredImageSubs(mi *MediaInfo, plan Plan) int {
 }
 
 // outputBits is the picture's bit depth after an encode: the CPU encoders write what the
-// 10-bit choice says (tenbit.go outputPixFmt); hardware keeps the source's depth.
+// 10-bit choice says (tenbit.go outputPixFmt); hardware does too where the GPU can write
+// 10-bit (hwOutputTenBit), and otherwise keeps the source's depth.
 func outputBits(mi *MediaInfo, plan Plan, enc Encoder) int {
 	if enc.Kind == "cpu" || enc.Kind == "" {
 		return bitsOf(outputPixFmt(mi, plan) == pixFmt10)
 	}
-	return bitsOf(mi.TenBit)
+	return bitsOf(hwOutputTenBit(enc, mi, plan))
 }
 
 func bitsOf(tenBit bool) int {

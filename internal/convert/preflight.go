@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // The rehearsal. A full re-encode of a 4K film runs for the best part of a day on a CPU,
@@ -48,9 +49,45 @@ type preflightVerdict struct {
 	skipKind, reason string
 }
 
-func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *MediaInfo, enc Encoder, plan Plan, hdr10plus bool) (preflightVerdict, error) {
+// A miss on the saving rule is only final when it's clear. Four 15-second clips predict a
+// two-hour film to within maybe a quarter either way, so a prediction just short of the
+// rule (a 15% saving against the 20% it needs) could as well be 25%. A prediction under
+// clearMissPct is a permanent "not smaller"; one between that and the rule is borderline:
+// the file waits borderlineRetest and is tested again on other scenes (ssimWindowsAt), and
+// is given up on only when borderlineTests samples in a row have all fallen short. The size
+// cap still stops a full encode the moment it can no longer save enough.
+const (
+	clearMissPct     = 10 // a predicted saving below this is a clear miss
+	borderlineTests  = 3  // samples in a row short of the rule before it's given up on
+	borderlineRetest = 7 * 24 * time.Hour
+)
+
+// sizeVerdict judges a rehearsal's projected size against the size cap (limit, 0 = none):
+// "" when it would save enough, SkipBorderline when it falls just short and this file has
+// had fewer than borderlineTests samples in a row (tested before this one), else
+// SkipNotSmaller — at once for a clear miss, or after the last borderline sample.
+func sizeVerdict(size, projected, limit int64, tested int) (kind, reason string) {
+	if limit <= 0 || projected <= limit {
+		return "", ""
+	}
+	pct := savedPct(size, projected)
+	switch {
+	case pct >= clearMissPct && tested+1 < borderlineTests:
+		return SkipBorderline, fmt.Sprintf("a test encode predicts ~%d%% smaller (%s → ~%s), just short of the %d%% it needs — testing again on other scenes in %d days",
+			pct, humanBytes(size), humanBytes(projected), minSavingPct, int(borderlineRetest.Hours()/24))
+	case pct >= clearMissPct:
+		return SkipNotSmaller, fmt.Sprintf("%d test encodes on different scenes all predicted under %d%% smaller (last: ~%d%%, %s → ~%s) — not worth another generation of compression, kept the original",
+			borderlineTests, minSavingPct, pct, humanBytes(size), humanBytes(projected))
+	}
+	return SkipNotSmaller, fmt.Sprintf("a test encode predicts only %d%% smaller (%s → ~%s) — not worth another generation of compression, kept the original",
+		pct, humanBytes(size), humanBytes(projected))
+}
+
+// preflight rehearses the encode. tested is how many times in a row this file's rehearsal
+// has already come out borderline; each retest samples other scenes.
+func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *MediaInfo, enc Encoder, plan Plan, hdr10plus bool, tested int) (preflightVerdict, error) {
 	v := preflightVerdict{quality: plan.Quality}
-	wins := ssimWindows(mi.DurationSec)
+	wins := ssimWindowsAt(mi.DurationSec, tested)
 	if mi.DurationSec < preflightMinDuration || len(wins) < 2 {
 		return v, nil
 	}
@@ -81,7 +118,7 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 			if err != nil || di.Width <= 0 {
 				return v, fmt.Errorf("a test clip couldn't be read")
 			}
-			sc, err := s.ssimWindow(ctx, out, src, 0, w.start, w.dur, di.Width, di.Height, di.FrameRateRat, cp.Crop.filter())
+			sc, err := s.ssimWindow(ctx, out, src, 0, w.start, w.dur, di.Width, di.Height, di.FrameRateRat, refLegOf(mi, cp))
 			if err != nil {
 				return v, err
 			}
@@ -100,13 +137,16 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 			video *= hdr10plusStreamCost
 		}
 		v.projected = int64(video) + keptAudioBytes(mi, plan)
-		// The Library shows this from now on instead of the estimate.
-		s.recordMeasurement(ctx, src, plan.VideoCodec, measurement{Size: mi.SizeBytes, CRF: v.quality,
-			VideoBytes: int64(video), SSIM: v.ssim, Source: "test encode"})
-		if limit > 0 && v.projected > limit {
-			v.skipKind = SkipNotSmaller
-			v.reason = fmt.Sprintf("a test encode predicts only %d%% smaller (%s → ~%s) — not worth another generation of compression, kept the original",
-				savedPct(mi.SizeBytes, v.projected), humanBytes(mi.SizeBytes), humanBytes(v.projected))
+		kind, reason := sizeVerdict(mi.SizeBytes, v.projected, limit, tested)
+		if kind != SkipBorderline {
+			// The Library shows this from now on instead of the estimate. A borderline
+			// result isn't recorded: the file would read as not worth converting and never
+			// come back for its retest.
+			s.recordMeasurement(ctx, src, plan.VideoCodec, measurement{Size: mi.SizeBytes, CRF: v.quality,
+				VideoBytes: int64(video), SSIM: v.ssim, Source: "test encode", Encoder: enc.Kind})
+		}
+		if kind != "" {
+			v.skipKind, v.reason = kind, reason
 			return v, nil
 		}
 		if v.ssim >= minSSIMMean+preflightMargin && worst >= minSSIMWindow+preflightMargin {

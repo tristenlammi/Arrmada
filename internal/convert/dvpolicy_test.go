@@ -49,8 +49,12 @@ func TestDolbyVisionPolicyDecides(t *testing.T) {
 func TestDolbyVisionPolicySetting(t *testing.T) {
 	ctx := context.Background()
 	s := newTestService(t)
-	if got := s.GetSettings(ctx).DolbyVision; got != DVDrop {
-		t.Fatalf("default = %q, want drop", got)
+	if got := s.GetSettings(ctx).DolbyVision; got != DVSkip {
+		t.Fatalf("a new install's default = %q, want skip", got)
+	}
+	drop := DVDrop
+	if _, err := s.UpdateSettings(ctx, SettingsPatch{DolbyVision: &drop}); err != nil {
+		t.Fatal(err)
 	}
 	bad := "bogus"
 	if _, err := s.UpdateSettings(ctx, SettingsPatch{DolbyVision: &bad}); err == nil {
@@ -102,6 +106,7 @@ func TestDolbyVisionPolicySetting(t *testing.T) {
 func TestPlanWarnsProfilePrefersDV(t *testing.T) {
 	ctx := context.Background()
 	s := newTestService(t)
+	set(t, s, map[string]string{keyDolbyVision: DVDrop})
 	indexMovie(t, s, 1, "DV", dvP8(60000))
 	const warning = "your quality profile prefers Dolby Vision"
 	v, err := s.PlanView(ctx, movieKey(1))
@@ -121,5 +126,39 @@ func TestPlanWarnsProfilePrefersDV(t *testing.T) {
 	v, _ = s.PlanView(ctx, movieKey(1))
 	if v.Video.ToCodec != "" || strings.Contains(strings.Join(v.Warnings, "|"), warning) || v.Video.Why != dvLeftAloneWhy {
 		t.Errorf("left alone: %+v %v", v.Video, v.Warnings)
+	}
+}
+
+// A new install leaves Dolby Vision files alone; an install that was already converting keeps
+// dropping the layer as it always did. The default is saved the first time it's read, so it
+// never changes under the owner — and a new install's first save switching Auto on can't
+// make it look like an old one.
+func TestDolbyVisionDefaultByInstall(t *testing.T) {
+	ctx := context.Background()
+	fresh := newTestService(t)
+	on := true
+	if _, err := fresh.UpdateSettings(ctx, SettingsPatch{Auto: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.prefs(ctx).dolbyVision; got != DVSkip {
+		t.Errorf("new install switched on: %q, want skip", got)
+	}
+	if v, saved := fresh.settings.Lookup(keyDolbyVision); !saved || v != DVSkip {
+		t.Errorf("the default must be saved: %q %v", v, saved)
+	}
+
+	for _, used := range convertUsedKeys {
+		old := newTestService(t)
+		set(t, old, map[string]string{used: "true"})
+		if got := old.prefs(ctx).dolbyVision; got != DVDrop {
+			t.Errorf("install with %s saved: %q, want drop (today's behaviour)", used, got)
+		}
+	}
+
+	// A saved choice is never touched, whatever the install looks like.
+	chose := newTestService(t)
+	set(t, chose, map[string]string{keyAuto: "true", keyDolbyVision: DVSkip})
+	if got := chose.prefs(ctx).dolbyVision; got != DVSkip {
+		t.Errorf("saved skip read as %q", got)
 	}
 }

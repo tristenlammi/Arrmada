@@ -64,9 +64,9 @@ func TestRealFile(t *testing.T) {
 		start := time.Now()
 		jf := filepath.Join(dir, "h10p.json")
 		_ = os.MkdirAll(dir, 0o755)
-		err := s.hasHDR10Plus(ctx, src, jf)
+		err := s.hasHDR10Plus(ctx, src, mi.VideoIndex, jf)
 		if err == nil {
-			err = s.readHDR10Plus(ctx, src, jf)
+			err = s.readHDR10Plus(ctx, src, mi.VideoIndex, jf)
 		}
 		h10p = err == nil
 		t.Logf("HDR10+ check: present=%v (%v, %s)", h10p, err, time.Since(start).Round(time.Second))
@@ -81,7 +81,7 @@ func TestRealFile(t *testing.T) {
 		s.canPreserveHDR(mi, plan, enc, h10p), s.cpuCores(ctx))
 
 	start := time.Now()
-	v, err := s.preflight(ctx, job, src, mi, enc, plan, h10p)
+	v, err := s.preflight(ctx, job, src, mi, enc, plan, h10p, 0)
 	must(t, err)
 	t.Logf("rehearsal (%s): CRF %d · SSIM %.4f · predicts %s → ~%s (%d%% smaller) · skip=%q %s",
 		time.Since(start).Round(time.Second), v.quality, v.ssim, humanBytes(mi.SizeBytes), humanBytes(v.projected),
@@ -131,7 +131,7 @@ func TestRealFile(t *testing.T) {
 		took := time.Since(t0)
 		cmi, err := probe(ctx, s.ffprobe, conv)
 		must(t, err)
-		res, _ := s.computeSSIM(ctx, conv, orig, plan.Crop.filter())
+		res, _ := s.computeSSIM(ctx, conv, orig, refLegOf(mi, plan))
 		sc := res.Mean
 		fps := smi.FrameRate * smi.DurationSec / took.Seconds()
 		t.Logf("sample %d @ %s: %s → %s (%d%% smaller) · SSIM %.4f · %.2f fps (%s for %s of film) · out: %s",

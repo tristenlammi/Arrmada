@@ -31,17 +31,27 @@ func jobKey(j *Job) string {
 // recordFailure bumps an item's failure count (or starts it at 1), stashing the last error,
 // and returns the new count (0 if it couldn't be written) — the failure that reaches
 // maxFailures is the one that announces the file as blocked (see failureCounted).
+//
+// Failures are counted per FILE (migration 0355): the count is tied to the file the library
+// index has for the item, and a failure of a different file (an upgrade, a remux) starts
+// the count again rather than adding to the old file's — three failures of a file that's
+// gone must not block the one that replaced it.
 func (f *failureStore) recordFailure(ctx context.Context, key, errMsg string) int {
 	if len(errMsg) > 300 {
 		errMsg = errMsg[:300]
 	}
+	path, size := indexedFile(ctx, f.db, key)
 	var n int
 	if err := f.db.QueryRowContext(ctx,
-		`INSERT INTO convert_failures (item_key, count, last_error, updated_at)
-		 VALUES (?, 1, ?, datetime('now'))
-		 ON CONFLICT(item_key) DO UPDATE SET count = count + 1, last_error = excluded.last_error, updated_at = datetime('now')
+		`INSERT INTO convert_failures (item_key, count, last_error, file_path, file_size, updated_at)
+		 VALUES (?, 1, ?, ?, ?, datetime('now'))
+		 ON CONFLICT(item_key) DO UPDATE SET
+		   count = CASE WHEN convert_failures.file_path = excluded.file_path AND convert_failures.file_size = excluded.file_size
+		                THEN convert_failures.count + 1 ELSE 1 END,
+		   last_error = excluded.last_error, file_path = excluded.file_path, file_size = excluded.file_size,
+		   updated_at = datetime('now')
 		 RETURNING count`,
-		key, errMsg).Scan(&n); err != nil {
+		key, errMsg, path, size).Scan(&n); err != nil {
 		return 0
 	}
 	return n
@@ -55,7 +65,7 @@ func (f *failureStore) clearFailures(ctx context.Context, key string) {
 // failureCount returns how many times an item's conversion has failed (0 if never).
 func (f *failureStore) failureCount(ctx context.Context, key string) int {
 	var n int
-	_ = f.db.QueryRowContext(ctx, `SELECT count FROM convert_failures WHERE item_key = ?`, key).Scan(&n)
+	_ = f.db.QueryRowContext(ctx, `SELECT count FROM convert_failures WHERE item_key = ? AND `+fileVerdictHolds("convert_failures"), key).Scan(&n)
 	return n
 }
 
@@ -77,7 +87,7 @@ type Blocked struct {
 // list returns every item with recorded failures, worst first.
 func (f *failureStore) list(ctx context.Context) ([]Blocked, error) {
 	rows, err := f.db.QueryContext(ctx,
-		`SELECT item_key, count, last_error, updated_at FROM convert_failures ORDER BY count DESC, updated_at DESC`)
+		`SELECT item_key, count, last_error, updated_at FROM convert_failures WHERE `+fileVerdictHolds("convert_failures")+` ORDER BY count DESC, updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +132,7 @@ func (f *failureStore) blocklisted(ctx context.Context, key string, max int) boo
 // blockedKeys returns every item that has failed at least max times.
 func (f *failureStore) blockedKeys(ctx context.Context, max int) map[string]bool {
 	out := map[string]bool{}
-	rows, err := f.db.QueryContext(ctx, `SELECT item_key FROM convert_failures WHERE count >= ?`, max)
+	rows, err := f.db.QueryContext(ctx, `SELECT item_key FROM convert_failures WHERE count >= ? AND `+fileVerdictHolds("convert_failures"), max)
 	if err != nil {
 		return out
 	}

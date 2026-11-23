@@ -14,7 +14,9 @@ import "context"
 //   - "match_source": an 8-bit SDR source stays 8-bit (x265 Main / 8-bit SVT-AV1); 10-bit
 //     and HDR sources are always 10-bit. The default for new installs.
 //
-// Hardware encodes already follow the source's depth either way.
+// Hardware encodes follow the same choice when the GPU proved at startup that it can write
+// 10-bit (Encoder.TenBit, hwOutputTenBit); one that can't keeps an 8-bit source 8-bit, and
+// Settings says so.
 
 // The ten-bit choices (Settings.TenBit).
 const (
@@ -30,6 +32,10 @@ const (
 	pixFmt8  = "yuv420p"
 )
 
+// convertUsedKeys are the settings only an install that has used Convert has saved. A new
+// default that would change what an existing install does is keyed to their absence.
+var convertUsedKeys = []string{keyAuto, keySweepStart, keyReclaimed, keyAllowAV1, keyUseGPU}
+
 // tenBitChoice reads the setting. The first read on an install without it decides the
 // default and saves it, so it never changes under the owner: an install that has already
 // used Convert keeps 10-bit, a new one matches the source.
@@ -39,7 +45,7 @@ func (s *Service) tenBitChoice(ctx context.Context) string {
 		return v
 	}
 	choice := TenBitMatchSource
-	for _, k := range []string{keyAuto, keySweepStart, keyReclaimed, keyAllowAV1, keyUseGPU} {
+	for _, k := range convertUsedKeys {
 		if _, used := s.settings.Lookup(k); used {
 			choice = TenBitAlways
 			break

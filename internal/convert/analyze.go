@@ -87,6 +87,10 @@ type AudioStream struct {
 	// Atmos", "DTS-HD MA"), for the library's ideal-file check.
 	Atmos    bool `json:"atmos,omitempty"`
 	Lossless bool `json:"lossless,omitempty"`
+	// Sec is the track's own length as the container states it (0 = unknown). The check
+	// before a swap compares each copied track with the original's, so a copy cut short
+	// can't pass on its count alone.
+	Sec float64 `json:"sec,omitempty"`
 }
 
 // audioTraits reads Atmos and lossless from an audio stream's codec, profile and title.
@@ -411,6 +415,10 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 				AudIndex: mi.AudioTracks, Codec: s.CodecName, Lang: s.Tags.Language, Channels: s.Channels,
 				Title:      s.Tags.Title,
 				Commentary: s.Disposition.Comment == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "commentary"),
+				// The plain DURATION tag first: ffmpeg writes it for each track of the
+				// Matroska it makes, while a copied track carries the source's DURATION-eng
+				// along unchanged — which would vouch for audio that was cut short.
+				Sec: firstDuration(s.Duration, s.Tags.Duration, s.Tags.DurationEng),
 			})
 			mi.AudioTracks++
 		case "subtitle":

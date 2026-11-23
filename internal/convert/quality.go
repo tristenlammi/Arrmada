@@ -90,9 +90,10 @@ var ssimWindowFn = (*Service).ssimWindow
 // Decode is on the CPU: it's the reliable path (hardware-decoded SSIM could stall the pipeline on
 // some GPUs). The caller wraps this in a timeout so a slow/hung verify can never block a job.
 //
-// crop is the black-bar crop the encode applied (or ""): the reference gets the same crop,
-// so the picture is compared with the picture rather than squashed to the output's size.
-func (s *Service) computeSSIM(ctx context.Context, distorted, reference, crop string) (ssimResult, error) {
+// ref says how the source's picture is prepared before the comparison (refLegOf): the same
+// deinterlace and black-bar crop the encode applied, so the picture is compared with the
+// picture rather than with combed fields or squashed to the output's size.
+func (s *Service) computeSSIM(ctx context.Context, distorted, reference string, ref refLeg) (ssimResult, error) {
 	di, err := probeFn(ctx, s.ffprobe, distorted)
 	if err != nil {
 		return ssimResult{}, err
@@ -103,7 +104,7 @@ func (s *Service) computeSSIM(ctx context.Context, distorted, reference, crop st
 	var res ssimResult
 	var sum float64
 	for _, wnd := range verifyWindows(di.DurationSec) {
-		sc, err := ssimWindowFn(s, ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat, crop)
+		sc, err := ssimWindowFn(s, ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat, ref)
 		if err != nil {
 			return ssimResult{}, fmt.Errorf("the scene at %s couldn't be measured: %w", clock(wnd.start), err)
 		}
@@ -153,7 +154,20 @@ func verifyWindows(dur float64) []ssimWnd {
 // ssimWindows picks the test encode's clips across a runtime, skipping the very start/end
 // (logos, credits) where content isn't typical. Short files are measured in a single pass. The
 // final check deliberately looks elsewhere (verifyWindows).
-func ssimWindows(dur float64) []ssimWnd {
+func ssimWindows(dur float64) []ssimWnd { return ssimWindowsAt(dur, 0) }
+
+// clipSets are the test encode's clip positions, as fractions of the runtime: four within
+// the middle ~80%. The first is the usual one; the others are where a borderline file is
+// tested again (preflight.go), so a retest looks at other scenes. Every position stays at
+// least 4% of the runtime from the final check's scenes (verifyFractions).
+var clipSets = [][]float64{
+	{0.15, 0.38, 0.61, 0.84},
+	{0.17, 0.33, 0.57, 0.85},
+	{0.16, 0.40, 0.62, 0.845},
+}
+
+// ssimWindowsAt is ssimWindows for the set-th sample of a file (wrapping round).
+func ssimWindowsAt(dur float64, set int) []ssimWnd {
 	const win = 15.0
 	if dur <= 0 { // unknown length: measure from the start to the end (dur 0 = whole slice)
 		return []ssimWnd{{0, 0}}
@@ -161,7 +175,7 @@ func ssimWindows(dur float64) []ssimWnd {
 	if dur <= 2*win {
 		return []ssimWnd{{0, dur}}
 	}
-	fracs := []float64{0.15, 0.38, 0.61, 0.84} // four windows within the middle ~80%
+	fracs := clipSets[max(set, 0)%len(clipSets)]
 	out := make([]ssimWnd, 0, len(fracs))
 	for _, f := range fracs {
 		start := dur * f
@@ -191,25 +205,47 @@ func ssimWindows(dur float64) []ssimWnd {
 // the different start points every third frame lined up with its neighbour — scoring 0.90
 // on a perfect encode, dragging the average to ~0.96, and failing the quality check on files
 // that were fine.
-func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate, crop string) (float64, error) {
-	args := pairedArgs(distorted, reference, dStart, rStart, dur, w, h, rate, crop, "ssim")
+func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate string, ref refLeg) (float64, error) {
+	args := pairedArgs(distorted, reference, dStart, rStart, dur, w, h, rate, ref, "ssim")
 	out, _ := s.tool(ctx, nil, toolrun.Idle, s.ffmpeg, args...).CombinedOutput()
 	return parseSSIM(string(out))
+}
+
+// refLeg is how the source's picture is prepared before it is compared with the converted
+// one: which of its video streams is the film, and the filters the encode ran before
+// encoding.
+type refLeg struct {
+	// index is the source's real video stream (the N in v:N). Cover art is a video stream
+	// too and can come first; comparing against it fails every file that has it.
+	index int
+	// filter is the encode's own software chain (swFilterChain): deinterlace, then remove
+	// black bars; "" = none. An interlaced source has to be deinterlaced here exactly as the
+	// encode was — compared with its combed fields, a deinterlaced encode scored ~0.96 at
+	// any quality (measured) and never passed.
+	filter string
+}
+
+// refLegOf is the reference preparation for a file encoded under plan.
+func refLegOf(mi *MediaInfo, plan Plan) refLeg {
+	if mi == nil {
+		return refLeg{filter: plan.Crop.filter()}
+	}
+	return refLeg{index: mi.VideoIndex, filter: swFilterChain(mi, plan)}
 }
 
 // pairedArgs is the ffmpeg command line that pairs one window of a converted file with the
 // same window of its source, frame by frame (see ssimWindow), and feeds both to metric — a
 // two-input filter taking the converted picture first ("ssim", "libvmaf=…").
-func pairedArgs(distorted, reference string, dStart, rStart, dur float64, w, h int, rate, crop, metric string) []string {
+func pairedArgs(distorted, reference string, dStart, rStart, dur float64, w, h int, rate string, rl refLeg, metric string) []string {
 	align := "setpts=PTS-STARTPTS"
 	if validRate(rate) {
 		align += ",fps=" + rate + ",setpts=N/FRAME_RATE/TB"
 	}
 	ref := ""
-	if crop != "" {
-		ref = crop + ","
+	if rl.filter != "" {
+		ref = rl.filter + ","
 	}
-	lavfi := fmt.Sprintf("[0:v]%s[d];[1:v]%sscale=%d:%d:flags=bicubic,%s[r];[d][r]%s", align, ref, w, h, align, metric)
+	lavfi := fmt.Sprintf("[0:v:0]%s[d];[1:v:%d]%sscale=%d:%d:flags=bicubic,%s[r];[d][r]%s", align, max(rl.index, 0), ref, w, h, align, metric)
 	args := []string{"-nostdin", "-hide_banner"}
 	seek := func(path string, start float64) {
 		if start > 0 {

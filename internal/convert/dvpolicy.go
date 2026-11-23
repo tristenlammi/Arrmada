@@ -5,12 +5,13 @@ import (
 	"fmt"
 )
 
-// Dolby Vision as an explicit choice. A conversion keeps a Dolby Vision file's HDR10 (or
-// HLG) base and drops the Dolby Vision layer — the owner's deliberate default, so nothing
-// changes for an install that never chose. Someone with a Dolby Vision TV can instead leave
-// those files alone; their tracks are still tidied. The third choice, a preview, carries the
-// layer through the conversion as profile 8.1 (dv.go) — not the default until it has been
-// watched on a Dolby Vision TV.
+// Dolby Vision as an explicit choice. Dropping the layer keeps a Dolby Vision file's HDR10
+// (or HLG) base and loses the Dolby Vision layer — the one choice that removes something
+// people pick their files for, so a NEW install leaves Dolby Vision files alone until its
+// owner says otherwise (dvChoice); an install that was already converting keeps dropping, as
+// it always has. Leaving them alone still tidies their tracks. The third choice, a preview,
+// carries the layer through the conversion as profile 8.1 (dv.go) — not the default until it
+// has been watched on a Dolby Vision TV.
 const (
 	DVDrop = "drop" // convert, dropping the Dolby Vision layer (keeps HDR10/HLG)
 	DVSkip = "skip" // leave Dolby Vision files' pictures alone
@@ -20,14 +21,35 @@ const (
 // dvLeftAloneWhy is what a Dolby Vision file's row says under DVSkip.
 const dvLeftAloneWhy = "Dolby Vision — left alone (your choice in Convert's settings)"
 
-// dvPolicy reads the saved choice; anything else (unset, or a value from a later version)
-// is today's behaviour.
+// dvPolicy reads a saved choice; anything else (a value from a later version) is dropping,
+// what every install did before the choice existed.
 func dvPolicy(v string) string {
 	switch v {
 	case DVSkip, DVKeep:
 		return v
 	}
 	return DVDrop
+}
+
+// dvChoice reads the Dolby Vision setting. The first read on an install without it decides
+// the default and saves it, so it never changes under the owner afterwards: an install that
+// has already used Convert (the same signs tenBitChoice reads) keeps dropping the layer, as
+// it did before; a new one leaves Dolby Vision files alone.
+func (s *Service) dvChoice(ctx context.Context) string {
+	if v, saved := s.settings.Lookup(keyDolbyVision); saved {
+		return dvPolicy(v)
+	}
+	choice := DVSkip
+	for _, k := range convertUsedKeys {
+		if _, used := s.settings.Lookup(k); used {
+			choice = DVDrop
+			break
+		}
+	}
+	if err := s.settings.Set(ctx, keyDolbyVision, choice); err != nil && s.log != nil {
+		s.log.Warn("convert: couldn't save the Dolby Vision default", "err", err)
+	}
+	return choice
 }
 
 // dvKeepBlock says why a Dolby Vision file's layer can't be kept through a conversion under

@@ -57,6 +57,16 @@ describe("conversion plan words", () => {
     expect(previewLines({ files: 0, reencode: 0, bytes: 0, est_bytes: 0, dv_files: 0, cc_files: 0, image_sub_tracks: 0, filtered_audio_tracks: 0, container_changes: 0, forced_tracks: 0, as_of: 0 })).toEqual([]);
   });
 
+  it("says how many Dolby Vision files the Dolby Vision choice leaves alone", () => {
+    const lines = previewLines({
+      files: 4, reencode: 4, bytes: 40 * GB, est_bytes: 22 * GB, dv_files: 0, dv_left_alone: 3, cc_files: 0, image_sub_tracks: 0,
+      filtered_audio_tracks: 0, container_changes: 0, forced_tracks: 0, as_of: 0,
+    });
+    expect(lines).toContain("3 Dolby Vision files left as they are — your Dolby Vision choice in Convert's settings");
+    expect(previewLines({ files: 1, reencode: 1, bytes: GB, est_bytes: GB / 2, dv_files: 0, dv_left_alone: 1, cc_files: 0, image_sub_tracks: 0, filtered_audio_tracks: 0, container_changes: 0, forced_tracks: 0, as_of: 0 }))
+      .toContain("1 Dolby Vision file left as it is — your Dolby Vision choice in Convert's settings");
+  });
+
   it("says where a request stands, as the server placed it", () => {
     expect(requestedToast("Ep 2", { requested: "k", starting: true })).toBe("“Ep 2” is starting now");
     expect(requestedToast("Ep 2", { requested: "k", position: 1, ahead: "Film" })).toBe("“Ep 2” is next in line — after “Film”");

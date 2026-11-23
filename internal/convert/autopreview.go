@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -54,17 +55,20 @@ func effectsOf(mi *MediaInfo, plan Plan, n Needs, size, seriesID int64, season i
 // AutoPreview is the summary: how many files would convert, their size now and after, and
 // how many of them lose what.
 type AutoPreview struct {
-	Files      int   `json:"files"`
-	Reencode   int   `json:"reencode"`  // of those, re-encodes (the rest only rewrite tracks)
-	Bytes      int64 `json:"bytes"`     // their size now
-	EstBytes   int64 `json:"est_bytes"` // their estimated size after
-	DVFiles    int   `json:"dv_files"`  // lose the Dolby Vision layer
-	CCFiles    int   `json:"cc_files"`  // lose embedded closed captions
-	ImageSubs  int   `json:"image_sub_tracks"`
-	AudioDrops int   `json:"filtered_audio_tracks"`
-	Containers int   `json:"container_changes"`
-	ForcedLost int   `json:"forced_tracks"`
-	AsOf       int64 `json:"as_of"`
+	Files    int   `json:"files"`
+	Reencode int   `json:"reencode"`  // of those, re-encodes (the rest only rewrite tracks)
+	Bytes    int64 `json:"bytes"`     // their size now
+	EstBytes int64 `json:"est_bytes"` // their estimated size after
+	DVFiles  int   `json:"dv_files"`  // lose the Dolby Vision layer
+	// DVLeftAlone counts the Dolby Vision files whose picture is left alone by the Dolby
+	// Vision choice (new installs' default), so the summary says why they aren't in it.
+	DVLeftAlone int   `json:"dv_left_alone"`
+	CCFiles     int   `json:"cc_files"` // lose embedded closed captions
+	ImageSubs   int   `json:"image_sub_tracks"`
+	AudioDrops  int   `json:"filtered_audio_tracks"`
+	Containers  int   `json:"container_changes"`
+	ForcedLost  int   `json:"forced_tracks"`
+	AsOf        int64 `json:"as_of"`
 }
 
 // PreviewFilter narrows the summary to one show (SeriesID > 0) or one of its seasons
@@ -81,7 +85,11 @@ func (s *Service) AutoPreview(ctx context.Context, f PreviewFilter) AutoPreview 
 	out := AutoPreview{AsOf: time.Now().Unix()}
 	permanent := s.skips.permanentKeys(ctx)
 	blocked := s.failures.blockedKeys(ctx, maxFailures)
-	for _, c := range s.autoCandidates(ctx, s.prefs(ctx)) {
+	p := s.prefs(ctx)
+	if p.dolbyVision == DVSkip {
+		out.DVLeftAlone = s.dvLeftAlone(ctx, f)
+	}
+	for _, c := range s.autoCandidates(ctx, p) {
 		if permanent[c.Key] || blocked[c.Key] {
 			continue
 		}
@@ -109,4 +117,40 @@ func (s *Service) AutoPreview(ctx context.Context, f PreviewFilter) AutoPreview 
 		out.ForcedLost += e.forcedLost
 	}
 	return out
+}
+
+// dvLeftAlone counts the indexed Dolby Vision files (narrowed by f) whose picture would be
+// worth converting but is left alone because of the Dolby Vision choice. Profile 5 never
+// converts whatever the choice, so it isn't counted.
+func (s *Service) dvLeftAlone(ctx context.Context, f PreviewFilter) int {
+	if s.index == nil {
+		return 0
+	}
+	q := `SELECT info_json FROM convert_library WHERE info_json LIKE '%"hdr":"Dolby Vision"%'`
+	var args []any
+	if f.SeriesID > 0 {
+		q += ` AND media_type = 'episode' AND series_id = ?`
+		args = append(args, f.SeriesID)
+		if f.Season >= 0 {
+			q += ` AND season = ?`
+			args = append(args, f.Season)
+		}
+	}
+	rows, err := s.index.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return 0
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var infoJSON string
+		var mi MediaInfo
+		if rows.Scan(&infoJSON) != nil || json.Unmarshal([]byte(infoJSON), &mi) != nil {
+			continue
+		}
+		if worth, _ := videoWorth(&mi); worth && mi.HDR == "Dolby Vision" {
+			n++
+		}
+	}
+	return n
 }

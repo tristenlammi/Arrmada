@@ -153,7 +153,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 				return
 			}
 			jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
-			found := s.hasHDR10Plus(ctx, src, jf) == nil
+			found := s.hasHDR10Plus(ctx, src, mi.VideoIndex, jf) == nil
 			if ctx.Err() != nil {
 				_ = os.Remove(jf)
 				return
@@ -166,7 +166,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 					_ = os.Remove(jf)
 					return
 				}
-				if err := s.readHDR10Plus(ctx, src, jf); err != nil {
+				if err := s.readHDR10Plus(ctx, src, mi.VideoIndex, jf); err != nil {
 					_ = os.Remove(jf)
 					if ctx.Err() != nil {
 						return
@@ -220,7 +220,8 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// check or wouldn't shrink enough is found out in minutes rather than after a day. The
 	// HDR10+ and Dolby Vision pipelines run without B-frames, which the projection allows for.
 	if plan.VideoCodec != "" && resumed == nil {
-		v, err := s.preflight(ctx, job, src, mi, enc, plan, h10pJSON != "" || plan.KeepDV)
+		tested := s.skips.attemptsOf(ctx, job.Key, SkipBorderline) // earlier samples that fell just short
+		v, err := s.preflight(ctx, job, src, mi, enc, plan, h10pJSON != "" || plan.KeepDV, tested)
 		switch {
 		case ctx.Err() != nil:
 			return
@@ -310,7 +311,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		// The 25 minutes count only while the check runs: frozen for a Plex stream, it
 		// mustn't time out and cost the encode.
 		sctx, cancel := s.pausableTimeout(ctx, job, 25*time.Minute)
-		res, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
+		res, err := s.computeSSIM(sctx, dst, src, refLegOf(mi, plan))
 		cancel()
 		rec.ssimMean, rec.ssimWindows = res.Mean, res.Scores
 		if ctx.Err() != nil {
@@ -552,7 +553,7 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder, hasHDR10
 func (s *Service) pickEncoder(job *Job, mi *MediaInfo, codec string, useGPU bool) Encoder {
 	enc := s.encoderChoice(mi, codec, useGPU)
 	if job != nil {
-		s.update(job, func(j *Job) { j.Encoder = enc.Label })
+		s.update(job, func(j *Job) { j.Encoder, j.encKind = enc.Label, enc.Kind })
 	}
 	return enc
 }
@@ -682,7 +683,7 @@ func (s *Service) runEncodeOnce(ctx context.Context, job *Job, src, dst, scratch
 	if err != nil && enc.Hardware && cpuWorks(plan.VideoCodec, s.encoders) {
 		cpu := cpuEncoder(plan.VideoCodec)
 		s.markHardwareBroken(enc.Name, err.Error())
-		s.update(job, func(j *Job) { j.Encoder = cpu.Label; j.Progress = 0 })
+		s.update(job, func(j *Job) { j.Encoder, j.encKind = cpu.Label, cpu.Kind; j.Progress = 0 })
 		err = s.encode(ctx, job, src, dst, mi, cpu, plan, false)
 	}
 	return err
@@ -809,8 +810,12 @@ func verifyOutput(mi, out *MediaInfo, outSize int64, plan Plan) (kind, reason st
 	if mi.DurationSec > 0 && math.Abs(out.DurationSec-mi.DurationSec) > tol {
 		return "", fmt.Sprintf("the converted file runs %s instead of %s", clock(out.DurationSec), clock(mi.DurationSec))
 	}
-	if want := len(keptAudio(mi, plan)); out.AudioTracks != want {
+	kept := keptAudio(mi, plan)
+	if want := len(kept); out.AudioTracks != want {
 		return "", fmt.Sprintf("the converted file has %d audio track(s), expected %d", out.AudioTracks, want)
+	}
+	if why := shortAudio(mi.Container, kept, out.Audio); why != "" {
+		return "", why
 	}
 	if want := len(keptSubs(mi, plan)); out.SubTracks != want {
 		return "", fmt.Sprintf("the converted file has %d subtitle track(s), expected %d", out.SubTracks, want)
@@ -829,6 +834,31 @@ func verifyOutput(mi, out *MediaInfo, outSize int64, plan Plan) (kind, reason st
 		return SkipNotSmaller, fmt.Sprintf("tidying the tracks made the file more than %d%% bigger — kept the original", tidyGrowthPct)
 	}
 	return "", ""
+}
+
+// shortAudio says which copied audio track came out shorter than the original's, or "".
+// Audio is copied bit for bit, so each kept track should run as long as it did; the full
+// decode only reads the picture, so without this a copy cut short with full-length video
+// would pass. Matched by position (the kept tracks are mapped in order). A track whose
+// length either file doesn't state isn't judged. The tolerance is the container's (two
+// seconds or 0.1%): a copy can lose a final partial packet, never minutes.
+//
+// Only Matroska and MP4 sources are judged: they record each track's real length. Older
+// containers (AVI above all) give an estimate from the bitrate, which for variable-bitrate
+// audio can be minutes out — the check would fail good conversions over a guess.
+func shortAudio(container string, kept, out []AudioStream) string {
+	if container != "MKV" && container != "MP4" {
+		return ""
+	}
+	for i, src := range kept {
+		if i >= len(out) || src.Sec <= 0 || out[i].Sec <= 0 {
+			continue
+		}
+		if tol := math.Max(2, src.Sec*0.001); src.Sec-out[i].Sec > tol {
+			return fmt.Sprintf("audio track %d of the converted file runs %s instead of %s", i+1, clock(out[i].Sec), clock(src.Sec))
+		}
+	}
+	return ""
 }
 
 // tidyGrowthPct is how much bigger a tracks-only tidy may come out. Rewriting the container can

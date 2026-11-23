@@ -40,6 +40,10 @@ func TestX265Args(t *testing.T) {
 
 // AV1's quality settings carry the dark-scene protection that fixes crushed blacks.
 func TestSVTAV1Args(t *testing.T) {
+	// NewService sets this from the ffmpeg it finds; this test says which SVT-AV1 it means.
+	was := svtLegacyLP.Load()
+	t.Cleanup(func() { svtLegacyLP.Store(was) })
+	svtLegacyLP.Store(false)
 	a := cpuVideoArgs("libsvtav1", "av1", 24, 6, "mastering-display=G(0.2650,0.6900)", false)
 	got := joined(a)
 	for _, want := range []string{"-preset 5", "-crf 24", "-pix_fmt yuv420p10le", "-dolbyvision 0"} {
@@ -48,9 +52,42 @@ func TestSVTAV1Args(t *testing.T) {
 		}
 	}
 	params := argValue(a, "-svtav1-params")
-	for _, want := range []string{"tune=0", "enable-variance-boost=1", "luminance-qp-bias=20", "lp=6", "mastering-display="} {
+	for _, want := range []string{"tune=0", "enable-variance-boost=1", "luminance-qp-bias=20", "pin=6", "mastering-display="} {
 		if !strings.Contains(params, want) {
 			t.Errorf("SVT-AV1 params missing %q: %s", want, params)
+		}
+	}
+	if strings.Contains(params, "lp=") {
+		t.Errorf("SVT-AV1 3.x reads lp as a level of parallelism, not cores: %s", params)
+	}
+
+	// SVT-AV1 before 2.3 took lp as the core count, binding only with pin on (pin was 0/1).
+	svtLegacyLP.Store(true)
+	if p := argValue(cpuVideoArgs("libsvtav1", "av1", 24, 6, "", false), "-svtav1-params"); !strings.HasSuffix(p, ":lp=6:pin=1") {
+		t.Errorf("SVT-AV1 before 2.3: %s, want lp=6:pin=1", p)
+	}
+	svtLegacyLP.Store(false)
+	if p := argValue(cpuVideoArgs("libsvtav1", "av1", 24, 0, "", false), "-svtav1-params"); p != av1QualityParams {
+		t.Errorf("no core budget: %s", p)
+	}
+}
+
+func TestParseSVTVersion(t *testing.T) {
+	for out, want := range map[string][3]int{ // major, minor, legacy
+		"Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib v3.1.2\n": {3, 1, 0},
+		"Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib v2.3.0\n": {2, 3, 0},
+		"Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib v2.2.1\n": {2, 2, 1},
+		"Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib v1.7.0\n": {1, 7, 1},
+		"Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib 4.0.1\n":  {4, 0, 0},
+		"nothing": {0, 0, 0},
+	} {
+		major, minor := parseSVTVersion(out)
+		legacy := 0
+		if svtLegacyVersion(major, minor) {
+			legacy = 1
+		}
+		if got := [3]int{major, minor, legacy}; got != want {
+			t.Errorf("%q: %v, want %v", out, got, want)
 		}
 	}
 }
@@ -62,8 +99,8 @@ func TestStripTuningParams(t *testing.T) {
 	if p := argValue(got, "-x265-params"); p != "pools=4:hdr10=1:master-display=X" {
 		t.Errorf("safe mode must keep HDR + pools, drop tuning: %q", p)
 	}
-	av1 := []string{"-svtav1-params", av1QualityParams + ":lp=4"}
-	if p := argValue(stripTuningParams(av1), "-svtav1-params"); p != av1QualityParams+":lp=4" {
+	av1 := []string{"-svtav1-params", av1QualityParams + ":pin=4"}
+	if p := argValue(stripTuningParams(av1), "-svtav1-params"); p != av1QualityParams+":pin=4" {
 		t.Errorf("AV1's dark-scene protection must survive safe mode: %q", p)
 	}
 	hw := []string{"-c:v", "hevc_qsv", "-global_quality", "16", "-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1"}
