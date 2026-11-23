@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -158,7 +159,8 @@ func TestBackupDownloadIsGzip(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/gzip" {
 		t.Errorf("Content-Type = %q", ct)
 	}
-	if cd := rec.Header().Get("Content-Disposition"); cd != `attachment; filename="`+name+`.gz"` {
+	cd := rec.Header().Get("Content-Disposition")
+	if disp, params, err := mime.ParseMediaType(cd); err != nil || disp != "attachment" || params["filename"] != name+".gz" {
 		t.Errorf("Content-Disposition = %q", cd)
 	}
 	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {

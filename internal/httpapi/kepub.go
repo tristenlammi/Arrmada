@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/kepub"
 )
@@ -63,7 +64,7 @@ func (a *api) serveKepub(w http.ResponseWriter, r *http.Request, b books.Book, p
 		return false
 	}
 	w.Header().Set("Content-Type", kepub.ContentType)
-	w.Header().Set("Content-Disposition", books.AttachmentHeader(books.EbookDownloadName(b, kepub.Ext)))
+	w.Header().Set("Content-Disposition", attachment.Header(books.EbookDownloadName(b, kepub.Ext)))
 	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeContent(w, r, "", st.ModTime(), f)
 	return true

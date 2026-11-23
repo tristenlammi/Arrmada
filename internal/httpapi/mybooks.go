@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
@@ -289,7 +290,7 @@ func (a *api) handleBookEbook(w http.ResponseWriter, r *http.Request) {
 	if ct := books.EbookContentType(ext); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	w.Header().Set("Content-Disposition", books.AttachmentHeader(books.EbookDownloadName(b, ext)))
+	w.Header().Set("Content-Disposition", attachment.Header(books.EbookDownloadName(b, ext)))
 	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeFile(w, r, path)
 }

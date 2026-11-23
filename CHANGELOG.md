@@ -51,6 +51,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Fixed
 
+- **Downloads from Convert and Settings → System's Backups name the file safely.** Their download name went into the header as it was, so a name with a quote, a semicolon or a line break could cut it short or break it. They now build it the way book and audiobook downloads do, which also keeps accented and other non-English names intact.
 - **Music: EPs stayed on an artist's page after EP was unticked in Release types** ([#122](https://github.com/tristenlammi/Arrmada/issues/122)). The types only decided which new albums a refresh added; albums listed before the change stayed.
   - An artist's album list (and the album counts on it and in the library) now shows only the kinds its release types list, as soon as you save. That's the library default, or the artist's own choice under Options.
   - An album of a kind you unticked stays when it's wanted or has files, marked "Not a kind this artist's release types list". To stop wanting the ones without files, use **Want matching albums…** under the artist's Options.
