@@ -1,4 +1,4 @@
-import { req, type ConvertAutoPreview, type ConvertBlocked, type ConvertCandidate, type ConvertCompareStatus, type ConvertEncoder, type ConvertHistoryEntry, type ConvertHistoryOutcome, type ConvertHoldCheck, type ConvertHoldStats, type ConvertJob, type ConvertLibraryStats, type ConvertPlan, type ConvertRequestResult, type ConvertSeriesRollup, type ConvertSettings, type ConvertSkipped, type ConvertStatus, type JobRef } from "./api";
+import { req, type ConvertAutoPreview, type ConvertBlocked, type ConvertCandidate, type ConvertCompareStatus, type ConvertEncoder, type ConvertExcludeResult, type ConvertHistoryEntry, type ConvertHistoryOutcome, type ConvertHoldCheck, type ConvertHoldStats, type ConvertJob, type ConvertLibraryStats, type ConvertPlan, type ConvertRequestResult, type ConvertSeriesRollup, type ConvertSettings, type ConvertSkipped, type ConvertStatus, type ConvertTitleExclusion, type JobRef } from "./api";
 
 // Convert's calls. They live here rather than in api.ts so they only download with the
 // Convert pages and the convert controls on detail pages, not with a requester's first load.
@@ -58,4 +58,8 @@ export const convertApi = {
     const qs = q.toString();
     return req<ConvertAutoPreview>(`/api/v1/convert/auto-preview${qs ? `?${qs}` : ""}`);
   },
+  // "Don't convert this": the films, shows and seasons Convert leaves alone, and the switch.
+  convertExclusions: () => req<{ items: ConvertTitleExclusion[] }>("/api/v1/convert/exclusions").then((r) => r.items),
+  setConvertExclusion: (body: { kind: "movie" | "series"; movie_id?: number; series_id?: number; season?: number; excluded: boolean }) =>
+    req<ConvertExcludeResult>("/api/v1/convert/exclusions", { method: "PUT", body: JSON.stringify(body) }),
 };

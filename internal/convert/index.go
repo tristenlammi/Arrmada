@@ -48,7 +48,7 @@ type indexRow struct {
 
 // ref is the title the row belongs to, for its plan.
 func (r indexRow) ref() titleRef {
-	return titleRef{Kind: r.MediaType, MovieID: r.MovieID, SeriesID: r.SeriesID, OrigLang: r.OrigLang}
+	return titleRef{Kind: r.MediaType, MovieID: r.MovieID, SeriesID: r.SeriesID, Season: r.Season, OrigLang: r.OrigLang}
 }
 
 // rowMeta is what the indexer needs to know about an indexed file to decide whether it's
@@ -457,6 +457,11 @@ type SeriesRollup struct {
 	TotalBytes  int64  `json:"total_bytes"`
 	EstBytes    int64  `json:"est_bytes"`  // estimated size of the worthwhile files after conversion
 	SaveBytes   int64  `json:"save_bytes"` // estimated space freed by them
+	// LeftOut counts the episodes you told Convert to leave alone (the show, a season, its
+	// folder, their resolution) that would otherwise be worth converting.
+	LeftOut LeftOut `json:"left_out"`
+	// Excluded says the whole show is left out ("Don't convert this").
+	Excluded bool `json:"excluded,omitempty"`
 }
 
 // computeLibraryTVSeries returns the per-series roll-up for the TV tab — one grouped query
@@ -472,7 +477,7 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 	// view does — and it's still one query with no filesystem access, which was the
 	// actual cost. Only the aggregate crosses the wire.
 	rows, err := s.index.db.QueryContext(ctx,
-		`SELECT series_id, size_bytes, info_json, path, orig_lang
+		`SELECT series_id, season, size_bytes, info_json, path, orig_lang
 		   FROM convert_library WHERE media_type = 'episode'`)
 	if err != nil {
 		return nil, err
@@ -483,8 +488,9 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 	dirCache := map[string][]string{} // one ReadDir per season folder, not per episode
 	for rows.Next() {
 		var id, size int64
+		var season int
 		var infoJSON, path, orig string
-		if err := rows.Scan(&id, &size, &infoJSON, &path, &orig); err != nil {
+		if err := rows.Scan(&id, &season, &size, &infoJSON, &path, &orig); err != nil {
 			return nil, err
 		}
 		r := agg[id]
@@ -501,7 +507,8 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 		if infoJSON == "" || json.Unmarshal([]byte(infoJSON), &mi) != nil {
 			continue
 		}
-		_, needs := p.planForTitle(&mi, path, titleRef{Kind: "episode", SeriesID: id, OrigLang: orig}, dirCache)
+		_, needs := p.planForTitle(&mi, path, titleRef{Kind: "episode", SeriesID: id, Season: season, OrigLang: orig}, dirCache)
+		r.LeftOut.add(needs)
 		switch {
 		case needs.Worth:
 			r.Convertible++
@@ -532,6 +539,7 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 				continue
 			}
 			r.Title, r.Year, r.PosterURL = sm.Title, sm.Year, sm.PosterURL
+			r.Excluded = p.excl.series[sm.ID]
 			out = append(out, *r)
 		}
 	}
@@ -552,6 +560,10 @@ type MediaStats struct {
 	// They're excluded from Reclaimable so the headline stops promising space that will
 	// never arrive, but still counted here so the UI can explain the shortfall.
 	Skipped int `json:"skipped"`
+	// LeftOut counts the files your own rules keep from converting (a title, a library
+	// folder, a resolution) that would otherwise be worth it. Like Skipped, they're not in
+	// Convertible or Reclaimable.
+	LeftOut LeftOut `json:"left_out"`
 
 	HDR10       int `json:"hdr10"`
 	HDR10Plus   int `json:"hdr10_plus"`
@@ -651,11 +663,17 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 		convertible := false
 		if probed {
 			hdr = mi.HDR
-			_, needs := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, OrigLang: orig}, dirCache)
+			_, needs := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, Season: season, OrigLang: orig}, dirCache)
 			convertible = needs.Worth
 			if convertible {
 				est = size - needs.Save
 			}
+			if mediaType == "episode" {
+				out.TV.LeftOut.add(needs)
+			} else {
+				out.Movies.LeftOut.add(needs)
+			}
+			out.Total.LeftOut.add(needs)
 		}
 		permaSkipped := convertible && skipped[key]
 		per := &out.Movies

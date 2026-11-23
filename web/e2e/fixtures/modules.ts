@@ -34,6 +34,12 @@ export const convertSettings: ConvertSettings = {
   image_subs: "keep", tidy_tracks: true, crop: false, dolby_vision: "drop", ten_bit: "match_source", resumable: false, hold_days: 14, hold_max_gb: 500, scratch_dir: "/scratch", vaapi_device: "", cpu_cores: 8, workers: 1,
   scan_at: "03:00", server_time: "12:00", server_tz: "UTC", plex_watching_known: false, can_pause: false,
   has_gpu: false, gpu_does_av1: false, hdr10plus_tool: false,
+  skip_folders: [], skip_resolutions: [],
+  library_folders: [
+    { key: "movie:0", media: "movie", path: "/movies", label: "Movies" },
+    { key: "movie:3", media: "movie", path: "/disk2/kids", label: "Kids" },
+    { key: "series:0", media: "series", path: "/tv", label: "TV" },
+  ],
 };
 
 export const convertStatus: ConvertStatus = { state: "off", message: "Converting is off", auto: false, watching: false, requests: [], up_next: [], remaining: 0 };

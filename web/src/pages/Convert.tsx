@@ -16,7 +16,7 @@ import { HeldSummary, RevertButton } from "./convert/hold";
 import { HistoryTab, RecentCard } from "./convert/History";
 import { PlanCard, PlanToggle, Poster } from "./convert/PlanCard";
 import { BulkConvertDialog, ConvertNowDialog, SwitchOnDialog } from "./convert/ConfirmConvert";
-import { requestedToast, type Asking } from "./convert/plan";
+import { leftOutCount, leftOutLine, requestedToast, type Asking } from "./convert/plan";
 import { Page } from "../ui/Page";
 
 // Convert works through the library on its own: switch it on, choose the hours, and it
@@ -263,6 +263,11 @@ function Overview({ status, jobs, stats, hw, originals, flash, onChanged, onResc
               <button onClick={onShowProblems} className="mt-1 block text-left text-xs underline" style={{ color: "var(--avoid-text)" }}>
                 {t!.skipped.toLocaleString()} file{t!.skipped === 1 ? "" : "s"} can&rsquo;t be converted — see Problems
               </button>
+            )}
+            {leftOutLine(t?.left_out) && (
+              <Link to={LINKS.convertSettings} data-testid="convert-left-out-summary" className="mt-1 block text-xs text-ink-faint underline" title="Change the folder and resolution rules in Settings → Convert; a title's own switch is on its page and its plan card">
+                {leftOutLine(t?.left_out)}
+              </Link>
             )}
           </div>
         </div>
@@ -618,6 +623,9 @@ function Library({ flash, onRequested, onRescan, onCompare, running, reload, ori
                         {done ? <span className="text-ink-faint">none</span> : <span style={{ color: "var(--avoid-text)" }}>{sh.convertible.toLocaleString()}</span>}
                         {sh.reencode > 0 && sh.reencode < sh.convertible && <span className="ml-1.5 text-xs text-ink-faint">{sh.reencode} re-encode</span>}
                         {sh.tidy_only > 0 && <span className="ml-1.5 text-xs text-ink-faint" title="Only their tracks differ, and tidying them would free little — done when they're re-encoded, or with Fix tracks">+{sh.tidy_only} tracks only</span>}
+                        {sh.excluded
+                          ? <span className="ml-1.5 text-xs text-ink-faint" title="You told Convert to leave this show alone">show left out</span>
+                          : leftOutCount(sh.left_out) > 0 && <span className="ml-1.5 text-xs text-ink-faint" title="Worth converting, but left alone by your choices (a season, a library folder or a resolution)">{leftOutCount(sh.left_out)} left out</span>}
                       </td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(sh.total_bytes)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums"><Saves bytes={sh.save_bytes} of={sh.total_bytes} /></td>
@@ -686,6 +694,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running, reload, ori
                         <div className="flex flex-wrap items-center gap-1">
                           <span className="rounded px-1.5 py-0.5 font-mono text-xs font-bold" style={{ background: c.needs?.video ? "var(--avoid-soft)" : "var(--good-soft, rgba(127,176,105,.16))", color: c.needs?.video ? "var(--avoid-text)" : "var(--good-text)" }} title={c.needs?.why}>{cd}</span>
                           {(c.needs?.subs || c.needs?.audio) && <NeedTag title={c.tracks}>tracks</NeedTag>}
+                          {c.needs?.excluded && <NeedTag title={c.needs.why}>left out</NeedTag>}
                         </div>
                       </td>
                       <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.resolution ?? "—"}</td>

@@ -1,4 +1,4 @@
-import type { ConvertAutoPreview, ConvertPlan, ConvertRequestResult, ConvertTrackDecision } from "../../lib/api";
+import type { ConvertAutoPreview, ConvertLeftOut, ConvertPlan, ConvertRequestResult, ConvertTrackDecision } from "../../lib/api";
 import { aboutTime } from "../../lib/convertForecast";
 
 // Asking is a Convert-now confirmation waiting for an answer.
@@ -13,6 +13,25 @@ export function requestedToast(title: string, res: ConvertRequestResult): string
     return `“${title}” is ${place}${res.ahead ? ` — after “${res.ahead}”` : ""}`;
   }
   return `“${title}” is queued ahead of the automatic picks`;
+}
+
+// leftOutCount is how many files worth converting your own rules leave alone.
+export function leftOutCount(l?: ConvertLeftOut): number {
+  return l ? l.title + l.folder + l.resolution : 0;
+}
+
+// leftOutLine says why files worth converting aren't being converted, rule by rule:
+// "12 files left alone by your choices: 3 titles, 9 by folder · ~40.0 GB".
+export function leftOutLine(l?: ConvertLeftOut): string {
+  const n = leftOutCount(l);
+  if (!l || n === 0) return "";
+  const parts = [
+    l.title ? `${l.title.toLocaleString()} by title` : "",
+    l.folder ? `${l.folder.toLocaleString()} by library folder` : "",
+    l.resolution ? `${l.resolution.toLocaleString()} by resolution` : "",
+  ].filter(Boolean);
+  const save = l.save_bytes > 0 ? ` · ~${fmtSize(l.save_bytes)} they'd free` : "";
+  return `${n.toLocaleString()} file${n === 1 ? "" : "s"} worth converting left alone by your choices: ${parts.join(", ")}${save}`;
 }
 
 // Words for a conversion plan, shared by the Library's plan card and the Convert-now

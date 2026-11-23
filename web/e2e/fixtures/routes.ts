@@ -241,6 +241,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/convert/jobs", mod.convertJobs),
     get("/api/v1/convert/history", mod.convertHistory),
     get("/api/v1/convert/devices", mod.convertDevices),
+    // "Don't convert this": no title is left out (the title pages and Settings → Convert read it).
+    get("/api/v1/convert/exclusions", { items: [] }),
     get("/api/v1/recycle", sys.recycle),
     get("/api/v1/subtitles/coverage", mod.subtitleCoverage),
     get("/api/v1/subtitles/settings", mod.subtitleSettings),

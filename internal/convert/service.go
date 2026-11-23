@@ -112,6 +112,9 @@ type Service struct {
 	subtitleLangs func(ctx context.Context) []string
 	// subProfiles reads each title's Subtitles profile, for SameAsSubtitles (subrules.go).
 	subProfiles SubtitleProfiles
+	// libFolders lists the Movies and TV library folders, for the folder rules
+	// (exclusions.go). Nil until main wires it.
+	libFolders func(ctx context.Context) []LibraryFolder
 	// detected reads what the subtitle AI heard on untagged audio tracks (audiolangs.go).
 	// Nil until main wires it: untagged tracks then stay untagged.
 	detected DetectedAudio

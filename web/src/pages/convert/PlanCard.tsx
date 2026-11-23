@@ -1,9 +1,12 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { type ConvertPlan, type ConvertTrackDecision } from "../../lib/api";
 import { convertApi } from "../../lib/convertApi";
 import { posterThumb } from "../../lib/img";
+import { LINKS } from "../../lib/links";
 import { useQuery } from "../../lib/query";
-import { StatusChip } from "../../ui";
+import { Button, StatusChip, useToast } from "../../ui";
+import { isExcluded, setExclusion, useConvertExclusions, type ExclusionTarget } from "../../components/convert/ConvertExclusion";
 import { sizeLine, timeLine, trackLabel, videoLine } from "./plan";
 
 // The Library's "Conversion plan" card: what converting this one file would do, before
@@ -32,6 +35,48 @@ export function PlanCard({ itemKey }: { itemKey: string }) {
         </p>
       )}
       {data && <PlanDetails plan={data} />}
+      {data && <LeaveAlone itemKey={itemKey} title={data.title} />}
+    </div>
+  );
+}
+
+// targetsFor is what a plan card can leave out: the film, or the episode's show and season.
+export function targetsFor(itemKey: string, title: string): ExclusionTarget[] {
+  const p = itemKey.split(":");
+  if (p[0] === "movie" && Number(p[1]) > 0) return [{ kind: "movie", id: Number(p[1]), name: title }];
+  if (p[0] === "episode" && Number(p[1]) > 0 && p.length === 4) {
+    const show = title.replace(/ - S\d+E\d+$/, "");
+    return [{ kind: "series", id: Number(p[1]), name: show }, { kind: "series", id: Number(p[1]), name: show, season: Number(p[2]) }];
+  }
+  return [];
+}
+
+// LeaveAlone is the card's "Don't convert this" switch: for a film, the film; for an episode,
+// its show or its season. Each turns back off from the same place.
+function LeaveAlone({ itemKey, title }: { itemKey: string; title: string }) {
+  const toast = useToast();
+  const list = useConvertExclusions();
+  const [busy, setBusy] = useState<number | null>(null);
+  const targets = targetsFor(itemKey, title);
+  if (targets.length === 0 || !list.data) return null;
+  const label = (t: ExclusionTarget, on: boolean) => {
+    const what = t.kind === "movie" ? "this film" : t.season === undefined ? "this show" : t.season === 0 ? "the specials" : `season ${t.season}`;
+    return on ? `Let Convert work on ${what}` : `Don't convert ${what}`;
+  };
+  const flip = async (i: number, t: ExclusionTarget, on: boolean) => {
+    setBusy(i);
+    try { toast(await setExclusion(t, !on), { ms: 5000 }); } catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setBusy(null); }
+  };
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t pt-2.5" style={{ borderColor: "var(--line-soft)" }}>
+      {targets.map((t, i) => {
+        const on = isExcluded(list.data, t);
+        return (
+          <Button key={i} size="sm" variant={on ? "secondary" : "ghost"} onClick={() => void flip(i, t, on)} busy={busy === i} busyLabel="Saving…">
+            {label(t, on)}
+          </Button>
+        );
+      })}
     </div>
   );
 }
@@ -49,7 +94,9 @@ export function PlanDetails({ plan }: { plan: ConvertPlan }) {
           {plan.needs.save > 0 && timeLine(plan) && <> · {timeLine(plan)}</>}
           {plan.container.from !== plan.container.to && <> · {plan.container.from} → {plan.container.to}</>}
         </div>
-        {!v.to_codec && v.why && <div className="text-xs text-ink-faint">Picture left alone: {v.why}</div>}
+        {plan.needs.excluded
+          ? <div className="text-sm font-semibold" style={{ color: "var(--avoid-text)" }}>Not converted: {plan.needs.why}{plan.needs.excluded !== "title" && <> · <Link to={LINKS.convertSettings} className="underline">Settings → Convert</Link></>}</div>
+          : !v.to_codec && v.why && <div className="text-xs text-ink-faint">Picture left alone: {v.why}</div>}
         {notes.map((n) => <div key={n} className="text-xs text-ink-faint">{n}</div>)}
       </div>
       <TrackList title="Audio" tracks={plan.audio} />

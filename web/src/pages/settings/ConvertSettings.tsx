@@ -2,17 +2,18 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { SavedTick } from "../../components/settings/auto";
 import { useScrollWhenLoaded } from "../../components/settings/ui";
-import { api, type ConvertDevice, type ConvertHoldCheck, type ConvertSettings as Settings } from "../../lib/api";
+import { api, type ConvertDevice, type ConvertHoldCheck, type ConvertLibraryFolder, type ConvertSettings as Settings } from "../../lib/api";
 import { convertApi } from "../../lib/convertApi";
 import { backlogLine } from "../../lib/convertForecast";
 import { DevicesPanel, transcodedSentence, transcodingDevices, useConvertDevices } from "../../components/convert/DevicesPanel";
-import { useConfirm } from "../../ui";
 import { fmtBytes } from "../../lib/disposal";
 import { LINKS } from "../../lib/links";
 import { langName, useLanguages } from "../../lib/languages";
 import { SAME_AS_SUBTITLES } from "../../lib/convertKeepSubs";
 import { useAutoSave, type AutoSave } from "../../lib/useAutoSave";
 import { SwitchOnDialog } from "../convert/ConfirmConvert";
+import { setExclusion, useConvertExclusions, type ExclusionTarget } from "../../components/convert/ConvertExclusion";
+import { Button, useConfirm, useToast } from "../../ui";
 
 // Settings → Convert: when Convert runs, what it converts to, which
 // tracks it keeps, and where it works. It used to be the Convert page's Settings tab; that
@@ -129,6 +130,9 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
   const holdDays = useAutoSave(String(s.hold_days), (v) => commit({ hold_days: Number(v) }), {
     validate: (v) => (/^\d{1,3}$/.test(v.trim()) && Number(v) <= 365 ? null : "Keep originals for 0 to 365 days."),
   });
+  const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+  const skipRes = useAutoSave<string[]>(s.skip_resolutions ?? [], put("skip_resolutions"), { equal: sameList, keepOnError: false });
+  const skipFolders = useAutoSave<string[]>(s.skip_folders ?? [], put("skip_folders"), { equal: sameList, keepOnError: false });
   const holdMax = useAutoSave(String(s.hold_max_gb), (v) => commit({ hold_max_gb: Number(v) }), {
     validate: (v) => (/^\d{1,7}$/.test(v.trim()) ? null : "The hold's size is a number of GB (0 = no limit)."),
   });
@@ -268,6 +272,8 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
         <p className="m-0 text-xs text-ink-faint">Untagged tracks are kept. A language filter that would remove every audio track or every subtitle removes none — the tags are wrong.</p>
       </Section>
 
+      <LeaveAloneSection resolutions={skipRes} folders={skipFolders} libraryFolders={s.library_folders ?? []} />
+
       <Section title="Undo" desc="A converted file's original isn't deleted straight away: it waits in a hidden folder on the same disk (.arrmada-hold in each library folder, which Plex ignores) so the conversion can be undone. It's never put in the recycle bin, and nothing in the hold is deleted until its time is up or you release it (Convert, History).">
         <Field label="Keep originals for" hint="days · 0 = delete each original once its conversion is verified · applies to conversions from now on" save={holdDays}>
           <span className="flex items-center gap-1.5 text-sm">
@@ -344,6 +350,100 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
             hint="Encodes long films in ~5-minute pieces, so a restart or update during the encode loses at most one piece. Only CPU encodes of constant-frame-rate films are pieced; anything else encodes in one go. Off by default while it's being proven." />
         </div>
       </details>
+    </div>
+  );
+}
+
+// The resolution classes a file can be left out by, as the server names them.
+const RESOLUTIONS = [["SD", "SD"], ["720p", "720p"], ["1080p", "1080p"], ["2160p", "4K"]] as const;
+
+// LeaveAloneSection: what Convert never touches, by your choice — files of a resolution,
+// whole library folders, and the titles you switched off on their own pages. Nothing is
+// left out until you choose it.
+function LeaveAloneSection({ resolutions, folders, libraryFolders }: {
+  resolutions: AutoSave<string[]>; folders: AutoSave<string[]>; libraryFolders: ConvertLibraryFolder[];
+}) {
+  const flip = (save: AutoSave<string[]>, key: string, on: boolean) => {
+    const next = on ? [...save.value.filter((k) => k !== key), key] : save.value.filter((k) => k !== key);
+    void save.commit(next);
+  };
+  const groups = [["movie", "Movies"], ["series", "TV"]] as const;
+  return (
+    <Section title="Leave alone" desc="Files Convert never re-encodes or tidies. They're listed as left out, with the reason, and the Overview counts them.">
+      <div role="group" aria-label="Resolutions to leave alone">
+        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">Don't convert files that are <SavedTick save={resolutions as AutoSave<unknown>} /></div>
+        <div className="mb-1 text-xs text-ink-faint">By the picture's real size, as Convert read it from the file — a widescreen 1080p film counts as 1080p.</div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {RESOLUTIONS.map(([v, label]) => (
+            <label key={v} className="flex cursor-pointer items-center gap-2 py-0.5 text-sm">
+              <input type="checkbox" checked={resolutions.value.includes(v)} onChange={(e) => flip(resolutions, v, e.target.checked)} />{label}
+            </label>
+          ))}
+        </div>
+      </div>
+      {libraryFolders.length > 0 && (
+        <div role="group" aria-label="Library folders to leave alone">
+          <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">Leave these library folders alone <SavedTick save={folders as AutoSave<unknown>} /></div>
+          <div className="mb-1 text-xs text-ink-faint">Every file in a ticked folder is left as it is — for a folder of things you keep as they came, or one on a disk you'd rather not churn.</div>
+          {groups.map(([media, heading]) => {
+            const list = libraryFolders.filter((f) => f.media === media);
+            if (list.length === 0) return null;
+            return (
+              <div key={media} className="mt-1">
+                <div className="font-mono text-2xs uppercase text-ink-faint">{heading}</div>
+                {list.map((f) => (
+                  <label key={f.key} className="flex cursor-pointer items-baseline gap-2 py-0.5 text-sm">
+                    <input type="checkbox" aria-label={`Leave ${heading} folder ${f.label} alone`} checked={folders.value.includes(f.key)} onChange={(e) => flip(folders, f.key, e.target.checked)} />
+                    <span className="font-semibold">{f.label}</span>
+                    <span className="min-w-0 truncate font-mono text-xs text-ink-faint" title={f.path}>{f.path}</span>
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <LeftOutTitles />
+    </Section>
+  );
+}
+
+// LeftOutTitles lists the films, shows and seasons switched off on their own pages ("Don't
+// convert this"), each with the way back.
+function LeftOutTitles() {
+  const list = useConvertExclusions();
+  const toast = useToast();
+  const [busy, setBusy] = useState<string | null>(null);
+  const items = list.data ?? [];
+  return (
+    <div>
+      <div className="text-sm font-semibold">Titles left alone</div>
+      {items.length === 0 ? (
+        <div className="text-xs text-ink-faint">None. To leave a film or show alone, choose “Don't convert this” in its page's ⋯ menu, or on its plan card under Convert → Library.</div>
+      ) : (
+        <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
+          {items.map((x) => {
+            const key = `${x.kind}:${x.movie_id ?? x.series_id}:${x.season}`;
+            const target: ExclusionTarget = x.kind === "movie"
+              ? { kind: "movie", id: x.movie_id ?? 0, name: x.title }
+              : { kind: "series", id: x.series_id ?? 0, name: x.title, ...(x.season >= 0 ? { season: x.season } : {}) };
+            const href = x.kind === "movie" ? `/movies/${x.movie_id}` : `/series/${x.series_id}`;
+            return (
+              <li key={key} className="flex flex-wrap items-center gap-2 text-sm">
+                <Link to={href} className="font-semibold hover:underline">{x.title}</Link>
+                <span className="text-xs text-ink-faint">{x.kind === "movie" ? "film" : x.season >= 0 ? "season" : "show"}</span>
+                <Button size="sm" variant="ghost" className="ml-auto" busy={busy === key} busyLabel="Saving…"
+                  onClick={async () => {
+                    setBusy(key);
+                    try { toast(await setExclusion(target, false), { ms: 3500 }); } catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setBusy(null); }
+                  }}>
+                  Let Convert work on it
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
