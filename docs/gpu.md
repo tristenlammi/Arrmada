@@ -4,8 +4,9 @@ Two things in Arrmada can use a graphics card:
 
 - **Convert** encodes on the GPU instead of the CPU: many times faster, though files come out
   somewhat bigger for the same quality. Intel and AMD graphics work through VAAPI (and Intel
-  through Quick Sync too); NVIDIA cards through NVENC. HDR files always encode on the CPU:
-  the GPU encoders can't carry their metadata.
+  through Quick Sync too); NVIDIA cards through NVENC. HDR10 and HLG files go to the GPU
+  only when it proved at start that it keeps their HDR (below); HDR10+ and Dolby Vision
+  always encode on the CPU.
 - **AI subtitles** (Whisper) run on Intel graphics through Intel's oneAPI build, and on
   Intel or AMD graphics through Vulkan. They fall back to the CPU by themselves.
 
@@ -26,6 +27,19 @@ GPU mode converts to HEVC). With it off, both encode on the CPU (x265, SVT-AV1).
 hardware encoder fails on real files again and again, Convert carries on on the CPU for the
 rest of that run.
 
+### HDR on the GPU
+
+Each hardware encoder that writes 10-bit then encodes a tiny HDR10 clip and a tiny HLG clip,
+with the same settings a real conversion uses, and the result is read back: the BT.2020
+colour tags, the PQ or HLG curve, and for HDR10 the mastering display and light level
+(MaxCLL). Only an encoder whose clip came back with all of it takes files of that kind; the
+others leave HDR to the CPU as before. As far as ffmpeg's own code goes, Quick Sync (HEVC and
+AV1) and VAAPI (HEVC and AV1) can do it, and so can NVENC HEVC in the image's
+jellyfin-ffmpeg; NVENC AV1 can't. The test on your card is what decides. HDR10+ and Dolby
+Vision always encode on the CPU. Every converted HDR file is checked again before it
+replaces the original, so a GPU that loses the HDR on a real film leaves the original alone,
+and that kind of HDR goes to the CPU for the rest of the run.
+
 ### Seeing what it found
 
 - **Settings → Convert**: **Use my GPU** only appears when at least one hardware encoder passed
@@ -33,11 +47,15 @@ rest of that run.
   encoder. With more than one render device (an iGPU and a card), **Advanced → GPU device**
   picks the one VAAPI uses; the discrete card is usually the higher `renderD` number.
 - **Convert → Overview** says what conversions run on, for example
-  `Converts on VAAPI (HEVC) · HDR on the CPU`, or `CPU (x265)`.
-- **Logs** (admins): at each start, `convert: encoders verified` lists the encoders that work.
+  `Converts on VAAPI (HEVC) · HDR10+ and Dolby Vision on the CPU`,
+  `Converts on VAAPI (HEVC) · HDR on the CPU`, or `CPU (x265)`. The **Use my GPU** note says
+  which kinds of HDR the GPU takes.
+- **Logs** (admins): at each start, `convert: encoders verified` lists the encoders that work
+  and, under `gpu_hdr`, which HDR each GPU encoder keeps.
 - Every encoder, with the reason one was turned down, is in
   `http://<server>:7878/api/v1/convert/hardware` (open it while signed in as an admin or
-  manager): `available: false` with a `note` is the error its test frame gave.
+  manager): `available: false` with a `note` is the error its test frame gave; `hdr10` and
+  `hlg` say whether it passed the HDR test, and `hdr_note` why not.
 - **Settings → Subtitles → Local AI** says where the last AI subtitle ran: on the GPU (Intel
   oneAPI), on the GPU (Vulkan), or on the CPU. When the oneAPI build was set aside it says
   why. **Subtitles → Logs** names the device each AI subtitle ran on, and how many times

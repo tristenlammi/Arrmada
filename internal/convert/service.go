@@ -183,6 +183,9 @@ type Service struct {
 
 	hwBrokenMu sync.Mutex
 	hwBroken   map[string]int // runtime failures per hardware encoder
+	// hdrRevoked holds "encoder|HDR kind" pairs whose output came out without its HDR in a
+	// real conversion: those files go to the CPU for the rest of this run (gpuhdr.go).
+	hdrRevoked map[string]bool
 
 	compare compareState
 
@@ -265,7 +268,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		db:     db,
 		movies: mv, series: sr, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
-		encoders: detectEncoders(context.Background(), ffmpeg),
+		encoders: detectEncoders(context.Background(), ffmpeg, ffprobe),
 		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
 		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
 		choices: &choiceStore{db: db}, measured: &measureStore{db: db}, history: &historyStore{db: db},
@@ -280,10 +283,18 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		log.Warn("convert: x265 NUMA thread pools are blocked by the container's seccomp policy — " +
 			"encoding unpooled. Add cap_add: [SYS_NICE] to the container for full threading.")
 	}
-	var working []string
+	var working, gpuHDR []string
 	for _, e := range s.encoders {
 		if e.Available {
 			working = append(working, e.Name)
+		}
+		if e.Available && e.Hardware {
+			if kinds := hdrKinds(e); len(kinds) > 0 {
+				gpuHDR = append(gpuHDR, e.Name+":"+strings.Join(kinds, "+"))
+			}
+			if e.HDRNote != "" {
+				log.Info("convert: "+e.Name+" doesn't keep every kind of HDR, so those files encode on the CPU", "why", e.HDRNote)
+			}
 		}
 	}
 	if cpuWorks("av1", s.encoders) {
@@ -291,7 +302,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		svtLegacyLP.Store(svtLegacyVersion(svtAV1Version(context.Background(), ffmpeg)))
 	}
 	s.vmaf = hasLibVMAF(context.Background(), ffmpeg)
-	log.Info("convert: encoders verified", "working", strings.Join(working, ","), "hdr10plus", s.hdr10plusTool != "", "dovi_tool", s.doviTool != "", "libvmaf", s.vmaf)
+	log.Info("convert: encoders verified", "working", strings.Join(working, ","), "gpu_hdr", strings.Join(gpuHDR, ","), "hdr10plus", s.hdr10plusTool != "", "dovi_tool", s.doviTool != "", "libvmaf", s.vmaf)
 	return s
 }
 
@@ -393,7 +404,14 @@ func (s *Service) Hardware(ctx context.Context) (encoders []Encoder, using strin
 	}
 	if p.useGPU {
 		if hw, ok := hardwareFor("hevc", s.encoders); ok && !s.hardwareIsBroken(hw.Name) {
-			using = hw.Label + " · HDR on the CPU"
+			switch kinds := s.gpuHDRKinds(hw); len(kinds) {
+			case 0:
+				using = hw.Label + " · HDR on the CPU"
+			case 2:
+				using = hw.Label + " · HDR10+ and Dolby Vision on the CPU"
+			default:
+				using = hw.Label + " · " + kinds[0] + " on the GPU, other HDR on the CPU"
+			}
 		}
 	}
 	return s.encoders, using

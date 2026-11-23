@@ -2877,6 +2877,10 @@ export interface ConvertSettings {
   skip_resolutions?: string[];
   /** Every Movies and TV library folder (read-only). */
   library_folders?: ConvertLibraryFolder[];
+  // The HDR formats ("HDR10", "HLG") the GPU's HEVC and AV1 encoders kept in their startup
+  // test, so GPU mode encodes those files on the GPU. Empty or missing: HDR on the CPU.
+  gpu_hdr?: string[];
+  gpu_hdr_av1?: string[];
 }
 export interface ConvertTrialSide { codec: string; encoder: string; bytes: number; ssim: number; est_bytes: number }
 export interface ConvertTrialResult { key: string; title: string; src_bytes: number; clips: number; seconds: number; hevc: ConvertTrialSide; av1: ConvertTrialSide; pick: string; why: string; files?: string[] }

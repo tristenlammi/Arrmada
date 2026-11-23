@@ -30,6 +30,13 @@ type Encoder struct {
 	// Pascal); their encodes of 8-bit sources stay 8-bit, and Settings says so. CPU encoders
 	// always can.
 	TenBit bool `json:"ten_bit"`
+	// HDR10 and HLG mean the encoder VERIFIED at startup that it writes that kind of static
+	// HDR — the colour tags and, for HDR10, the mastering display and light level — so files
+	// of that kind may be encoded on it (gpuhdr.go). CPU encoders always can. HDRNote says
+	// why a hardware encoder didn't pass.
+	HDR10   bool   `json:"hdr10"`
+	HLG     bool   `json:"hlg"`
+	HDRNote string `json:"hdr_note,omitempty"`
 }
 
 // knownEncoders lists the encoders we know how to drive, per target codec, best hardware
@@ -64,7 +71,7 @@ var knownEncoders = []Encoder{
 // detectEncoders reports which known encoders are compiled into ffmpeg and whether the
 // matching device appears present (so hardware options aren't offered on a box that can't use
 // them). The CPU encoder for each codec is always available as the safe fallback.
-func detectEncoders(ctx context.Context, ffmpeg string) []Encoder {
+func detectEncoders(ctx context.Context, ffmpeg, ffprobe string) []Encoder {
 	compiled := map[string]bool{}
 	if out, err := toolrun.Command(ctx, toolrun.Normal, ffmpeg, "-hide_banner", "-encoders").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
@@ -103,6 +110,8 @@ func detectEncoders(ctx context.Context, ffmpeg string) []Encoder {
 	// So actually encode one frame with each. It costs a few seconds at startup and turns
 	// a whole class of runtime failure into a fact known before any file is touched.
 	verifyEncoders(ctx, ffmpeg, out)
+	// Then HDR: which of the working GPU encoders keep a file's HDR (gpuhdr.go).
+	verifyEncodersHDR(ctx, ffmpeg, ffprobe, out)
 	return out
 }
 

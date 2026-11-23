@@ -76,7 +76,7 @@ func TestRealFile(t *testing.T) {
 	cs := time.Now()
 	plan = s.withCrop(ctx, src, mi, plan, p)
 	t.Logf("black bars (%s): %+v", time.Since(cs).Round(time.Second), plan.Crop)
-	enc := s.pickEncoder(job, mi, codec, p.useGPU)
+	enc := s.pickEncoder(job, mi, codec, p.useGPU, h10p)
 	t.Logf("plan: %s CRF %d on %s · keeps HDR: %v · cores %d", codec, plan.Quality, enc.Label,
 		s.canPreserveHDR(mi, plan, enc, h10p), s.cpuCores(ctx))
 

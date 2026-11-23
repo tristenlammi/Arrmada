@@ -58,9 +58,14 @@ type Settings struct {
 	GPUDoesAV1   bool   `json:"gpu_does_av1"`
 	// GPUTenBit says every hardware encoder Convert would use can write 10-bit, so "always
 	// 10-bit" applies on the GPU too. False with a GPU: its encodes of 8-bit files stay 8-bit.
-	GPUTenBit     bool `json:"gpu_ten_bit"`
-	HDR10PlusTool bool `json:"hdr10plus_tool"`
-	DoviTool      bool `json:"dovi_tool"` // Dolby Vision can be kept through a conversion
+	GPUTenBit bool `json:"gpu_ten_bit"`
+	// GPUHDR and GPUHDRAV1 are the HDR formats ("HDR10", "HLG") the GPU's HEVC and AV1
+	// encoders proved at startup that they keep (gpuhdr.go); those files encode on the GPU in
+	// GPU mode. Empty: all HDR encodes on the CPU. HDR10+ and Dolby Vision never appear.
+	GPUHDR        []string `json:"gpu_hdr"`
+	GPUHDRAV1     []string `json:"gpu_hdr_av1"`
+	HDR10PlusTool bool     `json:"hdr10plus_tool"`
+	DoviTool      bool     `json:"dovi_tool"` // Dolby Vision can be kept through a conversion
 	// LibraryFolders is every Movies and TV library folder, for the folder switches.
 	LibraryFolders []LibraryFolder `json:"library_folders"`
 }
@@ -74,6 +79,13 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 	hwHEVC, hasHEVC := hardwareFor("hevc", s.encoders)
 	hwAV1, hasAV1 := hardwareFor("av1", s.encoders)
 	gpuTenBit := (hasHEVC || hasAV1) && (!hasHEVC || hwHEVC.TenBit) && (!hasAV1 || hwAV1.TenBit)
+	gpuHDR, gpuHDRAV1 := []string{}, []string{}
+	if hasHEVC && !s.hardwareIsBroken(hwHEVC.Name) {
+		gpuHDR = s.gpuHDRKinds(hwHEVC)
+	}
+	if hasAV1 && !s.hardwareIsBroken(hwAV1.Name) {
+		gpuHDRAV1 = s.gpuHDRKinds(hwAV1)
+	}
 	return Settings{
 		Auto: p.auto, HoursStart: p.start, HoursEnd: p.end,
 		AllowAV1: p.allowAV1, UseGPU: p.useGPU, PauseWatching: p.pauseWatching,
@@ -85,7 +97,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		CPUCores: cores, Workers: s.workerCount(ctx), ScanAt: g.Get(ctx, keyScanAt, defaultScanAt),
 		ServerTime: time.Now().Format("15:04"), ServerTZ: zone,
 		PlexWatching: s.watchingKnown(), CanPause: canSuspend,
-		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, GPUTenBit: gpuTenBit, HDR10PlusTool: s.hdr10plusTool != "", DoviTool: s.doviTool != "",
+		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, GPUTenBit: gpuTenBit, GPUHDR: gpuHDR, GPUHDRAV1: gpuHDRAV1, HDR10PlusTool: s.hdr10plusTool != "", DoviTool: s.doviTool != "",
 		SkipFolders: s.skipFolderList(ctx), SkipResolutions: s.skipResolutionList(ctx),
 		LibraryFolders: append([]LibraryFolder{}, s.libraryFolders(ctx)...),
 	}

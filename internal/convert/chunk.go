@@ -371,7 +371,9 @@ func (s *Service) validResume(dir string, job *Job, src, scratch string, mi *Med
 		return nil, "the conversion settings have changed since"
 	}
 	enc := cpuEncoder(m.Codec)
-	if m.Kind != "hevc" {
+	// An HDR film the CPU started stays on the CPU, even now the GPU may take HDR (gpuhdr.go):
+	// its pieces are the CPU's, and process.go finishes it there.
+	if m.Kind != "hevc" && !(isHDR(mi.EncodeHDR()) && m.Encoder == enc.Name) {
 		enc = s.encoderChoice(mi, m.Codec, p.useGPU)
 	}
 	if enc.Kind != "cpu" || enc.Name != m.Encoder || resumeDir(filepath.Dir(dir), job.Key, src, mi, enc, plan, m.Kind) != dir {
