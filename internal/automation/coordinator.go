@@ -111,6 +111,8 @@ type Coordinator struct {
 	// (nil: ffprobe and ffmpeg, through videojoin). See splitparts.go.
 	probeVideoFn func(ctx context.Context, path string) (videojoin.Layout, error)
 	joinVideoFn  func(ctx context.Context, parts []string, want []videojoin.Layout, out string) error
+	// joins: the joins under way and the ones that couldn't be done (splitparts.go).
+	joins joinState
 	// probeAudioFn measures an audio file (nil: ffprobe through mediainfo). See probeAudio.
 	probeAudioFn func(ctx context.Context, path string) (mediainfo.AudioInfo, error)
 	// musicTagsFn reads an audio file's tags and length for the matcher (nil: audiotag).

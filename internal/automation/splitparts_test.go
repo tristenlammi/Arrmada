@@ -1,13 +1,22 @@
 package automation
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/videojoin"
 )
 
 func TestSplitPartTitle(t *testing.T) {
@@ -178,26 +187,172 @@ func TestApplySplitPartsNeedsTheSeasonToConfirmIt(t *testing.T) {
 	}
 }
 
-// A join's leftovers from a restart are cleared; a join running now is left alone.
+// A join's leftovers from a restart are cleared; a join running now is left alone, however
+// old its folder.
 func TestSweepJoinDir(t *testing.T) {
 	base := t.TempDir()
-	old, fresh, other := filepath.Join(base, "j-old"), filepath.Join(base, "j-new"), filepath.Join(base, "keep")
-	for _, d := range []string{old, fresh, other} {
+	old, running, fresh, other := filepath.Join(base, "j-old"), filepath.Join(base, "j-running"), filepath.Join(base, "j-new"), filepath.Join(base, "keep")
+	for _, d := range []string{old, running, fresh, other} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	now := time.Now()
-	past := now.Add(-joinLeftoverAge - time.Hour)
-	_ = os.Chtimes(old, past, past)
-	_ = os.Chtimes(other, past, past)
-	sweepJoinDir(base, now)
+	past := now.Add(-joinLeftoverAge - time.Minute)
+	for _, d := range []string{old, running, other} {
+		_ = os.Chtimes(d, past, past)
+	}
+	sweepJoinDir(base, now, map[string]bool{running: true})
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("an old join folder was left")
 	}
-	for _, d := range []string{fresh, other} {
+	for _, d := range []string{running, fresh, other} {
 		if _, err := os.Stat(d); err != nil {
 			t.Errorf("%s was removed", filepath.Base(d))
 		}
+	}
+}
+
+// The import sweep clears leftovers in every TV folder, never makes the join folder, and
+// looks again only after a while.
+func TestSweepJoinLeftovers(t *testing.T) {
+	h := newStallHarness(t)
+	root, bare := t.TempDir(), t.TempDir()
+	left := filepath.Join(root, joinDirName, "j-123")
+	if err := os.MkdirAll(left, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-joinLeftoverAge - time.Minute)
+	_ = os.Chtimes(left, past, past)
+	asked := 0
+	roots := func() []string { asked++; return []string{"", root, bare, filepath.Join(bare, "away")} }
+	h.c.sweepJoinLeftovers(roots)
+	if _, err := os.Stat(filepath.Join(root, joinDirName)); !os.IsNotExist(err) {
+		t.Error("the leftover join (or its emptied folder) is still there")
+	}
+	for _, p := range []string{filepath.Join(bare, joinDirName), filepath.Join(bare, "away")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s was made", p)
+		}
+	}
+	h.c.sweepJoinLeftovers(roots)
+	if asked != 1 {
+		t.Errorf("looked %d times in a row", asked)
+	}
+}
+
+var fgS13Files = []string{
+	"Family.Guy.S13E01.The.Simpsons.Guy.Part.1.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+	"Family.Guy.S13E02.The.Simpsons.Guy.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+	"Family.Guy.S13E03.Book.of.Joe.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+	"Family.Guy.S13E04.Baking.Bad.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+	"Family.Guy.S13E05.Brian.the.Closer.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+}
+
+// A join that can't be done holds the download in Needs you, with nothing of it placed,
+// and is not tried again sweep after sweep: each try rewrites the whole episode. A join
+// that can't start for now (the TV folder's share is away) writes nothing and is tried
+// again, the rest of the download placed meanwhile.
+func TestSplitPartsJoinHoldsInsteadOfRetrying(t *testing.T) {
+	const pack = "Family.Guy.S13.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT"
+	for _, tc := range []struct {
+		name              string
+		probeErr, joinErr error
+		unmounted         bool   // the TV folder is empty, as an unmounted share is
+		joins             int    // how many times the parts are joined over the sweeps
+		want              string // the season afterwards
+		reason, notReason string
+	}{
+		{name: "the join fails", joinErr: errors.New("ffmpeg: exit status 1: Invalid data found"), joins: 1,
+			want: "held 1:- 2:- 3:- 4:-", reason: "joining them into one file failed"},
+		{name: "the joined file doesn't check out", joinErr: errors.New("the joined file is 600.0 s long, the parts together 1320.0 s"), joins: 1,
+			want: "held 1:- 2:- 3:- 4:-", reason: "600.0 s long"},
+		{name: "no ffprobe", probeErr: fmt.Errorf("ffprobe: %w", exec.ErrNotFound), joins: 0,
+			want: "held 1:- 2:- 3:- 4:-", reason: "needs ffmpeg and ffprobe", notReason: "Reject"},
+		{name: "no ffmpeg", joinErr: fmt.Errorf("ffmpeg: %w", exec.ErrNotFound), joins: 1,
+			want: "held 1:- 2:- 3:- 4:-", reason: "needs ffmpeg and ffprobe", notReason: "Reject"},
+		{name: "the TV folder looks unmounted", unmounted: true, joins: 0, want: "1:- 2:3 3:4 4:5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newStallHarness(t)
+			tv := t.TempDir()
+			if !tc.unmounted {
+				// Another show is there: the folder is mounted.
+				if err := os.MkdirAll(filepath.Join(tv, "Other Show (2001)"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.c.imp = library.NewImporter(tv, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			id := seedTitledSeason(t, h, fgS13)
+			var mu sync.Mutex
+			joins := 0
+			h.c.probeVideoFn = func(context.Context, string) (videojoin.Layout, error) {
+				if tc.probeErr != nil {
+					return videojoin.Layout{}, tc.probeErr
+				}
+				return videojoin.Layout{Streams: []videojoin.Stream{{Type: "video", Codec: "h264"}}, Duration: 1320}, nil
+			}
+			h.c.joinVideoFn = func(_ context.Context, _ []string, _ []videojoin.Layout, out string) error {
+				mu.Lock()
+				joins++
+				mu.Unlock()
+				if tc.joinErr == nil {
+					return errors.New("joined when it shouldn't have been")
+				}
+				writeSparse(t, out, 1<<20) // what a failed join wrote before it stopped
+				return tc.joinErr
+			}
+			hash, _, _ := dropDownload(t, h, pack, fgS13Files)
+			sweeps := 4
+			if tc.unmounted {
+				sweeps = 1 // the rest of the download lands in the folder, which then looks mounted
+			}
+			for range sweeps {
+				h.c.ImportSeriesDownloads(h.ctx)
+			}
+			if joins != tc.joins {
+				t.Errorf("joined %d times, want %d", joins, tc.joins)
+			}
+			if got := describeSeason(t, h, id, 13, hash, fgS13Files); got != tc.want {
+				t.Errorf("season: %s, want %s", got, tc.want)
+			}
+			reviews, _ := h.c.ListReviews(h.ctx)
+			switch {
+			case tc.reason == "" && len(reviews) != 0:
+				t.Errorf("held: %s", reviews[0].Reason)
+			case tc.reason != "" && len(reviews) != 1:
+				t.Fatalf("%d reviews, want the download held", len(reviews))
+			case tc.reason != "":
+				r := reviews[0]
+				if r.ReasonCode != ReasonTitleConflict || !strings.Contains(r.Reason, tc.reason) ||
+					(tc.notReason != "" && strings.Contains(r.Reason, tc.notReason)) {
+					t.Errorf("held as %s: %s", r.ReasonCode, r.Reason)
+				}
+			}
+			// Nothing of a join is left in the TV folder.
+			if _, err := os.Stat(filepath.Join(tv, joinDirName)); !os.IsNotExist(err) {
+				t.Error("the join folder was left (or made) in the TV folder")
+			}
+			if !tc.unmounted {
+				return
+			}
+			// Tried again next sweep, and joined now the folder is there.
+			h.c.joinVideoFn = func(_ context.Context, parts []string, _ []videojoin.Layout, out string) error {
+				var size int64
+				for _, p := range parts {
+					fi, err := os.Stat(p)
+					if err != nil {
+						return err
+					}
+					size += fi.Size()
+				}
+				writeSparse(t, out, size)
+				return nil
+			}
+			h.c.ImportSeriesDownloads(h.ctx)
+			if got := describeSeason(t, h, id, 13, hash, fgS13Files); got != "1:1&2 2:3 3:4 4:5" {
+				t.Errorf("after the retry: %s", got)
+			}
+		})
 	}
 }

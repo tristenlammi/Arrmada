@@ -18,7 +18,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
-	"github.com/tristenlammi/arrmada/internal/videojoin"
 )
 
 // ErrDownloadGone means the review's files are no longer on disk. Distinguished from a
@@ -1214,7 +1213,6 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// An episode the release cut into parts is joined back into one file, and the files
 	// after it are placed that much earlier (splitparts.go). Anime is numbered by other
 	// rules and left alone.
-	var partLayouts map[int][]videojoin.Layout
 	if !s.IsAnime() {
 		seasonTitles := map[int]map[int]string{}
 		titles := func(season int) map[int]string {
@@ -1235,11 +1233,6 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			unresolved -= rescued // files whose number was past the season, now placed
 			c.log.Info("series import: the release split episodes into parts and counted each as an episode — the parts will be joined, and the files after them placed that much earlier",
 				"series", s.Title, "split_episodes", len(groups), "moved", strings.Join(moved, "; "))
-			if partLayouts, conflict = c.probeSplitParts(ctx, resolved); conflict != "" {
-				c.log.Warn("series import: an episode's parts can't be joined — holding the download, nothing placed",
-					"series", s.Title, "content_path", contentPath, "why", conflict)
-				return nil, 0, unresolved, failed, conflict, nil
-			}
 		}
 	}
 	if conflict = c.titleConflict(ctx, s, resolved); conflict != "" {
@@ -1250,6 +1243,57 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		c.log.Warn("series import: episode titles and numbers disagree within the download — holding it, nothing placed",
 			"series", s.Title, "content_path", contentPath, "why", conflict)
 		return nil, 0, unresolved, failed, conflict, nil
+	}
+	// The quality gate, per episode. Gating the whole file on refs[0] alone let a
+	// multi-episode file downgrade its second episode (E01 missing → whole file accepted →
+	// E02's better file superseded too), and conversely blocked E02 entirely when E01
+	// already had the better file.
+	// The name that actually carries the quality tags — a pack's per-file names often carry
+	// none, so fall back to the release folder. SCORING the candidate needs the same name
+	// that gets recorded.
+	type gateAnswer struct {
+		sourceName     string
+		wanted, forced []series.EpisodeRef
+	}
+	gate := func(rv resolvedVideo) gateAnswer {
+		g := gateAnswer{sourceName: filepath.Base(rv.v.Path)}
+		if parser.Parse(g.sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
+			g.sourceName = filepath.Base(contentPath)
+		}
+		g.wanted, g.forced = refsToPlace(rv.refs, force, func(ref series.EpisodeRef) bool {
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rv.rel, g.sourceName, rv.v.Size, len(rv.refs))
+		})
+		return g
+	}
+	// Episodes the release split into parts are joined first, and only those the gate
+	// wants: a join that can't be done holds the whole download before anything of it is
+	// placed, as a disagreement does.
+	gated := map[int]gateAnswer{}
+	joined := map[int]string{}
+	for ri, rv := range resolved {
+		if len(rv.parts) < 2 {
+			continue
+		}
+		g := gate(rv)
+		gated[ri] = g
+		if len(g.wanted) == 0 {
+			continue
+		}
+		path, cleanup, hold, jerr := c.joinSplitParts(ctx, imp, rv)
+		switch {
+		case hold != "":
+			c.log.Warn("series import: an episode's parts can't be joined — holding the download, nothing placed",
+				"series", s.Title, "content_path", contentPath, "why", hold)
+			return nil, 0, unresolved, failed, hold, nil
+		case jerr != nil:
+			// Nothing was written. The rest is placed; this episode is tried again next sweep.
+			failed++
+			c.log.Warn("series import: couldn't join an episode's parts this time — will try again next sweep",
+				"series", s.Title, "file", filepath.Base(rv.v.Path), "err", jerr)
+		default:
+			defer cleanup()
+			joined[ri] = path
+		}
 	}
 	for ri, rv := range resolved {
 		v, rel, refs := rv.v, rv.rel, rv.refs
@@ -1265,20 +1309,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"season", rv.numbered[0].Season, "filename_said", refEpisodes(rv.numbered), "metadata_says", refEpisodes(refs))
 		}
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
-		// Quality gate, PER EPISODE. Gating the whole file on refs[0] alone let a
-		// multi-episode file downgrade its second episode (E01 missing → whole file
-		// accepted → E02's better file superseded too), and conversely blocked E02
-		// entirely when E01 already had the better file.
-		// The name that actually carries the quality tags — a pack's per-file names often
-		// carry none, so fall back to the release folder. Computed here rather than after
-		// the gate because SCORING the candidate needs the same name that gets recorded.
-		sourceName := filepath.Base(v.Path)
-		if parser.Parse(sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
-			sourceName = filepath.Base(contentPath)
+		g, ok := gated[ri]
+		if !ok {
+			g = gate(rv)
 		}
-		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
-			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size, len(refs))
-		})
+		sourceName, wanted, forced := g.sourceName, g.wanted, g.forced
 		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
 				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(forced))
@@ -1295,7 +1330,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			continue
 		}
 		if len(rv.parts) > 1 {
-			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, partLayouts[ri], wanted, sourceName)
+			path, ok := joined[ri]
+			if !ok {
+				continue // couldn't be joined this time: counted as failed above
+			}
+			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, path, wanted, sourceName)
 			placed = append(placed, got...)
 			if bad {
 				failed++

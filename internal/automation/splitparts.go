@@ -2,12 +2,15 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -339,67 +342,164 @@ func applySplitParts(files []resolvedVideo, groups []partGroup, titles func(seas
 	return out, moved, rescued
 }
 
-// probeSplitParts reads every group's parts and says, in words for Needs you, why one
-// can't be joined ("" when all can). layouts is filled per joined file, in files' order.
-func (c *Coordinator) probeSplitParts(ctx context.Context, files []resolvedVideo) (map[int][]videojoin.Layout, string) {
-	probe := c.probeVideoFn
-	if probe == nil {
-		probe = videojoin.Probe
-	}
-	layouts := map[int][]videojoin.Layout{}
-	for i, f := range files {
-		if len(f.parts) < 2 {
-			continue
-		}
-		names := make([]string, len(f.parts))
-		for j, p := range f.parts {
-			names[j] = filepath.Base(p.Path)
-			l, err := probe(ctx, p.Path)
-			if err != nil {
-				return nil, fmt.Sprintf("This download has one episode in %d parts (%s), and %s couldn't be read to join them: %v. "+
-					"Reject it to look for another release, or map the files to episodes by hand.",
-					len(f.parts), strings.Join(names[:j+1], ", "), names[j], err)
-			}
-			layouts[i] = append(layouts[i], l)
-		}
-		for j := 1; j < len(layouts[i]); j++ {
-			if why := videojoin.Compatible(layouts[i][0], layouts[i][j]); why != "" {
-				return nil, fmt.Sprintf("This download has S%02dE%02d in %d parts (%s), and they can't be joined into one file without re-encoding: %s. "+
-					"Reject it to look for another release, or map the files to episodes by hand.",
-					f.refs[0].Season, f.refs[0].Episode, len(f.parts), strings.Join(names, ", "), why)
-			}
-		}
-	}
-	return layouts, ""
-}
-
 // joinDirName is the folder, right in a TV folder, that joined episodes are made in before
 // they're placed. Hidden: scans and media servers pass it by.
 const joinDirName = ".arrmada-join"
 
-// joinSplitParts joins a group's parts into one file beside the show's folder and returns
-// its path, in a folder of its own that the caller removes (cleanup) once the file has
-// been placed. The file is named as the first part is, so it's placed and recorded with
-// that release's quality.
-func (c *Coordinator) joinSplitParts(ctx context.Context, tvRoot string, f resolvedVideo, layouts []videojoin.Layout) (path string, cleanup func(), err error) {
-	base := filepath.Join(tvRoot, joinDirName)
-	if err := os.MkdirAll(base, 0o755); err != nil {
-		return "", nil, err
+const (
+	// joinFreeMargin is the free space a join leaves on the TV folder's disk.
+	joinFreeMargin = 1 << 30
+	// joinTimeout bounds one join: a copy of a few GB, on an array disk that may be asleep.
+	joinTimeout = 30 * time.Minute
+	// joinLeftoverAge is how old a folder in joinDirName must be to be left over: no join
+	// runs longer than joinTimeout.
+	joinLeftoverAge = joinTimeout + 10*time.Minute
+	// joinSweepEvery is how often the TV folders are looked over for leftovers.
+	joinSweepEvery = 10 * time.Minute
+	// joinHeldFor is how long a join that couldn't be done is remembered. The download is
+	// held in Needs you, so this only stops the same download being joined again straight
+	// away (the sweep imports a held download a second time after refreshing the show).
+	joinHeldFor = time.Hour
+)
+
+// joinState is the joins under way and the ones that couldn't be done.
+type joinState struct {
+	mu     sync.Mutex
+	active map[string]bool     // the folders joins are writing in now
+	held   map[string]joinHold // by the first part's path
+	swept  time.Time           // the last look for leftovers
+}
+
+type joinHold struct {
+	why string
+	at  time.Time
+}
+
+// heldJoin is why an episode's parts couldn't be joined, if that was found within
+// joinHeldFor.
+func (c *Coordinator) heldJoin(first string) string {
+	j := &c.joins
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if h, ok := j.held[first]; ok && c.clock().Sub(h.at) < joinHeldFor {
+		return h.why
 	}
-	sweepJoinDir(base, time.Now())
-	if u, ok := diskspace.Of(base); ok && u.FreeBytes < uint64(f.v.Size)+joinFreeMargin {
-		return "", nil, fmt.Errorf("not enough free space in %s to join the parts (%d MB needed)", tvRoot, (f.v.Size+joinFreeMargin)>>20)
+	return ""
+}
+
+func (c *Coordinator) holdJoin(first, why string) string {
+	j := &c.joins
+	now := c.clock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.held == nil {
+		j.held = map[string]joinHold{}
 	}
-	dir, err := os.MkdirTemp(base, "j-")
-	if err != nil {
-		return "", nil, err
+	for k, h := range j.held {
+		if now.Sub(h.at) >= joinHeldFor {
+			delete(j.held, k)
+		}
 	}
-	cleanup = func() { _ = os.RemoveAll(dir); _ = os.Remove(base) } // base only goes when empty
-	out := filepath.Join(dir, filepath.Base(f.parts[0].Path))
+	j.held[first] = joinHold{why: why, at: now}
+	return why
+}
+
+// errJoinNotNow is a join that couldn't start for a reason that passes (the TV folder's
+// share is away, its disk is full right now, Arrmada is stopping). Nothing was written;
+// the download is tried again next sweep, as any import that couldn't place a file is.
+var errJoinNotNow = errors.New("can't join the parts right now")
+
+// joinSplitParts joins an episode's parts into one file beside the show's folder, and
+// returns its path in a folder of its own that cleanup removes once the file is placed.
+// The file is named as the first part is, so it's placed and recorded with that release's
+// quality.
+//
+// hold is set, in words for Needs you, when the parts can't or couldn't be joined: they
+// aren't alike enough, ffmpeg isn't there, or the join or its check failed. Nothing is
+// placed from the download then, and it isn't joined again on its own: a join rewrites
+// the whole episode, and retrying a failed one every sweep would do that every 30 s.
+// err (errJoinNotNow) is a join that couldn't start for now; nothing was written.
+func (c *Coordinator) joinSplitParts(ctx context.Context, imp *library.Importer, f resolvedVideo) (path string, cleanup func(), hold string, err error) {
+	names := make([]string, len(f.parts))
 	paths := make([]string, len(f.parts))
 	for i, p := range f.parts {
-		paths[i] = p.Path
+		names[i], paths[i] = filepath.Base(p.Path), p.Path
 	}
+	ep := fmt.Sprintf("S%02dE%02d", f.refs[0].Season, f.refs[0].Episode)
+	about := fmt.Sprintf("This download has %s in %d parts (%s)", ep, len(f.parts), strings.Join(names, ", "))
+	if why := c.heldJoin(paths[0]); why != "" {
+		return "", nil, why, nil
+	}
+	missing := func(tool string) string {
+		return c.holdJoin(paths[0], fmt.Sprintf("%s, and joining them into one file needs ffmpeg and ffprobe, but %s isn't installed where Arrmada runs (the Docker image has both). "+
+			"Install them for episodes like this to be joined; for this download, Map files… places the rest by hand, or Dismiss leaves it to you.", about, tool))
+	}
+
+	probe := c.probeVideoFn
+	if probe == nil {
+		probe = videojoin.Probe
+	}
+	layouts := make([]videojoin.Layout, len(paths))
+	for i, p := range paths {
+		l, err := probe(ctx, p)
+		switch {
+		case errors.Is(err, exec.ErrNotFound):
+			return "", nil, missing("ffprobe"), nil
+		case err != nil && ctx.Err() != nil:
+			return "", nil, "", fmt.Errorf("%w: %v", errJoinNotNow, ctx.Err())
+		case err != nil:
+			return "", nil, c.holdJoin(paths[0], fmt.Sprintf("%s, and %s couldn't be read to join them: %v. "+
+				"Reject it to look for another release, or map the files to episodes by hand.", about, names[i], err)), nil
+		}
+		layouts[i] = l
+	}
+	for i := 1; i < len(layouts); i++ {
+		if why := videojoin.Compatible(layouts[0], layouts[i]); why != "" {
+			return "", nil, c.holdJoin(paths[0], fmt.Sprintf("%s, and they can't be joined into one file without re-encoding: %s. "+
+				"Reject it to look for another release, or map the files to episodes by hand.", about, why)), nil
+		}
+	}
+
+	// Never anywhere but a TV folder that's there: with its share away, the folder can be
+	// an empty mount point on the system disk, or in a container's own layer.
+	tvRoot := imp.TVRoot()
+	if err := imp.CheckTVRoot(); err != nil {
+		return "", nil, "", fmt.Errorf("%w: %v", errJoinNotNow, err)
+	}
+	if !library.FolderLooksMounted(tvRoot) {
+		return "", nil, "", fmt.Errorf("%w: the TV folder %s is empty — is its disk or share mounted?", errJoinNotNow, tvRoot)
+	}
+	if u, ok := diskspace.Of(tvRoot); ok && u.FreeBytes < uint64(f.v.Size)+joinFreeMargin {
+		return "", nil, "", fmt.Errorf("%w: not enough free space in %s (%d MB needed)", errJoinNotNow, tvRoot, (f.v.Size+joinFreeMargin)>>20)
+	}
+
+	base := filepath.Join(tvRoot, joinDirName)
+	j := &c.joins
+	j.mu.Lock()
+	dir, err := func() (string, error) {
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			return "", err
+		}
+		return os.MkdirTemp(base, "j-")
+	}()
+	if err == nil {
+		if j.active == nil {
+			j.active = map[string]bool{}
+		}
+		j.active[dir] = true
+	}
+	j.mu.Unlock()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("%w: %v", errJoinNotNow, err)
+	}
+	cleanup = func() {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		_ = os.RemoveAll(dir)
+		delete(j.active, dir)
+		_ = os.Remove(base) // only goes when empty
+	}
+	out := filepath.Join(dir, names[0])
 	join := c.joinVideoFn
 	if join == nil {
 		join = videojoin.Join
@@ -408,51 +508,69 @@ func (c *Coordinator) joinSplitParts(ctx context.Context, tvRoot string, f resol
 	defer cancel()
 	if err := join(jctx, paths, layouts, out); err != nil {
 		cleanup()
-		return "", nil, err
+		switch {
+		case errors.Is(err, exec.ErrNotFound):
+			return "", nil, missing("ffmpeg"), nil
+		case ctx.Err() != nil: // Arrmada is stopping
+			return "", nil, "", fmt.Errorf("%w: %v", errJoinNotNow, ctx.Err())
+		}
+		return "", nil, c.holdJoin(paths[0], fmt.Sprintf("%s, and joining them into one file failed: %v. The parts are untouched. "+
+			"Reject it to look for another release, or map the files to episodes by hand.", about, err)), nil
 	}
-	return out, cleanup, nil
+	return out, cleanup, "", nil
 }
 
-const (
-	// joinFreeMargin is the free space a join leaves on the TV folder's disk.
-	joinFreeMargin = 1 << 30
-	// joinTimeout bounds one join: a copy of a few GB, on an array disk that may be asleep.
-	joinTimeout = 30 * time.Minute
-	// joinLeftoverAge is how old a folder in joinDirName must be to be a crashed join's.
-	joinLeftoverAge = 6 * time.Hour
-)
+// sweepJoinLeftovers removes what joins stopped by a restart or a crash left in the TV
+// folders, at most every joinSweepEvery. It never creates anything, and never touches a
+// join that's running.
+func (c *Coordinator) sweepJoinLeftovers(roots func() []string) {
+	j := &c.joins
+	now := c.clock()
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !j.swept.IsZero() && now.Sub(j.swept) < joinSweepEvery {
+		return
+	}
+	j.swept = now
+	for _, root := range roots() {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		base := filepath.Join(root, joinDirName)
+		sweepJoinDir(base, now, j.active)
+		_ = os.Remove(base) // only goes when empty
+	}
+}
 
-// sweepJoinDir removes what a join interrupted by a restart left behind.
-func sweepJoinDir(base string, now time.Time) {
+// sweepJoinDir removes join folders in base older than joinLeftoverAge that no join is
+// using. Called with the joins' lock held.
+func sweepJoinDir(base string, now time.Time, active map[string]bool) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil || !e.IsDir() || !strings.HasPrefix(e.Name(), "j-") || now.Sub(info.ModTime()) < joinLeftoverAge {
+		p := filepath.Join(base, e.Name())
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "j-") || active[p] {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(base, e.Name()))
+		if info, err := e.Info(); err != nil || now.Sub(info.ModTime()) < joinLeftoverAge {
+			continue
+		}
+		_ = os.RemoveAll(p)
 	}
 }
 
-// placeJoinedEpisode joins f's parts and places the result on its episode. It reports the
-// episodes that got the file, and whether it failed (the download is then tried again).
-func (c *Coordinator) placeJoinedEpisode(ctx context.Context, s series.Series, imp *library.Importer, folder string, f resolvedVideo, layouts []videojoin.Layout, wanted []series.EpisodeRef, sourceName string) (placed []series.EpisodeRef, failed bool) {
+// placeJoinedEpisode places an episode joined from its parts (joined) on its episode. It
+// reports the episodes that got the file, and whether it failed (the download is then
+// tried again).
+func (c *Coordinator) placeJoinedEpisode(ctx context.Context, s series.Series, imp *library.Importer, folder string, f resolvedVideo, joined string, wanted []series.EpisodeRef, sourceName string) (placed []series.EpisodeRef, failed bool) {
 	names := make([]string, len(f.parts))
 	for i, p := range f.parts {
 		names[i] = filepath.Base(p.Path)
 	}
 	ref := wanted[0]
 	label := fmt.Sprintf("S%02dE%02d", ref.Season, ref.Episode)
-	joined, cleanup, err := c.joinSplitParts(ctx, imp.TVRoot(), f, layouts)
-	if err != nil {
-		c.log.Warn("series import: couldn't join an episode's parts into one file — nothing was placed for it, and the parts are untouched",
-			"series", s.Title, "episode", label, "parts", strings.Join(names, ", "), "err", err)
-		return nil, true
-	}
-	defer cleanup()
 	ei, ok, ierr := imp.ImportEpisodeAs(folder, s.Title, s.Year, ref.Season, ref.Episode, joined)
 	if ierr != nil || !ok {
 		c.log.Warn("series import: couldn't place the joined episode",
