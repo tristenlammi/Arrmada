@@ -28,6 +28,10 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Fixed
 
+- **Music: EPs stayed on an artist's page after EP was unticked in Release types** ([#122](https://github.com/tristenlammi/Arrmada/issues/122)). The types only decided which new albums a refresh added; albums listed before the change stayed.
+  - An artist's album list (and the album counts on it and in the library) now shows only the kinds its release types list, as soon as you save. That's the library default, or the artist's own choice under Options.
+  - An album of a kind you unticked stays when it's wanted or has files, marked "Not a kind this artist's release types list". To stop wanting the ones without files, use **Want matching albums…** under the artist's Options.
+  - Nothing is deleted or unwanted: the hidden albums stay stored, and ticking the kind again brings them back. A note under the list says how many are hidden. If you unticked a kind before this update, its unwanted albums without files leave the page when you update.
 - **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
   - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
   - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed. They never take that disk's last 1 GB: short of room the oldest go first, and failing that the chapter isn't cut and the app is told it isn't available.

@@ -55,12 +55,23 @@ func scanArtist(row interface{ Scan(...any) error }) (Artist, error) {
 
 // ListArtists returns every artist in the library with its holdings summary, newest
 // first. Artists that are only credited (featured on someone else's album) aren't listed.
-func (r *Repo) ListArtists(ctx context.Context) ([]Artist, error) {
+func (r *Repo) ListArtists(ctx context.Context) ([]Artist, error) { return r.listArtists(ctx, nil) }
+
+// listArtists is ListArtists counting, for each artist, only the albums its detail read
+// shows (shownFor, with typesFor's release types); a nil typesFor counts every album.
+func (r *Repo) listArtists(ctx context.Context, typesFor func(Artist) ReleaseTypes) ([]Artist, error) {
 	out, err := r.LibraryArtists(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stats, covers, err := r.artistStats(ctx)
+	var types map[int64]ReleaseTypes
+	if typesFor != nil {
+		types = make(map[int64]ReleaseTypes, len(out))
+		for _, a := range out {
+			types[a.ID] = typesFor(a)
+		}
+	}
+	stats, covers, err := r.artistStatsShown(ctx, types)
 	if err != nil {
 		return nil, err
 	}
@@ -122,8 +133,15 @@ const albumCounts = `
 // The same pass picks each artist's stand-in cover, by the detail read's rule
 // (standInCover), so the list and the artist's page show the same picture.
 func (r *Repo) artistStats(ctx context.Context) (map[int64]*ArtistStats, map[int64]coverPick, error) {
+	return r.artistStatsShown(ctx, nil)
+}
+
+// artistStatsShown is artistStats leaving out, for each artist in types, the albums its
+// detail read hides (shownFor). Artists not in types count every album.
+func (r *Repo) artistStatsShown(ctx context.Context, types map[int64]ReleaseTypes) (map[int64]*ArtistStats, map[int64]coverPick, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT al.artist_id, (al.monitored = 1 AND al.stale_since IS NULL),`+albumCounts+`,
-		al.id, al.cover_url, al.primary_type, al.year FROM albums al`)
+		al.id, al.cover_url, al.primary_type, al.year, al.secondary_types, al.album_type, al.monitored, al.source,
+		EXISTS (SELECT 1 FROM music_track_files f WHERE f.album_id = al.id) FROM albums al`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,10 +154,15 @@ func (r *Repo) artistStats(ctx context.Context) (map[int64]*ArtistStats, map[int
 			mon, tracks, have, editionCount int
 			size                            int64
 			al                              Album
+			hasFile                         bool
 		)
 		if err := rows.Scan(&id, &mon, &tracks, &have, &size, &editionCount,
-			&al.ID, &al.CoverURL, &al.PrimaryType, &al.Year); err != nil {
+			&al.ID, &al.CoverURL, &al.PrimaryType, &al.Year, &al.SecondaryTypes, &al.AlbumType, &al.Monitored, &al.Source,
+			&hasFile); err != nil {
 			return nil, nil, err
+		}
+		if t, ok := types[id]; ok && !shownFor(t, al, hasFile) {
+			continue
 		}
 		s := out[id]
 		if s == nil {

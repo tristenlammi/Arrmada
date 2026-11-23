@@ -9,7 +9,8 @@ import { Select } from "../../ui/Select";
 // The library-wide defaults for keeping Music current (MUS-13/14): what happens to an
 // artist's new releases, and which kinds of release are listed, for every artist without
 // its own choice (Options on the artist page). Like an artist's own options, a change
-// applies from the next refresh on and never wants or unwants an album already listed.
+// never wants or unwants an album by itself. Artist pages show the kinds the types list at
+// once (plus anything wanted or holding files); new albums follow from the next refresh.
 // Shown only while the Music module is on (its API answers 404 when off).
 
 export function MusicReleasesSettings() {
@@ -51,7 +52,7 @@ export function MusicReleasesSettings() {
       setSaved(r.settings);
       setMonitorNew(r.settings.monitor_new);
       setTypes(r.settings.release_types);
-      toast("Saved. It applies from each artist's next refresh.");
+      toast("Saved. Artist pages follow it now; new albums from each artist's next refresh.");
     } catch (e) {
       toast((e as Error).message, { tone: "error" });
     } finally {
@@ -82,7 +83,9 @@ export function MusicReleasesSettings() {
         <Button size="sm" onClick={() => void save(defaults)} disabled={isDefault || saving}>
           Reset to defaults
         </Button>
-        <span className="text-xs text-ink-faint">Albums already listed don't change; an artist's Options can apply the types to them.</span>
+        <span className="text-xs text-ink-faint">
+          Artist pages show only these kinds, plus albums that are wanted or have files. Nothing is wanted or unwanted by itself; an artist's Options can apply the types to its wanted albums.
+        </span>
       </div>
     </Section>
   );

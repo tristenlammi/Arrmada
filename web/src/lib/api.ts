@@ -3909,6 +3909,9 @@ export interface MusicAlbum {
   found_as?: string;
   /** MusicBrainz no longer lists it: kept, files and all. */
   stale_since?: string;
+  /** Its kind isn't one of the artist's release types, but it's shown because it's wanted
+   *  or holds files (artist detail only). */
+  outside_types?: boolean;
 }
 /** A track the upgrade to editions couldn't give its file (two tracks on one file, or a file with no path). */
 export interface MusicNote {
@@ -3947,6 +3950,9 @@ export interface Artist {
   stale_since?: string;
   /** The albums filed under this artist (detail only). */
   albums?: MusicAlbum[];
+  /** How many of its albums aren't in albums: kinds its release types leave out, not
+   *  wanted and holding no files (detail only). */
+  hidden_albums?: number;
   /** Albums filed under other artists that credit this one (detail only). */
   appears_on?: MusicAlbum[];
   stats?: ArtistStats;

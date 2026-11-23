@@ -120,6 +120,8 @@ Music re-reads every followed artist from MusicBrainz about once a day (through 
 
 Changing an artist's release types, or the library default, never wants or unwants an album by itself; it decides what new albums get and what is listed. Applying the types to the albums already listed is a separate "Want matching albums…" step that shows exactly what it would want or stop wanting first, and never unwants an album that holds files.
 
+**The artist page shows the kinds the types list** ([#122](https://github.com/tristenlammi/Arrmada/issues/122), 2026-11-23). Narrowing the types (unticking EP, say) takes the albums of that kind off the artist's album list and its counts straight away, the ones listed before the change included, but only those that aren't wanted and hold no file (one the scan can't see right now counts). A wanted one, or one with files, stays, marked as outside the types. Nothing is deleted: the rows stay stored, and ticking the kind again brings them back without asking MusicBrainz. The New releases list and the Dashboard still show what a refresh found in the last 30 days, whatever its kind.
+
 And the cache rule holds for refreshes: when MusicBrainz is down, slow, or answers with an empty list, nothing is added, removed, unmonitored or flagged. An album MusicBrainz merged follows its new id; one it removed is flagged "no longer on MusicBrainz" and kept, files and all.
 
 ## The library scan, the file check and aliases
