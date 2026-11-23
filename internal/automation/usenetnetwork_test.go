@@ -31,10 +31,11 @@ func TestUsenetNetworkMarks(t *testing.T) {
 	if got[nzb] != "usenet" || got[tor] != "" {
 		t.Errorf("movie blocklist networks = %v", got)
 	}
-	rows, _, err := h.c.ListAllBlocks(h.ctx, BlockFilter{})
+	pg, err := h.c.ListAllBlocks(h.ctx, BlockFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	rows := pg.Items
 	got = map[string]string{}
 	for _, r := range rows {
 		got[r.Title] = r.Network

@@ -20,6 +20,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - A show-wide fix passes over subtitles taken from the video itself (its own track, AI made from its audio, a hash-matched download). Subtitles inside the video file are never touched.
   - A subtitle that changes while it's being measured is left alone.
 - **Finer timing buttons**: −0.1 s and +0.1 s beside the half-second and one-second steps.
+- **Unblock many releases at once on the Blocklist** (#133, thanks to the contributor of #134). Tick entries, tick the whole page, or pick **Select all … matching this filter** to take every entry the current type and search match, on every page. One confirm unblocks them all. Anything blocked after you picked "all" stays blocked.
 
 ### Changed
 

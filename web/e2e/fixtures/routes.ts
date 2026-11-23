@@ -168,6 +168,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get(`/api/v1/jobs/${sys.unmanagedImportJob.id}`, sys.unmanagedImportJob),
     { method: "POST", path: /^\/api\/v1\/queue\/([0-9a-z]+)\/ignore$/, body: { status: "ignored" } },
     get("/api/v1/blocklist", media.blocklist),
+    // Bulk unblock: the ticked ids, or every entry matching the filter.
+    { method: "POST", path: "/api/v1/blocklist/bulk-unblock", respond: ({ body }) => { const b = body as { ids?: unknown[]; all?: boolean }; return { removed: b?.all ? media.blocklist.total : (b?.ids ?? []).length }; } },
     get("/api/v1/movies", media.movies),
     get("/api/v1/series", media.series),
     // The command palette's library lookup: staff only, like the server.
