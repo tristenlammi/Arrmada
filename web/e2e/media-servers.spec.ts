@@ -86,6 +86,8 @@ test.describe("admin", () => {
 
     await form.getByLabel("Server URL").fill("http://jellyfin:8096");
     await form.getByLabel("API key").fill("jf-key-123");
+    // #129: the card says notifications' Watch links use this address, not the connection's.
+    await expect(form.getByText(/Watch links in notifications and "ready" messages use this address/)).toBeVisible();
     await form.getByLabel("Public address for Watch links").fill("https://jellyfin.example.com");
     await form.getByRole("button", { name: "Test" }).click();
     await expect(form.getByRole("status")).toHaveText("✓ Connected to Attic · Jellyfin 10.10.3");

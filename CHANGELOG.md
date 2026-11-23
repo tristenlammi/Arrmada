@@ -45,6 +45,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Changed
 
+- **The Jellyfin (or Emby) card in Settings → Connections says what its public address is for** ([#129](https://github.com/tristenlammi/Arrmada/issues/129)): Watch links in notifications and "ready" messages use it, and left as the server URL they point at the connection address, which usually only opens on your home network.
 - **Sub-second timing reads exactly**: "shifted −0.45 s", "runs 0.45 s late", where it used to round to a tenth.
 - **Very long single-file audiobooks reach listening apps as one track per chapter.** This applies to an `.m4b`/`.m4a` of 32 hours or more that has chapter marks. Apps that already downloaded such a book will see it as changed and may download it again; saved places carry over.
 
