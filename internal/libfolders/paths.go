@@ -39,6 +39,10 @@ var pathColumns = []pathColumn{
 	{table: "convert_probe_cache", column: "path", pk: true},
 	{table: "convert_choices", column: "path", pk: true},
 	{table: "convert_measured", column: "path", pk: true},
+	// The file a skip or a failure count is about (0355): moved with it, so a verdict keeps
+	// holding for the same file in its new folder.
+	{table: "convert_skips", column: "file_path"},
+	{table: "convert_failures", column: "file_path"},
 	{table: "convert_history", column: "src_path"},
 	{table: "convert_history", column: "out_path"},
 	// Subtitles: the ledger of sidecars and what was tried for each video.
