@@ -178,7 +178,9 @@ export function ArtistDetail() {
         <h2 className="m-0 mb-3 mt-8 text-md font-bold">Albums</h2>
         {!a.albums || a.albums.length === 0 ? (
           <div className="rounded-xl p-8 text-center text-base text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No albums listed. Try Refresh — MusicBrainz may not have returned them yet.
+            {a.hidden_albums
+              ? "No albums of the kinds this artist's release types list. Options changes the types."
+              : "No albums listed. Try Refresh — MusicBrainz may not have returned them yet."}
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
@@ -186,6 +188,11 @@ export function ArtistDetail() {
               <AlbumRow key={al.id} al={al} onChange={load} />
             ))}
           </div>
+        )}
+        {(a.hidden_albums ?? 0) > 0 && (
+          <p className="mt-2 text-xs text-ink-faint" data-testid="hidden-albums">
+            {a.hidden_albums} more {a.hidden_albums === 1 ? "isn't" : "aren't"} shown: kinds this artist's release types leave out. Options changes the types.
+          </p>
         )}
 
         {a.appears_on && a.appears_on.length > 0 && (
@@ -225,6 +232,11 @@ function AlbumRow({ al, onChange, credit }: { al: MusicAlbum; onChange: () => vo
           <div className="truncate font-mono text-xs text-ink-faint">
             {[credit ? al.artist_credit || "" : "", al.year || "", al.album_type || ""].filter(Boolean).join(" · ")}
           </div>
+          {al.outside_types && (
+            <div className="truncate text-xs text-ink-faint">
+              Not a kind this artist's release types list; kept because {al.monitored ? "it's wanted" : "it has files"}
+            </div>
+          )}
           {(al.stale_since || (!al.monitored && al.found_as)) && (
             <div className="truncate text-xs text-ink-faint">
               {al.stale_since ? "No longer on MusicBrainz; kept with its files" : foundWords(al.found_as, al.monitored)}

@@ -107,6 +107,19 @@ test.describe("Music on the kit", () => {
     await expect(page.getByText("No artists match this filter.")).toBeVisible();
   });
 
+  // #122: kinds the release types leave out are hidden (and counted under the list); one
+  // that's wanted or has files stays, saying why.
+  test("the artist page says what its release types hide and why an EP stays", async ({ page }) => {
+    await mockMusic(page);
+    const ep = { id: 52, artist_id: 5, mbid: "rg-52", title: "Harbour Lights", year: 2021, album_type: "EP", primary_type: "EP", monitored: true, outside_types: true, track_count: 4, have_tracks: 0, edition_tracks: 4 } as never;
+    await page.route((u) => u.pathname === "/api/v1/music/artists/5", (route) =>
+      json(route, { ...artist, albums: [...(artist.albums ?? []), ep], hidden_albums: 2 }));
+    await page.goto("/music/5");
+    await expect(page.getByText("Harbour Lights")).toBeVisible();
+    await expect(page.getByText("Not a kind this artist's release types list; kept because it's wanted")).toBeVisible();
+    await expect(page.getByTestId("hidden-albums")).toHaveText("2 more aren't shown: kinds this artist's release types leave out. Options changes the types.");
+  });
+
   test("the album page lists its tracks by disc, with a featured artist named", async ({ page }) => {
     await mockMusic(page);
     await page.goto("/music/album/51");

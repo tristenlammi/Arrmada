@@ -53,6 +53,9 @@ type Artist struct {
 	// Albums is filled by the detail read, not the list read: the albums filed under
 	// this artist.
 	Albums []Album `json:"albums,omitempty"`
+	// HiddenAlbums is how many of its albums the detail read leaves out of Albums: kinds
+	// its release types don't list, not wanted and holding no files (see shownFor).
+	HiddenAlbums int `json:"hidden_albums,omitempty"`
 	// AppearsOn is filled by the detail read: albums filed under another artist that
 	// credit this one.
 	AppearsOn []Album `json:"appears_on,omitempty"`
@@ -147,6 +150,9 @@ type Album struct {
 	FoundAs    string `json:"found_as,omitempty"`
 	StaleSince string `json:"stale_since,omitempty"`
 	Source     string `json:"-"`
+	// OutsideTypes is set by the artist's detail read on an album its release types leave
+	// out that is still shown, because it's wanted or holds files (see shownFor).
+	OutsideTypes bool `json:"outside_types,omitempty"`
 	// departureChecked is when the album, gone from its artist's list, was found still on
 	// MusicBrainz (credited elsewhere): kept, and looked at again only in turn.
 	departureChecked string

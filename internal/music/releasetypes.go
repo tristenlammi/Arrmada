@@ -188,6 +188,22 @@ func (t ReleaseTypes) WantsOther() bool {
 // Equal reports whether two type sets list the same release groups.
 func (t ReleaseTypes) Equal(o ReleaseTypes) bool { return t.String() == o.String() }
 
+// shownFor reports whether an album shows in its artist's album list (issue #122). The
+// artist's release types decide, for what was listed before they changed as much as for
+// what a refresh brings in: untick EP and the EPs leave the list, tick it again and they
+// come back (the rows are kept, nothing is deleted). An album is shown whatever its kind
+// when it is wanted (hiding it would hide a search running for it), holds any file (one
+// the scan can't see right now included: hiding it would hide music on disk), or didn't
+// come from MusicBrainz's lists (the refresh never added it, so the types never decided
+// it).
+func shownFor(types ReleaseTypes, al Album, hasFile bool) bool {
+	if al.Monitored || hasFile || (al.Source != "" && al.Source != "musicbrainz") {
+		return true
+	}
+	p, sec := albumTypes(al)
+	return types.Allows(p, sec)
+}
+
 // splitTypes reads the stored secondary types ("Compilation,Live").
 func splitTypes(s string) []string { return SplitList(s) }
 

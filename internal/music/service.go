@@ -46,7 +46,9 @@ func (s *Service) Lookup(ctx context.Context, query string) ([]metadata.ArtistRe
 }
 
 // ListArtists returns the library.
-func (s *Service) ListArtists(ctx context.Context) ([]Artist, error) { return s.repo.ListArtists(ctx) }
+func (s *Service) ListArtists(ctx context.Context) ([]Artist, error) {
+	return s.repo.listArtists(ctx, s.ReleaseTypesFor)
+}
 
 // HasArtists reports whether anyone has added an artist, which is what decides whether an
 // existing install keeps the Music module on now that it's off by default.
@@ -59,9 +61,26 @@ func (s *Service) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	if err != nil {
 		return Artist{}, err
 	}
-	albums, err := s.repo.AlbumsFor(ctx, id)
+	all, err := s.repo.AlbumsFor(ctx, id)
 	if err != nil {
 		return Artist{}, err
+	}
+	withFiles, err := s.repo.AlbumsWithAnyFile(ctx, id)
+	if err != nil {
+		return Artist{}, err
+	}
+	// Only the kinds the artist's release types list are shown, plus anything wanted or
+	// holding files; the rest stay stored, ready for the types to list them again.
+	types := s.ReleaseTypesFor(a)
+	albums := make([]Album, 0, len(all))
+	for _, al := range all {
+		if !shownFor(types, al, withFiles[al.ID]) {
+			a.HiddenAlbums++
+			continue
+		}
+		p, sec := albumTypes(al)
+		al.OutsideTypes = (al.Monitored || withFiles[al.ID]) && !types.Allows(p, sec)
+		albums = append(albums, al)
 	}
 	a.Albums = albums
 	a.Stats = statsFromAlbums(albums)

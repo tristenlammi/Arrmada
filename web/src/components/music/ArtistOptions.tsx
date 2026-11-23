@@ -8,8 +8,9 @@ import { Switch } from "../../ui/Switch";
 import { ReleaseTypePicker, sameTypes } from "./releaseRules";
 
 // An artist's options (MUS-14): what happens to new releases, and which kinds of release
-// are listed. Saving changes what NEW albums get and what is listed; it never wants or
-// unwants an album by itself. Applying the types to the albums already listed is a
+// are listed. Saving changes what NEW albums get and what the album list shows (kinds the
+// types leave out are hidden unless wanted or holding files); it never wants or unwants an
+// album by itself. Applying the types to the albums already listed is a
 // separate step that shows what it would do first ("Want matching albums").
 
 const NEW_RELEASE_WORDS: Record<MonitorNew, string> = {
@@ -155,7 +156,11 @@ export function ArtistOptions({ artistId, onChanged }: { artistId: number; onCha
         <Button size="sm" variant="primary" onClick={() => void save()} disabled={!dirty} busy={saving} busyLabel="Saving…">
           Save options
         </Button>
-        {!dirty && <span className="text-xs text-ink-faint">Changes apply to new albums; nothing already listed changes.</span>}
+        {!dirty && (
+          <span className="text-xs text-ink-faint">
+            The album list shows only these kinds, plus albums that are wanted or have files. Nothing is wanted or unwanted by itself.
+          </span>
+        )}
       </div>
 
       <div className="flex flex-col gap-2 border-t pt-3" style={{ borderColor: "var(--line-soft)" }}>
