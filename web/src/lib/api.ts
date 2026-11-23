@@ -2244,7 +2244,8 @@ export interface UnmatchedFolder {
   root?: string;
   title: string;
   year: number;
-  candidates: MatchCandidate[];
+  /** Servers before the #136 fix sent null for a folder with none. */
+  candidates: MatchCandidate[] | null;
 }
 
 // A finished movie library scan's job result (GET /api/v1/jobs/{id}.result): unmatched is
@@ -3258,7 +3259,7 @@ export const api = {
   // job (ApiError body.job_id).
   scanLibrary: (opts?: { monitor: boolean; quality_profile?: string }) =>
     req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST", ...(opts ? { body: JSON.stringify(opts) } : {}) }),
-  moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
+  moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] | null }>("/api/v1/movies/unmatched").then((r) => r.unmatched ?? []),
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
@@ -3635,7 +3636,7 @@ export const api = {
   subtitleDownloadModel: (name: string) => req<{ status: string }>(`/api/v1/subtitles/models/${encodeURIComponent(name)}`, { method: "POST" }),
 
   scanSeries: () => req<{ status: string } & JobRef>("/api/v1/series/scan", { method: "POST" }),
-  seriesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/series/unmatched").then((r) => r.unmatched),
+  seriesUnmatched: () => req<{ unmatched: UnmatchedFolder[] | null }>("/api/v1/series/unmatched").then((r) => r.unmatched ?? []),
   importSeriesFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/series/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   seriesDuplicates: (id: number) =>

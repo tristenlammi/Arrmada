@@ -93,6 +93,9 @@ func (r *Repo) unmatched(ctx context.Context, media string, roots []string) ([]U
 		if cands != "" {
 			_ = json.Unmarshal([]byte(cands), &u.Candidates)
 		}
+		if u.Candidates == nil {
+			u.Candidates = []metadata.MovieResult{} // the page reads a list, never null (#136)
+		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -111,6 +114,13 @@ func (r *Repo) dropUnmatched(ctx context.Context, media, root, folder string) er
 func (s *Service) recordUnmatched(ctx context.Context, list []UnmatchedFolder, complete bool, keep []string) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	// The scan's own result lists these folders too: each gets a list of candidates, empty
+	// when the lookup found none, so nothing reading it meets null.
+	for i := range list {
+		if list[i].Candidates == nil {
+			list[i].Candidates = []metadata.MovieResult{}
+		}
+	}
 	if err := s.repo.replaceUnmatched(wctx, mediaMovie, list, complete, keep); err != nil {
 		s.log.Warn("library scan: couldn't save the folders that need review", "err", err)
 	}

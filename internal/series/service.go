@@ -1951,6 +1951,7 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string, progress
 	report(len(shows))
 	// A folder that couldn't be read keeps the needs-review rows its last scan left, and so
 	// does every other folder when this scan was of one folder only.
+	withCandidates(res.Unmatched)
 	keep := append([]UnmatchedFolder(nil), res.Unmatched...)
 	for _, u := range s.LastUnmatched() {
 		kept := rootOverride != "" && filepath.Clean(u.Root) != filepath.Clean(rootOverride)
@@ -2045,17 +2046,30 @@ func topSeries(results []metadata.SeriesResult, n int) []metadata.SeriesResult {
 	return results
 }
 
+// withCandidates gives every folder a candidate list, empty when the lookup found nothing
+// or failed, so the page always gets a list to show (never null, which broke Settings
+// until a restart: #136).
+func withCandidates(list []UnmatchedFolder) []UnmatchedFolder {
+	for i := range list {
+		if list[i].Candidates == nil {
+			list[i].Candidates = []metadata.SeriesResult{}
+		}
+	}
+	return list
+}
+
 func (s *Service) setLastUnmatched(u []UnmatchedFolder) {
 	s.muUnmatched.Lock()
-	s.lastUnmatched = u
+	s.lastUnmatched = withCandidates(u)
 	s.muUnmatched.Unlock()
 }
 
-// LastUnmatched returns the folders the most recent scan couldn't identify.
+// LastUnmatched returns the folders the most recent scan couldn't identify: an empty
+// list, never nil, when there are none.
 func (s *Service) LastUnmatched() []UnmatchedFolder {
 	s.muUnmatched.Lock()
 	defer s.muUnmatched.Unlock()
-	return append([]UnmatchedFolder(nil), s.lastUnmatched...)
+	return append([]UnmatchedFolder{}, s.lastUnmatched...)
 }
 
 // dropUnmatched takes one folder of one TV folder (root) off the list; the same name in
