@@ -11,6 +11,32 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-23
+
+### Highlights
+
+- **Emby** connects through the Jellyfin card (#60): Watch links, library updates, Insights and sign-in with Emby users.
+- **Convert can be told what to leave alone**: a film, a show or a season, a library folder, or a resolution such as 4K.
+- **Find a smaller release** for a film instead of converting it: a search narrowed to releases that are already smaller and give up nothing your file has.
+- **Convert on the GPU handles HDR10 and HLG**, on cards that prove at startup they keep the HDR; interlaced files (DVDs, broadcast TV) can be converted at last; and every HDR conversion is checked before it replaces the original.
+- **An episode a release split into "Part 1" and "Part 2" is joined back into one** (Disney+ rips of Family Guy), so the season places correctly.
+- **Bulk actions**: delete many requests at once (optionally stopping the search for their titles), and unblock many releases at once (#133).
+- **Seerr imports** no longer bring back deleted or finished requests and search for them all at once (#130).
+- **Fixes**: Settings no longer breaks after a library scan (#136), "ENG Sub ITA" isn't taken for Italian audio (#58), unticked music release types leave the artist page (#122), long single-file audiobooks play in Lissen, and the bundled SABnzbd answers over Tailscale.
+
+### Before you update
+
+- **Rolling back to v0.5.0 needs `--with-db`**: this version adds database changes (Convert's exclusions, the file a Convert skip is about, and what a "smaller release" grab must match).
+- **Files that came in under "ENG Sub ITA"-style names are read as English audio** (#58). On a profile with an audio language rule for the subtitle's language, they now show a red badge and, with upgrades on, are replaced when a release with that audio turns up.
+- **Convert test-encodes some files again.** Test results now record which encoder made them, and ones from before this update don't say, so files they covered show estimates until their next test encode (a few minutes each).
+- **Convert's HDR check is stricter**, on the CPU too: a converted HDR file whose HDR kind, colour tags, mastering display or light level don't come back keeps the original.
+- **New installs leave Dolby Vision files alone** in Convert. An install that has used Convert keeps dropping the Dolby Vision layer as before, unless you choose otherwise.
+- **AV1 conversions keep to the cores you set**, so on a machine where they used every core they may take longer.
+- **Very long single-file audiobooks** (32 hours or more, with chapters) reach listening apps as one track per chapter; apps that already downloaded one may download it again. Saved places carry over.
+- **Music**: albums of a kind you unticked in Release types leave the artist page unless they're wanted or have files.
+- **Bundled SABnzbd**: `update.sh` restarts it once to let Tailscale addresses reach its page.
+- **Emby** is built from Emby's documentation and hasn't been tried against a real Emby server yet; tell us if something doesn't work.
+
 ### Added
 
 - **Tell Convert what to leave alone.** Until now the only way to keep Convert off a file was to cancel it, which held it back for a month. Nothing is left out until you choose it, so a library converts as before.
@@ -1340,7 +1366,8 @@ The first tagged release (early development).
 - **Safety nets**: hardlinked imports, a recycle bin, nightly backups, a blocklist, and
   `update.sh` with automatic rollback.
 
-[Unreleased]: https://github.com/tristenlammi/Arrmada/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tristenlammi/Arrmada/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tristenlammi/Arrmada/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tristenlammi/Arrmada/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tristenlammi/Arrmada/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/tristenlammi/Arrmada/compare/v0.3.2...v0.3.3
