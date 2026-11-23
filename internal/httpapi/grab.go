@@ -14,6 +14,10 @@ type grabRequest struct {
 	// VersionID is the track the grab is for (0 = the default track). A token from a
 	// track's own search already names its track; a different one here is refused.
 	VersionID int64 `json:"version_id,omitempty"`
+	// ReplaceSmaller marks a grab from "Find a smaller release": the download is checked
+	// against the file it replaces before it's imported, and leaves that file's release as
+	// the baseline (automation/smaller.go).
+	ReplaceSmaller bool `json:"replace_smaller,omitempty"`
 }
 
 // handleGrab closes the acquisition loop: fetch a release's download link
@@ -52,6 +56,12 @@ func (a *api) handleGrab(w http.ResponseWriter, r *http.Request) {
 	// hash goes on the row so the torrent can be matched back regardless of how the
 	// client ends up naming it.
 	a.deps.Automation.RecordManualGrab(r.Context(), ref.MediaID, versionID, ref.Title, ref.Indexer, hash)
+	if req.ReplaceSmaller {
+		if err := a.deps.Automation.MarkReplaceGrab(r.Context(), ref.MediaID, versionID, ref.Title); err != nil {
+			// The download goes ahead as an ordinary grab; only its check and baseline are lost.
+			a.deps.Log.Warn("smaller release: couldn't record what the grab replaces", "title", ref.Title, "err", err)
+		}
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": ref.Title})
 }
 

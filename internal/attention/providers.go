@@ -198,6 +198,8 @@ func reviewReason(code string) string {
 		return "the import keeps failing"
 	case automation.ReasonNoMedia:
 		return "nothing inside can be imported"
+	case automation.ReasonReplaceCheck:
+		return "the smaller release isn't what its name said"
 	}
 	return "it needs a decision"
 }

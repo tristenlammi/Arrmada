@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
 import { formatReleaseAge } from "../lib/format";
 import { Button, IconButton, Modal, StatusChip } from "../ui";
@@ -60,7 +60,16 @@ export function ReleaseSearchModal({
   onBlock,
   onClose,
   audio,
+  header,
+  rowExtra,
+  emptyMessage,
 }: {
+  // header renders above the results once a search has answered; rowExtra under each
+  // release; emptyMessage replaces the "nothing found" line — "Find a smaller release" uses
+  // them to show the file being replaced and why each release qualifies.
+  header?: (list: ReleaseList) => ReactNode;
+  rowExtra?: (rel: RankedRelease) => ReactNode;
+  emptyMessage?: (list: ReleaseList) => string;
   title: string;
   subtitle?: string;
   // audio: a music album's search. There are no resolutions, video features or bitrates
@@ -181,6 +190,7 @@ export function ReleaseSearchModal({
         )}
         {error && <div className="mb-3 rounded-lg p-2.5 text-sm" style={{ border: "1px solid var(--reject)", color: "var(--reject-text)" }}>{error}</div>}
         {!loading && <IndexerIssues list={list} />}
+        {!loading && list && header?.(list)}
         {!loading && list && list.releases.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-b pb-3" style={{ borderColor: "var(--line)" }}>
             {resAvailable.length > 1 && (
@@ -209,7 +219,7 @@ export function ReleaseSearchModal({
           {loading ? (
             <div className="p-8 text-center text-base text-ink-dim">Searching your indexers…</div>
           ) : !list || list.releases.length === 0 ? (
-            <div className="p-8 text-center text-base text-ink-dim">{emptyReleasesMessage(list)}</div>
+            <div className="p-8 text-center text-base text-ink-dim">{list && emptyMessage ? emptyMessage(list) : emptyReleasesMessage(list)}</div>
           ) : view.length === 0 ? (
             <div className="p-8 text-center text-base text-ink-dim">
               No releases match these filters.
@@ -229,6 +239,7 @@ export function ReleaseSearchModal({
                   onGrab={() => grab(rel)}
                   onBlock={block ? () => block(rel) : undefined}
                   audio={audio}
+                  extra={rowExtra?.(rel)}
                 />
               ))}
             </div>
@@ -263,7 +274,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   );
 }
 
-function ReleaseRow({ rel, why, chosenOver, busy, grabbed, disabled, onGrab, onBlock, audio }: { rel: RankedRelease; why?: string[]; chosenOver?: string; busy: boolean; grabbed: boolean; disabled: boolean; onGrab: () => void; onBlock?: () => void; audio?: boolean }) {
+function ReleaseRow({ rel, why, chosenOver, busy, grabbed, disabled, onGrab, onBlock, audio, extra }: { rel: RankedRelease; why?: string[]; chosenOver?: string; busy: boolean; grabbed: boolean; disabled: boolean; onGrab: () => void; onBlock?: () => void; audio?: boolean; extra?: ReactNode }) {
   const blocked = rel.blocklisted;
   // Usenet has no seeders to count. A release on a network with no download client set up
   // for it can't be grabbed at all; its reject reason says so.
@@ -317,6 +328,7 @@ function ReleaseRow({ rel, why, chosenOver, busy, grabbed, disabled, onGrab, onB
             </ul>
           )}
           {chosenOver && <div className="mt-1 text-xs text-ink-dim">{chosenOver}</div>}
+          {extra}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
           <Button variant={grabbed ? "secondary" : "primary"} onClick={onGrab} disabled={disabled || grabbed || blocked || noClient || !rel.token} className="px-3.5 text-sm" style={{ opacity: blocked || noClient ? 0.5 : 1, color: grabbed ? "var(--ink-dim)" : undefined }}>

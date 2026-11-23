@@ -3208,7 +3208,9 @@ export const api = {
   // A grab names the release by the token its search handed out; the download link
   // itself never leaves the server. movie_id must be the movie the search was for, and
   // version_id (a movie track; 0/absent = the default track) the track it was for.
-  grab: (body: { token: string; movie_id: number; version_id?: number }) =>
+  /** replace_smaller: a pick from "Find a smaller release" — checked against the file it
+   * replaces when it lands, and leaves that file's release as the baseline. */
+  grab: (body: { token: string; movie_id: number; version_id?: number; replace_smaller?: boolean }) =>
     req<{ status: string; title: string }>("/api/v1/grab", {
       method: "POST",
       body: JSON.stringify(body),
@@ -3692,6 +3694,9 @@ export const api = {
   // the releases it can't take marked ineligible. Without it the movie is ranked as a whole.
   movieReleases: (id: number, versionId?: number) =>
     req<ReleaseList>(`/api/v1/movies/${id}/releases${versionId === undefined ? "" : `?version=${versionId}`}`),
+  /** "Find a smaller release" for one of the movie's files (versionId 0 = the default file). */
+  movieSmallerReleases: (id: number, versionId = 0) =>
+    req<SmallerList>(`/api/v1/movies/${id}/smaller-releases?version=${versionId}`),
   /** The editions release names are recognised by, for the version form's picker. */
   movieEditions: () => req<{ editions: string[] }>("/api/v1/movies/editions").then((r) => r.editions),
   blocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/movies/${id}/blocklist`).then((r) => r.blocklist),
@@ -4079,6 +4084,41 @@ export interface RankedRelease {
   /** The audio languages the name carries, as base codes, and a note when they're assumed. */
   audio_langs?: string[];
   audio_langs_note?: string;
+  /** "Find a smaller release" rows only: what replacing the file with it saves, keeps and gives up. */
+  replace?: ReplaceFit;
+}
+
+/** Why a release qualifies as a smaller replacement for a file, and what it gives up. */
+export interface ReplaceFit {
+  saves_gb: number;
+  saves_pct: number;
+  bitrate_mbps?: number;
+  why: string[];
+  loses?: string[];
+}
+
+/** The "Find a smaller release" search: sensible replacements in `releases`, the file they'd
+ * replace, and the rest of what the search found with why each was left out. */
+export interface SmallerList extends ReleaseList {
+  current: {
+    release?: string;
+    size_gb: number;
+    bitrate_mbps?: number;
+    resolution?: string;
+    codec?: string;
+    hdr?: string;
+    dolby_vision?: boolean;
+    atmos?: boolean;
+    lossless?: boolean;
+    audio_langs?: string[];
+    runtime_min?: number;
+    edition?: string;
+    floor_mbps: number;
+    ceiling_mbps?: number;
+    floor_from_profile: boolean;
+  };
+  notes?: string[];
+  not_suitable?: { title: string; summary: string; size_gb: number; indexer: string; why: string }[];
 }
 
 export interface BlockEntry {
@@ -4411,8 +4451,10 @@ export interface ReviewImportStarted extends JobRef {
 // title_conflict: a show's files whose episode titles and numbers disagree within the pack.
 // same_name: grabbed for a show that shares its name with another, and the release doesn't
 // say which (#81).
+// replace_check: a "Find a smaller release" download that isn't what its name said (another
+// resolution, no HDR, another length); the file it would replace is untouched.
 export type ReviewReason = "mismatch" | "same_name" | "unmatched" | "numbering" | "title_conflict" | "import_failed" | "no_media"
-  | "low_confidence" | "close_editions" | "partial" | "tag_conflict" | "fingerprint_conflict";
+  | "replace_check" | "low_confidence" | "close_editions" | "partial" | "tag_conflict" | "fingerprint_conflict";
 
 // One file inside a held download, with what its name says about episode numbering.
 export interface ReviewFile {

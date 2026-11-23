@@ -226,6 +226,7 @@ GET /api/v1/movies/{id}/manualimport/suggestions staff -
 GET /api/v1/movies/{id}/other-files staff -
 GET /api/v1/movies/{id}/releases staff -
 GET /api/v1/movies/{id}/rename staff -
+GET /api/v1/movies/{id}/smaller-releases staff -
 GET /api/v1/movies/{id}/title-choices staff -
 GET /api/v1/movies/{id}/versions staff -
 GET /api/v1/movies/{id}/watch-stats staff -

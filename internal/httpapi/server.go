@@ -631,6 +631,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/movies/{id}/move", a.requireRole(auth.RoleManager, a.handleMoveMovieFolder))
 	mux.HandleFunc("POST /api/v1/movies/{id}/move/preview", a.requireRole(auth.RoleManager, a.handlePreviewMovieMove))
 	mux.HandleFunc("GET /api/v1/movies/{id}/releases", a.requireRole(auth.RoleManager, a.handleMovieReleases))
+	mux.HandleFunc("GET /api/v1/movies/{id}/smaller-releases", a.requireRole(auth.RoleManager, a.handleMovieSmallerReleases))
 	mux.HandleFunc("GET /api/v1/movies/{id}/history", a.requireRole(auth.RoleManager, a.handleMovieHistory))
 	mux.HandleFunc("GET /api/v1/movies/{id}/collection", a.requireRole(auth.RoleManager, a.handleMovieCollection))
 	// The title the page shows (the display-title override) and the names it may pick from.
