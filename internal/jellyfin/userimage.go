@@ -7,22 +7,27 @@ import (
 	"net/url"
 )
 
-// UserImage fetches a user's picture (GET /UserImage?userId=…) through the client, like
+// UserImage fetches a user's picture (GET /UserImage?userId=…; Emby's
+// /Users/{id}/Images/Primary) through the client, like
 // Image, so a browser never needs the server's address or key. A user without a picture
 // is ErrNotFound. Caller closes the body.
 func (c *Client) UserImage(ctx context.Context, userID string) (*http.Response, error) {
 	if c.base == "" {
 		return nil, ErrNotConfigured
 	}
-	if !isItemID(userID) {
+	if !(isItemID(userID) || (c.emby && isEmbyItemID(userID))) {
 		return nil, errors.New("invalid image request")
 	}
-	const op = "GET /UserImage"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/UserImage?"+url.Values{"userId": {userID}}.Encode(), nil)
+	op, target := "GET /UserImage", c.base+"/UserImage?"+url.Values{"userId": {userID}}.Encode()
+	if c.emby {
+		// Emby keeps the older route: /Users/{id}/Images/Primary.
+		op, target = "GET /Users/{id}/Images/Primary", c.apiBase()+"/Users/"+url.PathEscape(userID)+"/Images/Primary"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: ErrNotConfigured, Detail: "the server address isn't a valid URL"}
 	}
-	req.Header.Set("Authorization", c.authorization())
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: ErrUnreachable, Detail: netDetail(err)}

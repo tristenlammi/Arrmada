@@ -25,8 +25,21 @@ type VirtualFolder struct {
 }
 
 // VirtualFolders lists the server's libraries with their folders (admin key).
+//
+// Emby's current API lists them at /Library/VirtualFolders/Query ({Items, TotalRecordCount});
+// older Emby releases only answer the bare list Jellyfin kept, so a 404 there falls back
+// to it.
 func (c *Client) VirtualFolders(ctx context.Context) ([]VirtualFolder, error) {
 	var out []VirtualFolder
+	if c.emby {
+		var page struct {
+			Items []VirtualFolder `json:"Items"`
+		}
+		err := c.call(ctx, http.MethodGet, "/Library/VirtualFolders/Query", nil, nil, &page, true)
+		if !errors.Is(err, ErrNotFound) {
+			return page.Items, err
+		}
+	}
 	err := c.call(ctx, http.MethodGet, "/Library/VirtualFolders", nil, nil, &out, true)
 	return out, err
 }
@@ -267,6 +280,9 @@ func (c *Client) RefreshItem(ctx context.Context, itemID string, full bool) erro
 		"replaceAllImages":    {strconv.FormatBool(full)},
 		"regenerateTrickplay": {"false"},
 	}
+	if c.emby {
+		q.Del("regenerateTrickplay") // Jellyfin's own; Emby has no such option
+	}
 	return c.call(ctx, http.MethodPost, "/Items/"+url.PathEscape(itemID)+"/Refresh", q, nil, nil, true)
 }
 
@@ -304,15 +320,15 @@ func (c *Client) Image(ctx context.Context, itemID, imageType string, maxWidth i
 	if c.base == "" {
 		return nil, ErrNotConfigured
 	}
-	if !isItemID(itemID) || !validImageType(imageType) {
+	if !(isItemID(itemID) || (c.emby && isEmbyItemID(itemID))) || !validImageType(imageType) {
 		return nil, errors.New("invalid image request")
 	}
 	op := "GET /Items/{id}/Images/" + imageType
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+ItemImagePath(itemID, imageType, "", maxWidth), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase()+ItemImagePath(itemID, imageType, "", maxWidth), nil)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: ErrNotConfigured, Detail: "the server address isn't a valid URL"}
 	}
-	req.Header.Set("Authorization", c.authorization())
+	c.setAuth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: ErrUnreachable, Detail: netDetail(err)}
@@ -339,6 +355,22 @@ func isItemID(s string) bool {
 	return true
 }
 
+// isEmbyItemID: Emby numbers its library items ("12345") where Jellyfin uses GUIDs.
+func isEmbyItemID(s string) bool {
+	if s == "" || len(s) > 19 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsEmbyItemID reports whether s is an Emby item number (digits only).
+func IsEmbyItemID(s string) bool { return isEmbyItemID(s) }
+
 func validImageType(t string) bool {
 	switch t {
 	case ImagePrimary, ImageBackdrop, ImageThumb, ImageLogo:
@@ -362,4 +394,22 @@ func WatchURL(publicBase, serverID, itemID string) string {
 		q.Set("serverId", serverID)
 	}
 	return publicBase + "/web/#/details?" + q.Encode()
+}
+
+// WatchURLFor is WatchURL for a server of the given kind. Emby's web app opens an item at
+// {public}/web/index.html#!/item?id=…&serverId=… (with the server id in lower case).
+func WatchURLFor(kind, publicBase, serverID, itemID string) string {
+	if NormalizeServerKind(kind) != ServerEmby {
+		return WatchURL(publicBase, serverID, itemID)
+	}
+	publicBase = strings.TrimRight(strings.TrimSpace(publicBase), "/")
+	if publicBase == "" || itemID == "" {
+		return ""
+	}
+	q := url.Values{}
+	q.Set("id", itemID)
+	if serverID != "" {
+		q.Set("serverId", strings.ToLower(serverID))
+	}
+	return publicBase + "/web/index.html#!/item?" + q.Encode()
 }

@@ -29,6 +29,9 @@ export interface Status {
   jellyfin_login?: boolean;
   /** Its sheet offers Quick Connect too. */
   jellyfin_quickconnect?: boolean;
+  /** "emby" when the Jellyfin slot is connected to an Emby server (said to signed-in
+   *  callers, and to the login page while its sign-in is offered). */
+  jellyfin_server_kind?: string;
   /** Whether TMDB browsing works (a key is set). Sent to signed-in callers only. */
   metadata_ready?: boolean;
 }

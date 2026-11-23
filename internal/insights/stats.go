@@ -389,14 +389,14 @@ func (s *Service) RecentlyAdded(ctx context.Context, limit int, server string) (
 			}
 		} else {
 			for _, it := range items {
-				ri := RecentItem{Title: it.Name, Type: "movie", ThumbURL: proxyImage(JellyfinItemImage(it.ID)), AddedAt: it.DateCreated.Unix(), Server: ServerJellyfin}
-				if !isGUID(it.ID) {
+				ri := RecentItem{Title: it.Name, Type: "movie", ThumbURL: proxyImage(serverItemImage(it.ID)), AddedAt: it.DateCreated.Unix(), Server: ServerJellyfin}
+				if !isGUID(it.ID) && !jellyfin.IsEmbyItemID(it.ID) {
 					ri.ThumbURL = ""
 				}
 				if it.Type == jellyfin.TypeEpisode {
 					ri.Type, ri.Title, ri.Subtitle = "episode", it.SeriesName, it.Name
-					if isGUID(it.SeriesID) {
-						ri.ThumbURL = proxyImage(JellyfinItemImage(it.SeriesID))
+					if isGUID(it.SeriesID) || jellyfin.IsEmbyItemID(it.SeriesID) {
+						ri.ThumbURL = proxyImage(serverItemImage(it.SeriesID))
 					}
 				} else if it.ProductionYear > 0 {
 					ri.Subtitle = strconv.Itoa(it.ProductionYear)

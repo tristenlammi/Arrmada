@@ -106,6 +106,9 @@ func validateInsightsImagePath(raw string) (string, bool) {
 	if strings.HasPrefix(raw, "jellyfin:") {
 		return raw, insights.IsJellyfinImage(raw)
 	}
+	if strings.HasPrefix(raw, "emby:") { // an Emby poster: "emby:/Items/<digits>/Images/Primary"
+		return raw, insights.IsEmbyImage(raw)
+	}
 	return validatePlexImagePath(raw)
 }
 

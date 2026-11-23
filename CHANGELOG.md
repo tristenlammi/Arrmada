@@ -13,6 +13,10 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Added
 
+- **Emby support** ([#60](https://github.com/tristenlammi/Arrmada/issues/60)). Emby connects through the Jellyfin card in Settings → Connections: set **Server** to **Emby**, add its address and an API key (Emby: Dashboard → Advanced → API Keys).
+  - Everything Jellyfin does works with Emby too: Watch links into Emby's web app, library updates after every change, requests counting as ready once Emby has them, Recently added, watch monitoring in Insights, and sign-in and account linking with an Emby username and password.
+  - Emby has no Quick Connect, so it isn't offered. It's Jellyfin or Emby, alongside Plex, not both at once.
+  - The app names and colours it as Emby wherever it shows. Nothing changes for a Jellyfin connection.
 - **Fix sync, for one subtitle or a whole show.** Check sync could say a subtitle ran late, but the only way to move it was half a second at a time, one episode at a time.
   - **Fix sync** on a subtitle's card measures it against the speech and moves it into sync.
   - **Fix subtitle sync…** in a show's ⋯ menu does that for every episode's `.srt`, as one background job. Each change is listed under Subtitles → Logs.

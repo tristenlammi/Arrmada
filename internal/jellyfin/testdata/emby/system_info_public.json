@@ -1,0 +1,9 @@
+{
+  "LocalAddress": "http://192.168.1.20:8096",
+  "LocalAddresses": ["http://192.168.1.20:8096"],
+  "WanAddress": "",
+  "RemoteAddresses": [],
+  "ServerName": "emby-den",
+  "Version": "4.8.10.0",
+  "Id": "5D6E0C7B8A9F4E2D9C1B0A3F7E6D5C4B"
+}

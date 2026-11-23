@@ -25,41 +25,55 @@ func (a *api) jellyfinReady(w http.ResponseWriter) bool {
 	return true
 }
 
+// jellyfinConfigView is the saved connection plus which server it is: "jellyfin" or
+// "emby" (Emby connects through the same slot).
+type jellyfinConfigView struct {
+	jellyfinsvc.Config
+	ServerKind string `json:"server_kind"`
+}
+
+func (a *api) jellyfinConfig(ctx context.Context) jellyfinConfigView {
+	return jellyfinConfigView{Config: a.deps.Jellyfin.Config(ctx), ServerKind: a.deps.Jellyfin.ServerKind(ctx)}
+}
+
 // handleJellyfinConfig answers GET /api/v1/jellyfin.
 func (a *api) handleJellyfinConfig(w http.ResponseWriter, r *http.Request) {
 	if !a.jellyfinReady(w) {
 		return
 	}
-	a.writeJSON(w, http.StatusOK, a.deps.Jellyfin.Config(r.Context()))
+	a.writeJSON(w, http.StatusOK, a.jellyfinConfig(r.Context()))
 }
 
-// handleJellyfinSave answers PUT /api/v1/jellyfin {url, public_url, api_key?}: a missing
+// handleJellyfinSave answers PUT /api/v1/jellyfin {server_kind?, url, public_url, api_key?}
+// (server_kind "emby" connects an Emby server through the same slot): a missing
 // or blank key keeps the saved one. Answers with the saved connection.
 func (a *api) handleJellyfinSave(w http.ResponseWriter, r *http.Request) {
 	if !a.jellyfinReady(w) {
 		return
 	}
 	var req struct {
-		URL       string `json:"url"`
-		PublicURL string `json:"public_url"`
-		APIKey    string `json:"api_key"`
+		// ServerKind is "jellyfin" or "emby"; missing or blank keeps the saved kind.
+		ServerKind string `json:"server_kind"`
+		URL        string `json:"url"`
+		PublicURL  string `json:"public_url"`
+		APIKey     string `json:"api_key"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	if err := a.deps.Jellyfin.Save(ctx, req.URL, req.PublicURL, req.APIKey); err != nil {
+	if err := a.deps.Jellyfin.SaveFor(ctx, req.ServerKind, req.URL, req.PublicURL, req.APIKey); err != nil {
 		if errors.Is(err, jellyfinsvc.ErrInvalid) {
 			a.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		a.deps.Log.Warn("jellyfin: couldn't save the connection", "err", err)
-		a.writeError(w, http.StatusInternalServerError, "could not save the Jellyfin connection")
+		a.writeError(w, http.StatusInternalServerError, "could not save the "+a.deps.Jellyfin.Label(r.Context())+" connection")
 		return
 	}
 	a.recheckHealth(r, jellyfinHealthKey) // a fixed key clears its warning now
-	a.writeJSON(w, http.StatusOK, a.deps.Jellyfin.Config(r.Context()))
+	a.writeJSON(w, http.StatusOK, a.jellyfinConfig(r.Context()))
 }
 
 // handleJellyfinDisconnect answers DELETE /api/v1/jellyfin (admin): the address, the key
@@ -76,7 +90,7 @@ func (a *api) handleJellyfinDisconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	a.deps.Log.Info("jellyfin: disconnected")
 	a.recheckHealth(r, jellyfinHealthKey) // an unconfigured server has nothing to warn about
-	a.writeJSON(w, http.StatusOK, a.deps.Jellyfin.Config(r.Context()))
+	a.writeJSON(w, http.StatusOK, a.jellyfinConfig(r.Context()))
 }
 
 // handleJellyfinTest answers POST /api/v1/jellyfin/test {url?, api_key?}: the typed values
@@ -86,15 +100,16 @@ func (a *api) handleJellyfinTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		URL    string `json:"url"`
-		APIKey string `json:"api_key"`
+		ServerKind string `json:"server_kind"` // "" = the saved kind
+		URL        string `json:"url"`
+		APIKey     string `json:"api_key"`
 	}
 	if !a.decodeJSON(w, r, &req) { // {} tests the saved connection
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	res := a.deps.Jellyfin.Test(ctx, req.URL, req.APIKey)
+	res := a.deps.Jellyfin.TestFor(ctx, req.ServerKind, req.URL, req.APIKey)
 	res.Detail = connstatus.Redact(res.Detail)
 	a.writeJSON(w, http.StatusOK, res)
 }

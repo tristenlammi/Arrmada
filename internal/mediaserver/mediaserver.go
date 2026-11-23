@@ -7,6 +7,7 @@ package mediaserver
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,15 +20,35 @@ const (
 	Jellyfin Kind = "jellyfin"
 )
 
-// Label is the product name as people write it.
+// Label is the product name as people write it. The Jellyfin slot names itself through
+// SetJellyfinLabel ("Emby" when it's connected to an Emby server).
 func (k Kind) Label() string {
 	switch k {
 	case Plex, "":
 		return "Plex"
 	case Jellyfin:
+		if fn := jellyfinLabel.Load(); fn != nil {
+			if v := (*fn)(); v != "" {
+				return v
+			}
+		}
 		return "Jellyfin"
 	}
 	return string(k)
+}
+
+var jellyfinLabel atomic.Pointer[func() string]
+
+// SetJellyfinLabel sets where the Jellyfin slot's name comes from: the Jellyfin connection
+// says "Emby" when the server it's set up for is Emby (Emby uses the Jellyfin slot: its
+// settings, recorded plays and linked accounts). nil, or a func answering "", means
+// "Jellyfin". Call it once at startup.
+func SetJellyfinLabel(fn func() string) {
+	if fn == nil {
+		jellyfinLabel.Store(nil)
+		return
+	}
+	jellyfinLabel.Store(&fn)
 }
 
 // order is where a kind sits in every list: Plex first, then Jellyfin.

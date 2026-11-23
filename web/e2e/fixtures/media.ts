@@ -550,11 +550,14 @@ export const jellyfinConnected: JellyfinConfig = {
 // address the same as the URL is saved blank (it follows the URL), as the server does.
 export function jellyfinSave(body: JellyfinSave): JellyfinConfig {
   const publicURL = body.public_url.replace(/\/+$/, "") === body.url.replace(/\/+$/, "") ? "" : body.public_url;
-  return { ...jellyfinConfig, url: body.url, public_url: publicURL, key_set: !!body.api_key, server_name: "Attic", server_id: "f00dfeed", version: "10.10.3" };
+  const saved = { ...jellyfinConfig, url: body.url, public_url: publicURL, key_set: !!body.api_key, server_name: "Attic", server_id: "f00dfeed", version: "10.10.3" };
+  // An Emby server (server_kind "emby") answers with its own kind and version.
+  return body.server_kind ? { ...saved, server_kind: body.server_kind, ...(body.server_kind === "emby" ? { version: "4.8.10.0" } : {}) } : saved;
 }
 
-// POST /api/v1/jellyfin/test: an address with "unreachable" in it doesn't answer.
-export function jellyfinTest(body: { url?: string }): JellyfinTestResult {
+// POST /api/v1/jellyfin/test: an address with "unreachable" in it doesn't answer; Emby
+// answers with its own version.
+export function jellyfinTest(body: { url?: string; server_kind?: string }): JellyfinTestResult {
   if (body.url?.includes("unreachable")) return { ok: false, detail: "dial tcp: connection refused" };
-  return { ok: true, detail: "Connected", server_name: "Attic", version: "10.10.3" };
+  return { ok: true, detail: "Connected", server_name: "Attic", version: body.server_kind === "emby" ? "4.8.10.0" : "10.10.3" };
 }

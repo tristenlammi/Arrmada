@@ -1164,6 +1164,9 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// Sign in with Jellyfin, and whether its sheet offers Quick Connect.
 		"jellyfin_login":        a.jellyfinLoginEnabled(r.Context()),
 		"jellyfin_quickconnect": a.jellyfinLoginEnabled(r.Context()) && a.jellyfinQuickConnectOn(r.Context()),
+		// "emby" when the Jellyfin slot is connected to an Emby server, so the app calls it
+		// Emby. Said to signed-in callers, and to the login page while its sign-in is offered.
+		"jellyfin_server_kind": a.jellyfinLoginKind(r.Context(), authed),
 
 		"modules":       a.modules(r.Context()),
 		"books_enabled": a.booksEnabled(r.Context()),

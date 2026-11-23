@@ -68,6 +68,9 @@ func setupMediaServers(d mediaServerDeps) *mediaServers {
 		d.Insights.SetJellyfin(jf)
 		d.Group.Loop("insights: jellyfin poller", d.Insights.RunJellyfin)
 	}
+	// An Emby server uses the Jellyfin slot; Watch buttons, notices and status lines then
+	// say "Emby".
+	mediaserver.SetJellyfinLabel(func() string { return jf.Label(context.Background()) })
 	m := &mediaServers{Plex: d.Plex, Jellyfin: jf, JellyfinScan: jfScan, insights: d.Insights}
 	m.Registry = mediaserver.NewRegistry(d.Insights.MediaServer(), jf)
 	return m

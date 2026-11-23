@@ -98,7 +98,7 @@ func (s *Service) Library(ctx context.Context, windowDays int, byDuration bool, 
 // item id (32 hex digits) is never a Plex rating key, so a Jellyfin-only title stays
 // unlinked.
 func (s *Service) identify(it *LibraryItem) {
-	if it.RatingKey == "" || isGUID(it.RatingKey) {
+	if it.RatingKey == "" || isServerKey(it.RatingKey) {
 		return
 	}
 	if media, tmdb, ok := s.TMDBForRatingKey(it.RatingKey); ok {

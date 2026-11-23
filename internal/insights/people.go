@@ -75,7 +75,7 @@ func avatarURL(thumb string) string {
 	if strings.HasPrefix(thumb, "https://plex.tv/") {
 		return thumb
 	}
-	if IsJellyfinImage(thumb) {
+	if IsServerImage(thumb) {
 		return proxyImage(thumb)
 	}
 	return ""

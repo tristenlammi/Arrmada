@@ -205,8 +205,8 @@ function JellyfinServer({ cfg, err, status, admin, onDisconnected }: {
 
   const disconnect = async () => {
     const ok = await confirm({
-      title: `Disconnect ${cfg?.server_name || "Jellyfin"}?`,
-      body: "Arrmada forgets its address and API key: Watch links, library updates, watch monitoring and Sign in with Jellyfin stop until you connect it again. Plays already recorded, linked accounts and these settings stay.",
+      title: `Disconnect ${cfg?.server_name || SERVER_LABEL.jellyfin}?`,
+      body: `Arrmada forgets its address and API key: Watch links, library updates, watch monitoring and Sign in with ${SERVER_LABEL.jellyfin} stop until you connect it again. Plays already recorded, linked accounts and these settings stay.`,
       confirmLabel: "Disconnect",
       tone: "danger",
     });
@@ -214,7 +214,7 @@ function JellyfinServer({ cfg, err, status, admin, onDisconnected }: {
     setBusy(true);
     try {
       onDisconnected(await jellyfinApi.disconnect());
-      toast("Jellyfin disconnected", { tone: "good" });
+      toast(`${SERVER_LABEL.jellyfin} disconnected`, { tone: "good" });
     } catch (e) {
       toast((e as Error).message, { tone: "error" });
     } finally {
@@ -223,31 +223,31 @@ function JellyfinServer({ cfg, err, status, admin, onDisconnected }: {
   };
 
   return (
-    <Section id="jellyfin-server" title="Jellyfin server" subtitle="Watch links open it, library updates go to it, Insights can record what's watched on it, and Jellyfin sign-in checks people against it. The connection itself — the address, the API key, Test — is the Jellyfin card in Settings → Connections.">
+    <Section id="jellyfin-server" title={`${SERVER_LABEL.jellyfin} server`} subtitle={`Watch links open it, library updates go to it, Insights can record what's watched on it, and ${SERVER_LABEL.jellyfin} sign-in checks people against it. The connection itself — the address, the API key, Test — is the ${SERVER_LABEL.jellyfin} card in Settings → Connections.`}>
       {!cfg ? (
-        err ? <p role="alert" className="m-0 text-sm" style={{ color: "var(--reject-text)" }}>Couldn't load the Jellyfin connection: {err}</p> : <p className="m-0 text-sm text-ink-dim">Loading…</p>
+        err ? <p role="alert" className="m-0 text-sm" style={{ color: "var(--reject-text)" }}>Couldn't load the {SERVER_LABEL.jellyfin} connection: {err}</p> : <p className="m-0 text-sm text-ink-dim">Loading…</p>
       ) : (
         <div className="flex flex-col gap-2">
           {connected && (
             <div className="text-base">
-              Connected to <b className="font-semibold">{cfg.server_name || "your Jellyfin server"}</b>{" "}
+              Connected to <b className="font-semibold">{cfg.server_name || `your ${SERVER_LABEL.jellyfin} server`}</b>{" "}
               <span className="break-all font-mono text-xs text-ink-faint">{cfg.url}</span>
-              {cfg.version && <span className="text-xs text-ink-faint"> · Jellyfin {cfg.version}</span>}
+              {cfg.version && <span className="text-xs text-ink-faint"> · {SERVER_LABEL.jellyfin} {cfg.version}</span>}
             </div>
           )}
           <StatusLine
-            name="Jellyfin"
+            name={SERVER_LABEL.jellyfin}
             status={connected ? (status?.status ?? (cfg.monitoring_enabled ? "recording" : "off")) : "unconfigured"}
             lastError={status?.last_error}
             lastPollAt={status?.last_poll_at}
           />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             {!admin ? (
-              <span className="text-xs text-ink-faint">An admin {connected ? "changes" : "connects"} the Jellyfin server.</span>
+              <span className="text-xs text-ink-faint">An admin {connected ? "changes" : "connects"} the {SERVER_LABEL.jellyfin} server.</span>
             ) : connected ? (
               <Link to={LINKS.jellyfinConnection} className="text-sm font-semibold" style={{ color: "var(--accent-text)" }}>Change the connection →</Link>
             ) : (
-              <Link to={LINKS.jellyfinConnection} className={connectButton} style={connectStyle}>Connect your Jellyfin server →</Link>
+              <Link to={LINKS.jellyfinConnection} className={connectButton} style={connectStyle}>Connect your {SERVER_LABEL.jellyfin} server →</Link>
             )}
             {admin && (connected || !!cfg.url) && (
               <Button size="sm" variant="ghost" busy={busy} busyLabel="Disconnecting…" onClick={() => void disconnect()}>Disconnect Jellyfin</Button>

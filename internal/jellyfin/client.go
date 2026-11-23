@@ -30,7 +30,36 @@ var (
 	ErrNotFound = errors.New("jellyfin has no such item")
 	// ErrUnreachable is no answer at all: refused, timed out, DNS, TLS.
 	ErrUnreachable = errors.New("jellyfin isn't reachable")
+	// ErrUnsupported is a call the server kind doesn't offer at all (Quick Connect on Emby).
+	// It is returned on its own, before anything is sent.
+	ErrUnsupported = errors.New("this media server doesn't offer that")
 )
+
+// The server kinds the client speaks to. Emby is the server Jellyfin was forked from: the
+// API is nearly the same, but it is reached under /emby, takes its credentials in the
+// X-Emby-Authorization and X-Emby-Token headers, and differs in a few calls (see the
+// package notes).
+const (
+	ServerJellyfin = "jellyfin"
+	ServerEmby     = "emby"
+)
+
+// NormalizeServerKind is "emby" for Emby (any case) and "jellyfin" for anything else, so an
+// unset or unknown value always means Jellyfin.
+func NormalizeServerKind(kind string) string {
+	if strings.EqualFold(strings.TrimSpace(kind), ServerEmby) {
+		return ServerEmby
+	}
+	return ServerJellyfin
+}
+
+// ServerLabel is the product's name as people write it: "Jellyfin" or "Emby".
+func ServerLabel(kind string) string {
+	if NormalizeServerKind(kind) == ServerEmby {
+		return "Emby"
+	}
+	return "Jellyfin"
+}
 
 // Error is one failed call. Its message names the call (method and path, never the query,
 // which can carry a Quick Connect secret) and what went wrong in plain words. It never holds
@@ -67,6 +96,7 @@ func (e *Error) Unwrap() error { return e.Kind }
 // Client talks to one Jellyfin server. A Client is safe for concurrent use; WithToken
 // derives one that acts as a signed-in user instead of with the API key.
 type Client struct {
+	emby     bool // an Emby server rather than Jellyfin (NewFor)
 	base     string
 	token    string // the API key, or a user's access token
 	deviceID string
@@ -101,6 +131,51 @@ func New(baseURL, apiKey, deviceID, version string, hc *http.Client) *Client {
 	}
 }
 
+// NewFor is New for a server of the given kind (ServerJellyfin or ServerEmby; anything
+// else is Jellyfin). New is NewFor(ServerJellyfin, …).
+func NewFor(kind, baseURL, apiKey, deviceID, version string, hc *http.Client) *Client {
+	c := New(baseURL, apiKey, deviceID, version, hc)
+	c.emby = NormalizeServerKind(kind) == ServerEmby
+	return c
+}
+
+// Kind is the server kind the client speaks to (ServerJellyfin or ServerEmby).
+func (c *Client) Kind() string {
+	if c.emby {
+		return ServerEmby
+	}
+	return ServerJellyfin
+}
+
+// IsEmby reports whether the client speaks to an Emby server.
+func (c *Client) IsEmby() bool { return c.emby }
+
+// apiBase is where API paths go: the address itself for Jellyfin; for Emby the address
+// plus /emby (the API root Emby documents), unless the saved address already ends in it.
+func (c *Client) apiBase() string {
+	if !c.emby || c.base == "" {
+		return c.base
+	}
+	if strings.HasSuffix(strings.ToLower(c.base), "/emby") {
+		return c.base
+	}
+	return c.base + "/emby"
+}
+
+// setAuth puts the credentials and device fields on a request the way the server reads
+// them: Jellyfin's Authorization: MediaBrowser header, or Emby's X-Emby-Authorization
+// header plus X-Emby-Token when there is a token.
+func (c *Client) setAuth(req *http.Request) {
+	if !c.emby {
+		req.Header.Set("Authorization", c.authorization())
+		return
+	}
+	req.Header.Set("X-Emby-Authorization", c.authorization())
+	if c.token != "" {
+		req.Header.Set("X-Emby-Token", c.token)
+	}
+}
+
 // defaultHTTPClient fails fast on a dead address (5 s to connect) but gives a big library
 // page time to arrive.
 func defaultHTTPClient() *http.Client {
@@ -130,7 +205,11 @@ func (c *Client) BaseURL() string { return c.base }
 // token (sign-in, Quick Connect): a token it issues is tied to that device.
 func (c *Client) authorization() string {
 	var b strings.Builder
-	b.WriteString("MediaBrowser ")
+	if c.emby {
+		b.WriteString("Emby ")
+	} else {
+		b.WriteString("MediaBrowser ")
+	}
 	if c.token != "" {
 		b.WriteString(`Token="` + headerValue(c.token) + `", `)
 	}
@@ -156,7 +235,7 @@ func (c *Client) call(ctx context.Context, method, path string, query url.Values
 		return ErrNotConfigured
 	}
 	op := method + " " + path
-	u := c.base + path
+	u := c.apiBase() + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -173,7 +252,7 @@ func (c *Client) call(ctx context.Context, method, path string, query url.Values
 		return &Error{Op: op, Kind: ErrNotConfigured, Detail: "the server address isn't a valid URL"}
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", c.authorization())
+	c.setAuth(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

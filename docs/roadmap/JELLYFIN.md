@@ -101,3 +101,39 @@ Real-server rig: synthetic ffmpeg clips named for real TMDB/TVDB titles with NFO
 3. **Settings:** one **"Media servers"** page (`/settings/media-servers`) with Plex and Jellyfin sections; old `/settings/plex` links redirect.
 4. **History:** Jellyfin history starts when monitoring is switched on; importing Playback Reporting / Jellystat history is later.
 5. Defaults taken (not asked): a separate **public address** for Jellyfin watch links, pre-filled from the connection URL, warning when it looks LAN-only; Insights shows **one row per server identity** with a server badge, grouped on the profile when both are linked to the same Arrmada account.
+
+## 7. Emby (#60, 2026-11)
+
+Emby connects through the Jellyfin slot: `jellyfin_server_kind` = `emby` (unset or anything
+else = Jellyfin, so existing installs are untouched). `jellyfin.NewFor(kind, …)` switches the
+client's dialect; everything above it (jellyfinsvc, index, scanner, Insights source, sign-in,
+`mediaserver.Jellyfin`) is shared. `mediaserver.Kind.Label()` and the web's `SERVER_LABEL`
+name the slot "Emby" when it holds one. No real Emby server was available: the Emby side is
+checked against Emby's REST API reference (dev.emby.media/reference/RestAPI, generated from
+current 4.8/4.9 servers), its API docs pages and the old open-source server code
+(MediaBrowser/Emby), with fakes in `internal/jellyfin/testdata/emby/` built from those shapes.
+
+| What Arrmada does | Jellyfin | Emby | Source |
+|---|---|---|---|
+| API root | `/` | `/emby/…` (an address already ending in `/emby` isn't doubled) | docs (base URL `…/emby/{apipath}`) |
+| Credentials | `Authorization: MediaBrowser Token=…, Client=…` | `X-Emby-Authorization: Emby Client=…, Device=…, DeviceId=…, Version=…[, Token=…]` + `X-Emby-Token` | docs + old AuthorizationContext.cs |
+| Identity | `/System/Info`, `/System/Info/Public` (`ProductName` "Jellyfin Server") | same routes, no `ProductName` | reference |
+| Libraries | `/Library/VirtualFolders` (list) | `/Library/VirtualFolders/Query` (`{Items}`), falling back to the list on 404 | reference (Query); old code (list) |
+| Partial scan | `POST /Library/Media/Updated {Updates:[{Path,UpdateType}]}` | same | reference |
+| Refresh one item | `POST /Items/{id}/Refresh` + `regenerateTrickplay` | same, without `regenerateTrickplay` | reference |
+| Index | `/Items?recursive&includeItemTypes&fields=ProviderIds,…` with the API key, no user | same | reference; **assumed** that a key without `UserId` lists everything (forum reports say it does on most versions) |
+| Item ids | 32-hex GUIDs | numbers (`"1201"`); users are GUIDs | **assumed** (how Emby 4.x answers in practice; the reference types ids as plain strings). GUID ids still work either way |
+| Watch link | `/web/#/details?id=…&serverId=…` | `/web/index.html#!/item?id=…&serverId=<lower-case>` | **assumed** (community forum, not the docs) |
+| Sessions | `/Sessions`; `TranscodingInfo.HardwareAccelerationType` (configured) | same shape; hardware as `VideoEncoderIsHardware`/`VideoEncoderHwAccel` (+ decoder), folded into `HardwareAccelerationType` | reference |
+| Users | `GET /Users` (list) | `GET /Users/Query` (`{Items}`), falling back to `/Users` on 404 | reference (Query); old code (list) |
+| User picture | `/UserImage?userId=` | `/Users/{id}/Images/Primary` | docs (Images page) |
+| Item picture | `/Items/{id}/Images/Primary` | same | docs |
+| Sign-in | `POST /Users/AuthenticateByName {Username,Pw}`, `POST /Sessions/Logout` | same | reference + docs |
+| Quick Connect | `/QuickConnect/*` | none (Emby Connect is something else) → `ErrUnsupported`, never offered | reference (no such routes) |
+| Premiere | — | not needed by anything Arrmada calls; hardware transcoding itself needs it | emby.media/premiere |
+
+Insights records an Emby play under rating key `emby-<n>` (a bare number could match a Plex
+rating key) and its posters as `emby:/Items/<n>/Images/Primary`, a second strict image form
+next to `jellyfin:/Items/<32 hex>/…`. Where the API key menu lives in Emby
+(Dashboard → Advanced → API Keys) is **assumed** from current third-party guides; Emby's own
+API-key page still shows an older menu.

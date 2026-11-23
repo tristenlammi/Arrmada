@@ -1,0 +1,31 @@
+{
+  "Items": [
+    {
+      "Name": "The Matrix",
+      "ServerId": "5d6e0c7b8a9f4e2d9c1b0a3f7e6d5c4b",
+      "Id": "1201",
+      "DateCreated": "2026-10-01T09:30:00.0000000Z",
+      "Path": "/data/movies/The Matrix (1999)/The Matrix (1999).mkv",
+      "ProviderIds": {"Tmdb": "603", "Imdb": "tt0133093"},
+      "ProductionYear": 1999,
+      "IsFolder": false,
+      "Type": "Movie",
+      "ImageTags": {"Primary": "c0ffee"},
+      "BackdropImageTags": []
+    },
+    {
+      "Name": "Severance",
+      "ServerId": "5d6e0c7b8a9f4e2d9c1b0a3f7e6d5c4b",
+      "Id": "1310",
+      "DateCreated": "2026-10-02T09:30:00.0000000Z",
+      "Path": "/data/tv/Severance",
+      "ProviderIds": {"Tvdb": "371980", "Tmdb": "95396", "Imdb": "tt11280740"},
+      "ProductionYear": 2022,
+      "IsFolder": true,
+      "Type": "Series",
+      "ImageTags": {"Primary": "beef"},
+      "BackdropImageTags": []
+    }
+  ],
+  "TotalRecordCount": 2
+}

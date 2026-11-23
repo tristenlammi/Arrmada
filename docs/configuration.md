@@ -541,6 +541,35 @@ as its own movie.
 
 The first-run setup's **Media server** step offers the same: Plex, Jellyfin, both, or later.
 
+### Connecting Emby instead
+
+Emby is the server Jellyfin grew out of, and it speaks nearly the same language, so it
+connects through the same card: open the Jellyfin card in Settings → Connections, set
+**Server** to **Emby**, then fill in the same three fields. Make the API key in Emby under
+**Dashboard → Advanced → API Keys → New API Key**. From then on Arrmada calls it Emby
+everywhere: the card, Watch buttons, the login page, Insights.
+
+What works the same as with Jellyfin: Watch links (they open the title in Emby's web app),
+library updates after every change, a request counting as ready once Emby has it, Recently
+added, watch monitoring in Insights (who's watching, history, stats, posters), sign-in with
+an Emby username and password, and linking an Emby user to an Arrmada account.
+
+What's different:
+
+- **No Quick Connect.** Emby doesn't have it, so the sign-in sheet only asks for a username and
+  password, and the Quick Connect switch isn't shown.
+- **Jellyfin or Emby, not both.** There's one slot for the two, alongside Plex. Switching the
+  card from Jellyfin to Emby (or back) counts as a new server: Arrmada reads the server's
+  details again and rebuilds its list of what the server holds. Accounts linked to the old
+  server's users stay linked to those user ids, so link them again on the new server.
+- **Hardware transcoding** in Insights shows what Emby says the stream really used (for
+  example "QuickSync"), where Jellyfin only says what it's set up to use. Emby needs Emby
+  Premiere for hardware transcoding; nothing else Arrmada uses needs Premiere.
+- No buffering reports, as with Jellyfin.
+
+Arrmada talks to Emby under `/emby` on the address you give (`http://emby:8096/emby/…`), so
+enter the address without it; an address that already ends in `/emby` works too.
+
 ## Reverse proxies and tunnels
 
 Give Arrmada its own hostname (for example `arrmada.example.com`) and proxy it from the root.

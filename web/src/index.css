@@ -45,12 +45,15 @@
   /* Media server brands: a fill and the ink that sits on it (badges, Watch pills, the
      marks on Settings → Connections). Same in both themes; the brand stays the brand.
      Jellyfin's purple end is too light for white (4.18:1), so its ink is near-black:
-     4.79 on #aa5cc3, 7.0 on #00a4dc. Plex ink on Plex: 8.19. components/brand/contrast.test.ts
+     4.79 on #aa5cc3, 7.0 on #00a4dc. Plex ink on Plex: 8.19. Emby (connected through the
+     Jellyfin slot) is its green with near-black ink. components/brand/contrast.test.ts
      checks every pair. */
   --plex: #e5a00d;
   --plex-ink: #1f1200;
   --jellyfin: linear-gradient(135deg, #aa5cc3, #00a4dc);
   --jellyfin-ink: #0b0614;
+  --emby: #52b54b;
+  --emby-ink: #071a06;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
   /* Native controls (the open list of a <select>, scrollbars, date pickers) follow the
      theme instead of the device's light default. */
@@ -93,6 +96,8 @@
     --plex-ink: #1f1200;
     --jellyfin: linear-gradient(135deg, #aa5cc3, #00a4dc);
     --jellyfin-ink: #0b0614;
+    --emby: #52b54b;
+    --emby-ink: #071a06;
     --shadow: 0 14px 36px rgba(60, 40, 20, 0.14), 0 2px 6px rgba(60, 40, 20, 0.08);
     color-scheme: light;
   }
@@ -110,6 +115,7 @@
   --accent-text: #e0845e; --good-text: #7fb069; --avoid-text: #e0a93b; --reject-text: #e27a69;
   --plex: #e5a00d; --plex-ink: #1f1200;
   --jellyfin: linear-gradient(135deg, #aa5cc3, #00a4dc); --jellyfin-ink: #0b0614;
+  --emby: #52b54b; --emby-ink: #071a06;
   --shadow: 0 18px 48px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3);
   color-scheme: dark;
 }
@@ -126,6 +132,7 @@
   --accent-text: #9e4827; --good-text: #436b33; --avoid-text: #7f5910; --reject-text: #a8392b;
   --plex: #e5a00d; --plex-ink: #1f1200;
   --jellyfin: linear-gradient(135deg, #aa5cc3, #00a4dc); --jellyfin-ink: #0b0614;
+  --emby: #52b54b; --emby-ink: #071a06;
   --shadow: 0 14px 36px rgba(60,40,20,.14), 0 2px 6px rgba(60,40,20,.08);
   color-scheme: light;
 }

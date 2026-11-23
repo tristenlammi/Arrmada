@@ -87,7 +87,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// Sign in with Jellyfin (off until the owner turns it on), its Quick Connect (on with
 		// it), whether it may open a staff account, and what a new sign-in auto-approves.
 		"jellyfin_login_enabled":            a.deps.Settings.GetBool(ctx, keyJellyfinLoginEnabled, false),
-		"jellyfin_quickconnect_enabled":     a.jellyfinQuickConnectOn(ctx),
+		"jellyfin_quickconnect_enabled":     a.jellyfinQuickConnectSetting(ctx),
 		"jellyfin_signin_staff":             a.deps.Settings.GetBool(ctx, keyJellyfinSignInStaff, false),
 		"jellyfin_login_auto_approve_types": a.jellyfinAutoApproval(ctx).String(),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
@@ -291,7 +291,7 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 		return "auto-approval of Plex sign-ins' requests"
 	case boolChanged(req.JellyfinLoginEnabled, st.GetBool(ctx, keyJellyfinLoginEnabled, false)):
 		return "Jellyfin sign-in"
-	case boolChanged(req.JellyfinQuickConnect, a.jellyfinQuickConnectOn(ctx)):
+	case boolChanged(req.JellyfinQuickConnect, a.jellyfinQuickConnectSetting(ctx)):
 		return "Jellyfin Quick Connect sign-in"
 	case boolChanged(req.JellyfinSignInStaff, st.GetBool(ctx, keyJellyfinSignInStaff, false)):
 		return "whether staff may sign in with Jellyfin"

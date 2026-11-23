@@ -150,7 +150,7 @@ function InsightsPage() {
       <PageHeader title="Insights" />
       <Page>
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-          <p className="max-w-[64ch] text-base text-ink-dim">Watch monitoring for your {multi ? "Plex and Jellyfin servers" : jellyfin ? "Jellyfin server" : "Plex server"} — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
+          <p className="max-w-[64ch] text-base text-ink-dim">Watch monitoring for your {multi ? `Plex and ${SERVER_LABEL.jellyfin} servers` : jellyfin ? `${SERVER_LABEL.jellyfin} server` : "Plex server"} — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
             {!connected && <> <Link to={LINKS.mediaServerCards} className="font-semibold" style={{ color: "var(--accent-text)" }}>Connect Plex or Jellyfin in Settings → Connections</Link> to begin.</>}
           </p>
           <div className="flex flex-wrap items-center gap-2">

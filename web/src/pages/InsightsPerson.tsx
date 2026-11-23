@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { SERVER_LABEL } from "../components/brand";
 import { ApiError, type PersonProfile } from "../lib/api";
 import { insightsApi } from "../lib/insightsApi";
 import { useSearchParamState } from "../lib/useSearchState";
@@ -83,7 +84,7 @@ function Profile({ p, win, setWin }: { p: PersonProfile; win: Win; setWin: (w: W
         <StatTile label="Finished" value={p.completion_of ? `${p.completion_pct}%` : "—"}
           sub={p.completion_of ? `of ${p.completion_of.toLocaleString()} plays reached 90%` : "no runtimes recorded"} />
         {p.server === "jellyfin" ? (
-          <StatTile label="Stalls" value="—" sub="Jellyfin doesn't report buffering" />
+          <StatTile label="Stalls" value="—" sub={`${SERVER_LABEL.jellyfin} doesn't report buffering`} />
         ) : (
           <StatTile label="Stalls" value={p.stalls.events.toLocaleString()}
             sub={`${p.stalls.rate_pct}% of plays${p.stalls.stall_ms ? ` · ${fmtStall(p.stalls.stall_ms)} stalled` : ""}`}

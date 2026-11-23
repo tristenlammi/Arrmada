@@ -7,6 +7,7 @@ import { Input } from "../ui/Input";
 import { Modal, type ModalProps } from "../ui/Modal";
 import { Sheet } from "../ui/Sheet";
 import { ServerTile } from "./brand/ServerBadge";
+import { SERVER_FILL, SERVER_INK, SERVER_LABEL } from "./brand/servers";
 
 // The Jellyfin sign-in sheet: a Jellyfin username and password, or (when the owner left it
 // on) Quick Connect — a code to type into a Jellyfin app the person is already signed in
@@ -47,6 +48,8 @@ const POLL_MS = 2000;
 
 export function JellyfinSheet<T>({ title, submitLabel, quickConnect, password: signIn, qcStart, qcPoll, onDone, onClose, outsideRouter }: JellyfinSheetProps<T>) {
   const Shell = outsideRouter ? PlainSheet : Sheet;
+  // "Jellyfin", or "Emby" when the Jellyfin slot is connected to Emby.
+  const name = SERVER_LABEL.jellyfin;
   const [view, setView] = useState<"password" | "quick">("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -101,7 +104,7 @@ export function JellyfinSheet<T>({ title, submitLabel, quickConnect, password: s
         {heading}
         {view === "password" ? (
           <form onSubmit={submit} className="flex flex-col gap-3">
-            <Field label="Jellyfin username">
+            <Field label={`${name} username`}>
               {/* The sheet opens for this one thing, so typing starts here. */}
               {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
               <Input required autoFocus autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(e) => setUsername(e.target.value)} className={BOX} />
@@ -110,8 +113,8 @@ export function JellyfinSheet<T>({ title, submitLabel, quickConnect, password: s
               <Input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className={BOX} />
             </Field>
             {error && <div role="alert" className="text-sm" style={{ color: "var(--reject-text)" }}>{error}</div>}
-            <button type="submit" disabled={busy} className="mt-1 rounded-lg px-4 py-2.5 text-md font-semibold" style={{ background: "var(--jellyfin)", color: "var(--jellyfin-ink)" }}>
-              {busy ? "Checking with Jellyfin…" : submitLabel}
+            <button type="submit" disabled={busy} className="mt-1 rounded-lg px-4 py-2.5 text-md font-semibold" style={{ background: SERVER_FILL.jellyfin, color: SERVER_INK.jellyfin }}>
+              {busy ? `Checking with ${name}…` : submitLabel}
             </button>
             {quickConnect && (
               <button type="button" onClick={startQuick} disabled={busy} className="rounded-lg px-4 py-2.5 text-md font-semibold" style={{ background: "var(--panel-2)", color: "var(--ink)", border: "1px solid var(--line)" }}>
@@ -124,8 +127,8 @@ export function JellyfinSheet<T>({ title, submitLabel, quickConnect, password: s
             {qc ? (
               <>
                 <div aria-live="polite" className="font-mono text-display font-bold tracking-[0.25em]" style={{ color: "var(--ink)" }}>{qc.code}</div>
-                <p className="m-0 text-base text-ink-dim">Enter this code in a Jellyfin app under Quick Connect.</p>
-                <p className="m-0 text-sm text-ink-faint">Waiting for Jellyfin…</p>
+                <p className="m-0 text-base text-ink-dim">Enter this code in a {name} app under Quick Connect.</p>
+                <p className="m-0 text-sm text-ink-faint">Waiting for {name}…</p>
               </>
             ) : busy ? (
               <p className="m-0 text-base text-ink-dim">Getting a code…</p>
@@ -157,7 +160,7 @@ export default function JellyfinLoginSheet({ quickConnect, onClose, onSignedIn }
 }) {
   return (
     <JellyfinSheet<LoginAnswer>
-      title="Sign in with Jellyfin"
+      title={`Sign in with ${SERVER_LABEL.jellyfin}`}
       submitLabel="Sign in"
       quickConnect={quickConnect}
       password={jellyfinSignIn.login}

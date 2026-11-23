@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -91,6 +92,33 @@ type TranscodingInfo struct {
 	AudioChannels            int      `json:"AudioChannels"`
 	HardwareAccelerationType string   `json:"HardwareAccelerationType"`
 	TranscodeReasons         []string `json:"TranscodeReasons"`
+
+	// Emby has no HardwareAccelerationType; it says per transcode whether the decoder and
+	// the encoder ran on hardware and which kind. Sessions folds them into
+	// HardwareAccelerationType for an Emby client, so readers see one field.
+	VideoDecoderIsHardware bool   `json:"VideoDecoderIsHardware"`
+	VideoDecoderHwAccel    string `json:"VideoDecoderHwAccel"`
+	VideoEncoderIsHardware bool   `json:"VideoEncoderIsHardware"`
+	VideoEncoderHwAccel    string `json:"VideoEncoderHwAccel"`
+}
+
+// embyHardware is the hardware an Emby transcode really ran on, in Jellyfin's terms: the
+// encoder's kind ("qsv", "vaapi" …), else the decoder's, else "none".
+func (t *TranscodingInfo) embyHardware() string {
+	switch {
+	case t.VideoEncoderIsHardware:
+		return hwName(t.VideoEncoderHwAccel)
+	case t.VideoDecoderIsHardware:
+		return hwName(t.VideoDecoderHwAccel)
+	}
+	return "none"
+}
+
+func hwName(s string) string {
+	if s = strings.TrimSpace(s); s == "" {
+		return "hardware"
+	}
+	return s
 }
 
 // Sessions lists sessions seen within the last activeWithinSeconds (0 = Jellyfin's default,
@@ -102,5 +130,12 @@ func (c *Client) Sessions(ctx context.Context, activeWithinSeconds int) ([]Sessi
 	}
 	var out []Session
 	err := c.call(ctx, http.MethodGet, "/Sessions", q, nil, &out, true)
+	if c.emby {
+		for i := range out {
+			if ti := out[i].TranscodingInfo; ti != nil && ti.HardwareAccelerationType == "" {
+				ti.HardwareAccelerationType = ti.embyHardware()
+			}
+		}
+	}
 	return out, err
 }
