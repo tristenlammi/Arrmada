@@ -365,3 +365,25 @@ test.describe("requester", () => {
     expect(api.callsTo("GET", "/api/v1/library/folders")).toHaveLength(0);
   });
 });
+
+// GitHub #136: a server that sent "candidates": null for a folder it found nothing for
+// crashed all of Settings, and a reload brought the same list back. The page shows the
+// folder with no candidates to pick, and the rest of Settings → Library works.
+test.describe("needs review with a folder that has no candidates (GitHub #136)", () => {
+  test.use({ persona: "admin" });
+
+  test("Settings → Library still opens and lists the folder", async ({ page, api }) => {
+    await override(page, api, [
+      { method: "GET", path: "/api/v1/series/unmatched", body: { unmatched: [
+        { folder: "Unknown Thing", root: "/media/tv", title: "Unknown Thing", year: 0, candidates: null },
+      ] } },
+      { method: "GET", path: "/api/v1/movies/unmatched", body: { unmatched: null } },
+    ]);
+    await page.goto("/settings/library");
+    await expect(page.getByText("TV Shows — needs review")).toBeVisible();
+    await expect(page.getByText("Unknown Thing", { exact: true })).toBeVisible();
+    await expect(page.getByText("No candidates — search a different title below.")).toBeVisible();
+    await expect(page.getByLabel("Movies folder")).toBeVisible();
+    await expect(page.getByText("Something broke on this page")).toHaveCount(0);
+  });
+});

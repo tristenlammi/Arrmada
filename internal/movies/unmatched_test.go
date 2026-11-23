@@ -27,6 +27,11 @@ func TestUnmatchedPersisted(t *testing.T) {
 	if res.Imported != 1 || len(res.Unmatched) != 2 {
 		t.Fatalf("scan = %+v, want 1 imported and 2 unmatched", res)
 	}
+	for _, u := range res.Unmatched {
+		if u.Candidates == nil {
+			t.Errorf("scan result: %q has candidates nil, want [] (#136)", u.Folder)
+		}
+	}
 
 	restarted := NewService(svc.repo.db, svc.meta, nil, root, "", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	list, err := restarted.LastUnmatched(ctx)

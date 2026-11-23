@@ -9,6 +9,7 @@ import { announceFoldersSaved } from "../lib/restart";
 import { useAutoSave } from "../lib/useAutoSave";
 import { SavedTick } from "../components/settings/auto";
 import { Modal, useToast } from "../ui";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { useLiveEvent, useOnReconnect } from "../lib/live";
 import { musicReviewsOf, scanLine, unmatchedOf, useLibraryScan } from "../lib/useLibraryScan";
 
@@ -92,9 +93,14 @@ export function LibraryFolders() {
 
       {!admin && <p className="mt-3 text-sm text-ink-faint">Only an admin can change these folders.</p>}
 
+      {/* A needs-review list that can't be shown never takes the folders above down with it. */}
       <div id="needs-review">
-        <UnmatchedReview media="movie" reloadKey={reviewKey} />
-        <UnmatchedReview media="series" reloadKey={reviewKey} />
+        <ErrorBoundary resetKey={reviewKey} fallback={<ReviewBroken label="Movies" />}>
+          <UnmatchedReview media="movie" reloadKey={reviewKey} />
+        </ErrorBoundary>
+        <ErrorBoundary resetKey={reviewKey} fallback={<ReviewBroken label="TV Shows" />}>
+          <UnmatchedReview media="series" reloadKey={reviewKey} />
+        </ErrorBoundary>
       </div>
 
     </div>
@@ -184,10 +190,19 @@ function FolderRow({ row, paths, admin, canScan, onScanned, onSaved }: {
   );
 }
 
+// ReviewBroken stands in for a needs-review list that failed to show.
+function ReviewBroken({ label }: { label: string }) {
+  return (
+    <div role="alert" className="mt-4 rounded-xl p-3.5 text-sm text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      {label} — needs review couldn't be shown. Scan again or reload the page; the folders above still work.
+    </div>
+  );
+}
+
 // UnmatchedReview lists folders the last scan couldn't confidently identify and
 // lets the admin pick the right title (from candidates or a manual search), so a
 // mis-titled folder never gets silently mis-filed.
-function UnmatchedReview({ media, reloadKey }: { media: "movie" | "series"; reloadKey: number }) {
+export function UnmatchedReview({ media, reloadKey }: { media: "movie" | "series"; reloadKey: number }) {
   const toast = useToast();
   const label = media === "movie" ? "Movies" : "TV Shows";
   const [items, setItems] = useState<UnmatchedFolder[] | null>(null);
@@ -239,7 +254,8 @@ function UnmatchedRow({ media, item, busy, onPick }: { media: "movie" | "series"
       setResults(r.map((x) => ({ tmdb_id: x.tmdb_id, title: x.title, year: x.year, poster_url: x.poster_url })));
     } catch { setResults([]); } finally { setSearching(false); }
   };
-  const shown = results ?? item.candidates;
+  // An older server sent null for a folder with no candidates (#136): treat it as none.
+  const shown = results ?? item.candidates ?? [];
 
   return (
     <div className="rounded-lg p-2.5" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
