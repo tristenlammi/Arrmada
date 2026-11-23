@@ -18,6 +18,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/videojoin"
 )
 
 // ErrDownloadGone means the review's files are no longer on disk. Distinguished from a
@@ -1138,7 +1139,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// Every file is resolved before any is placed, so the download can be judged as a
 	// whole: a title that moves one file onto an episode another file of the same
 	// download claims is only visible once both are known (titleConflict).
-	var resolved []resolvedVideo
+	var resolved, beyond []resolvedVideo
 	for _, v := range videos {
 		rel := inheritQuality(parser.Parse(filepath.Base(v.Path)), release)
 		// Alias numbering first, exactly as the search side resolves it. Without this a
@@ -1202,10 +1203,44 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
 				"series", s.Title, "file", filepath.Base(v.Path),
 				"resolved_to", refsLabel(refs))
+			if len(numbered) == 1 && sameRefs(refs, numbered) {
+				beyond = append(beyond, resolvedVideo{v: v, rel: rel, numbered: numbered, beyond: true})
+			}
 			continue
 		}
 		resolved = append(resolved, resolvedVideo{v: v, rel: rel, refs: known, numbered: numbered,
 			byTitle: !sameRefs(refs, numbered)})
+	}
+	// An episode the release cut into parts is joined back into one file, and the files
+	// after it are placed that much earlier (splitparts.go). Anime is numbered by other
+	// rules and left alone.
+	var partLayouts map[int][]videojoin.Layout
+	if !s.IsAnime() {
+		seasonTitles := map[int]map[int]string{}
+		titles := func(season int) map[int]string {
+			t, ok := seasonTitles[season]
+			if !ok {
+				t = c.series.SeasonEpisodeTitles(ctx, s.ID, season)
+				seasonTitles[season] = t
+			}
+			return t
+		}
+		all := append(append([]resolvedVideo(nil), resolved...), beyond...)
+		if groups := findSplitParts(all, titles); len(groups) > 0 {
+			var moved []string
+			var rescued int
+			resolved, moved, rescued = applySplitParts(all, groups, titles, func(ref series.EpisodeRef) bool {
+				return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
+			})
+			unresolved -= rescued // files whose number was past the season, now placed
+			c.log.Info("series import: the release split episodes into parts and counted each as an episode — the parts will be joined, and the files after them placed that much earlier",
+				"series", s.Title, "split_episodes", len(groups), "moved", strings.Join(moved, "; "))
+			if partLayouts, conflict = c.probeSplitParts(ctx, resolved); conflict != "" {
+				c.log.Warn("series import: an episode's parts can't be joined — holding the download, nothing placed",
+					"series", s.Title, "content_path", contentPath, "why", conflict)
+				return nil, 0, unresolved, failed, conflict, nil
+			}
+		}
 	}
 	if conflict = c.titleConflict(ctx, s, resolved); conflict != "" {
 		// Placing any of it would put at least one file on the wrong episode, and its
@@ -1216,9 +1251,15 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			"series", s.Title, "content_path", contentPath, "why", conflict)
 		return nil, 0, unresolved, failed, conflict, nil
 	}
-	for _, rv := range resolved {
+	for ri, rv := range resolved {
 		v, rel, refs := rv.v, rv.rel, rv.refs
-		if rv.byTitle {
+		switch {
+		case rv.byShift:
+			c.log.Info("series import: placed earlier than the number in the filename — the release counted an episode's parts as episodes",
+				"series", s.Title, "file", filepath.Base(v.Path),
+				"season", rv.numbered[0].Season, "filename_said", refEpisodes(rv.numbered), "placed_on", refEpisodes(refs))
+		case len(rv.parts) > 1:
+		case rv.byTitle:
 			c.log.Info("series import: placed by episode title, not the number in the filename — the release numbers episodes differently from the metadata",
 				"series", s.Title, "file", filepath.Base(v.Path), "title", parser.EpisodeTitleFrom(filepath.Base(v.Path)),
 				"season", rv.numbered[0].Season, "filename_said", refEpisodes(rv.numbered), "metadata_says", refEpisodes(refs))
@@ -1251,6 +1292,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"series", s.Title, "file", filepath.Base(v.Path),
 				"resolved_to", refsLabel(refs),
 				"candidate_resolution", string(rel.Resolution))
+			continue
+		}
+		if len(rv.parts) > 1 {
+			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, partLayouts[ri], wanted, sourceName)
+			placed = append(placed, got...)
+			if bad {
+				failed++
+			}
 			continue
 		}
 		if c.refsAgreeWithFile(ctx, s.ID, rel, refs) {
@@ -1694,6 +1743,15 @@ type resolvedVideo struct {
 	refs     []series.EpisodeRef
 	numbered []series.EpisodeRef
 	byTitle  bool
+	// parts: the files of one episode the release split in two or three, in order, to be
+	// joined into one (splitparts.go). v is then the first of them, with all their sizes.
+	parts []library.FoundVideo
+	// byShift: moved off its number by the parts before it in the season, not by its title.
+	byShift bool
+	// beyond: its number is one the show doesn't have (refs is empty). Counted as
+	// unresolved unless the parts before it in the season account for it: a release that
+	// counts an episode's two parts as two numbers its last episode one past the season.
+	beyond bool
 }
 
 // titleConflict reports, in words for Needs you, whether placing a download by its

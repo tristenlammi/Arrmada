@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/videojoin"
 )
 
 // Where a finished series download's files land when the episode titles in the filenames
@@ -94,13 +95,16 @@ var shiftedShow = layoutShow{title: "Shifted Show", year: 2020, season: 1, title
 }}
 
 type titleLayoutCase struct {
-	name      string
-	show      layoutShow
-	download  string         // the torrent's name; "" for a single-file torrent (its one file)
-	files     []string       // the download's videos
-	manual    bool           // grabbed by hand for the season: the quality gate is skipped
-	fresh     map[int]string // the metadata source's listing when it differs from the library's
-	was, want string
+	name     string
+	show     layoutShow
+	download string         // the torrent's name; "" for a single-file torrent (its one file)
+	files    []string       // the download's videos
+	manual   bool           // grabbed by hand for the season: the quality gate is skipped
+	fresh    map[int]string // the metadata source's listing when it differs from the library's
+	// partsDiffer: an episode's "Part 2" file is encoded differently from its "Part 1", so
+	// the two can't be joined by copying.
+	partsDiffer bool
+	was, want   string
 }
 
 var titleLayoutCases = []titleLayoutCase{
@@ -250,10 +254,9 @@ var titleLayoutCases = []titleLayoutCase{
 		want: "1:2 2:3 3:4",
 	},
 	{
-		// A two-parter the release splits and the metadata merges, matched by a title
-		// prefix: E02's "Part 2" moves onto E01 beside E01's own file. Before, Part 2 was
-		// skipped in silence; now it's held — the two files really do claim one episode,
-		// and only a person can say the merged episode is both.
+		// A two-parter the release splits and the metadata merges. First Part 2 was skipped
+		// in silence, then the download was held (the two files do claim one episode); now
+		// the parts are joined into the one episode they are, and the rest follow by title.
 		name: "two-parter split by the release, merged in the metadata",
 		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
 			1: "The Long Goodbye Begins", 2: "Second Story Here", 3: "Third Story Here"}},
@@ -263,8 +266,196 @@ var titleLayoutCases = []titleLayoutCase{
 			"Long.Show.S01E03.Second.Story.Here.1080p.WEB-DL.x264-GRP.mkv",
 			"Long.Show.S01E04.Third.Story.Here.1080p.WEB-DL.x264-GRP.mkv",
 		},
-		was:  "1:1 2:3 3:4",
+		was:  "held 1:- 2:- 3:-",
+		want: "1:1&2 2:3 3:4",
+	},
+	{
+		// The owner's case. Disney+ cuts "The Simpsons Guy" in two and counts both, and its
+		// title for episode 3 drops the list's "The": nothing names that file's episode, so
+		// it is placed one earlier on the strength of the parts before it, which every
+		// title that does name an episode agrees with.
+		name: "Family Guy S13 (Disney+): parts joined, an untitled-by-the-list file moved with them",
+		show: fgS13, download: "Family.Guy.S13.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT", files: []string{
+			"Family.Guy.S13E01.The.Simpsons.Guy.Part.1.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E02.The.Simpsons.Guy.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E03.Book.of.Joe.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E04.Baking.Bad.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E05.Brian.the.Closer.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:-",
+		want: "1:1&2 2:3 3:4 4:5",
+	},
+	{
+		name: "Family Guy S13 (Disney+), grabbed by hand",
+		show: fgS13, download: "Family.Guy.S13.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT", manual: true, files: []string{
+			"Family.Guy.S13E01.The.Simpsons.Guy.Part.1.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E02.The.Simpsons.Guy.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E03.Book.of.Joe.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E04.Baking.Bad.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E05.Brian.the.Closer.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:-",
+		want: "1:1&2 2:3 3:4 4:5",
+	},
+	{
+		// The parts were encoded differently: joining them by copying would give a file
+		// that breaks at the seam, so the download is held and says so.
+		name: "Family Guy S13 (Disney+), the two parts encoded differently",
+		show: fgS13, download: "Family.Guy.S13.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT", partsDiffer: true, files: []string{
+			"Family.Guy.S13E01.The.Simpsons.Guy.Part.1.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E02.The.Simpsons.Guy.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E03.Book.of.Joe.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E04.Baking.Bad.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S13E05.Brian.the.Closer.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:-",
+		want: "held 1:- 2:- 3:- 4:-",
+	},
+	{
+		// Season 9: the release shortens titles the list has in full ("Broadcasting" for
+		// "Excellence in Broadcasting"), so they name nothing; "Pt" for "Part".
+		name: "Family Guy S09 (Disney+): Pt 1 / Pt 2, titles shortened by the release",
+		show: fgS09, download: "Family.Guy.S09.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT", files: []string{
+			"Family.Guy.S09E01.And.Then.There.Were.Fewer.Pt.1.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E02.And.Then.There.Were.Fewer.Pt.2.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E03.Broadcasting.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E04.Welcome.Back.Carter.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E05.Halloween.on.Spooner.Street.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E06.Baby.You.Out.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+			"Family.Guy.S09E07.Brian.Writes.a.Bestseller.1080p.DSNP.WEB-DL.AAC2.0.H.264-OldT.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:- 5:- 6:-",
+		want: "1:1&2 2:3 3:4 4:5 5:6 6:7",
+	},
+	{
+		// Season 6: beside the split "Blue Harvest" the release has a "100th Episode
+		// Special" the season's list doesn't, so "Long John Peter" is two ahead where the
+		// parts explain one. The titles don't bear the arithmetic out: nothing is moved by
+		// it, and the download is held for a person as before.
+		name: "Family Guy S06 (Disney+): an extra episode the list lacks, still held",
+		show: fgS06, download: "Family.Guy.S06.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1", files: []string{
+			"Family.Guy.S06E01.Blue.Harvest.Part.1.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E02.Blue.Harvest.Part.2.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E03.Movin.Out.Brians.Song.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E04.100th.Episode.Special.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E05.Believe.It.or.Not.Joes.Walking.on.Air.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E06.Stewie.Kills.Lois.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+			"Family.Guy.S06E07.Lois.Kills.Stewie.1080p.DSNP.WEB-DL.AAC2.0.H.264.DUAL-Yatogam1.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:- 5:-",
+		want: "held 1:- 2:- 3:- 4:- 5:-",
+	},
+	{
+		// A list that counts the parts as the release does needs no joining: by number.
+		name: "two-parter the metadata lists as two episodes too",
+		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Long Goodbye Begins (1)", 2: "The Long Goodbye Begins, Part 2", 3: "Second Story Here"}},
+		download: "Long.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E02.The.Long.Goodbye.Begins.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E03.Second.Story.Here.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "1:1 2:2 3:3",
+		want: "1:1 2:2 3:3",
+	},
+	{
+		// Both parts under one number, and nothing after them titled: nothing confirms
+		// they're one episode, so as before (Part 2 weighed as a copy of Part 1).
+		name: "two parts the release gave one number",
+		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Long Goodbye Begins", 2: "Second Story Here", 3: "Third Story Here"}},
+		download: "Long.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E02.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E03.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "1:1 2:2 3:3",
+		want: "1:1 2:2 3:3",
+	},
+	{
+		// Only the parts carry titles: nothing after them confirms the count, so nothing
+		// is joined or moved, and it is held as before.
+		name: "split two-parter, the rest of the pack numbered only",
+		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Long Goodbye Begins", 2: "Second Story Here", 3: "Third Story Here"}},
+		download: "Long.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E02.The.Long.Goodbye.Begins.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E03.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E04.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "held 1:- 2:- 3:-",
 		want: "held 1:- 2:- 3:-",
+	},
+	{
+		// Two real episodes the list names "Homecoming" and "Homecoming (2)", released as
+		// Part 1 and Part 2: never joined, each by its number as before.
+		name: "two real episodes, the list numbering the second half its own way",
+		show: layoutShow{title: "Home Show", year: 2020, season: 1, titles: map[int]string{
+			1: "Opening", 2: "Homecoming", 3: "Homecoming (2)", 4: "Aftermath"}},
+		download: "Home.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Home.Show.S01E01.Opening.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E02.Homecoming.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E03.Homecoming.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E04.Aftermath.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "1:1 2:2 3:3 4:4",
+		want: "1:1 2:2 3:3 4:4",
+	},
+	{
+		// Two real episodes the list names differently ("Pilot", "Farewell"), released as
+		// Pilot Part 1 and Part 2, then numbered files: never joined or shifted.
+		name: "two real episodes the list names differently, the rest numbered only",
+		show: layoutShow{title: "Home Show", year: 2020, season: 1, titles: map[int]string{
+			1: "Pilot", 2: "Farewell", 3: "Third Story Here", 4: "Fourth"}},
+		download: "Home.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Home.Show.S01E01.Pilot.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E02.Pilot.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E03.1080p.WEB-DL.x264-GRP.mkv",
+			"Home.Show.S01E04.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "1:1 2:2 3:3 4:4",
+		want: "1:1 2:2 3:3 4:4",
+	},
+	{
+		// A four-part story: parts 1 to 3 are never joined without Part 4.
+		name: "a four-part story",
+		show: layoutShow{title: "Beast Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Beast", 2: "Second", 3: "Third", 4: "Fourth", 5: "Fifth"}},
+		download: "Beast.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Beast.Show.S01E01.The.Beast.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Beast.Show.S01E02.The.Beast.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Beast.Show.S01E03.The.Beast.Part.3.1080p.WEB-DL.x264-GRP.mkv",
+			"Beast.Show.S01E04.The.Beast.Part.4.1080p.WEB-DL.x264-GRP.mkv",
+			"Beast.Show.S01E05.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "1:1 2:2 3:3 4:4 5:5",
+		want: "1:1 2:2 3:3 4:4 5:5",
+	},
+	{
+		// A two-episode file after the parts can't be counted: held as before.
+		name: "split two-parter, then a two-episode file",
+		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Long Goodbye Begins", 2: "Second Story Here", 3: "Third Story Here", 4: "Fourth Story Here", 5: "Fifth Story Here"}},
+		download: "Long.Show.S01.1080p.WEB-DL.x264-GRP", files: []string{
+			"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.1.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E02.The.Long.Goodbye.Begins.Part.2.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E03.Second.Story.Here.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E04E05.1080p.WEB-DL.x264-GRP.mkv",
+			"Long.Show.S01E06.1080p.WEB-DL.x264-GRP.mkv",
+		},
+		was:  "held 1:- 2:- 3:- 4:- 5:-",
+		want: "held 1:- 2:- 3:- 4:- 5:-",
+	},
+	{
+		// One part alone is not an episode in parts: as before.
+		name: "only Part 1 of a split two-parter",
+		show: layoutShow{title: "Long Show", year: 2020, season: 1, titles: map[int]string{
+			1: "The Long Goodbye Begins", 2: "Second Story Here", 3: "Third Story Here"}},
+		files: []string{"Long.Show.S01E01.The.Long.Goodbye.Begins.Part.1.1080p.WEB-DL.x264-GRP.mkv"},
+		was:   "1:1 2:- 3:-",
+		want:  "1:1 2:- 3:-",
 	},
 	{
 		// An episode number the season doesn't have, titled like an episode another file
@@ -283,6 +474,18 @@ var titleLayoutCases = []titleLayoutCase{
 		want: "held 1:- 2:- 3:-",
 	},
 }
+
+// Family Guy as TMDB lists it, where Disney+ cuts each double-length episode in two.
+var (
+	fgS13 = layoutShow{title: "Family Guy", year: 1999, season: 13, titles: map[int]string{
+		1: "The Simpsons Guy", 2: "The Book of Joe", 3: "Baking Bad", 4: "Brian the Closer"}}
+	fgS09 = layoutShow{title: "Family Guy", year: 1999, season: 9, titles: map[int]string{
+		1: "And Then There Were Fewer", 2: "Excellence in Broadcasting", 3: "Welcome Back, Carter",
+		4: "Halloween on Spooner Street", 5: "Baby, You Knock Me Out", 6: "Brian Writes a Bestseller"}}
+	fgS06 = layoutShow{title: "Family Guy", year: 1999, season: 6, titles: map[int]string{
+		1: "Blue Harvest", 2: "Movin' Out (Brian's Song)", 3: "Believe It or Not, Joe's Walking on Air",
+		4: "Stewie Kills Lois", 5: "Lois Kills Stewie"}}
+)
 
 func TestTitlePlacementLayoutMatrix(t *testing.T) {
 	var changed []string
@@ -314,6 +517,27 @@ func runTitleLayoutCase(t *testing.T, tc titleLayoutCase) string {
 		fresh := tc.show
 		fresh.titles = tc.fresh
 		serveListing(t, h, fresh)
+	}
+	// An episode's parts are "joined" into a file as big as them together, which is how
+	// describeSeason tells it from every file of the download.
+	h.c.probeVideoFn = func(_ context.Context, path string) (videojoin.Layout, error) {
+		codec := "h264"
+		if tc.partsDiffer && strings.Contains(path, "Part.2") {
+			codec = "hevc"
+		}
+		return videojoin.Layout{Streams: []videojoin.Stream{{Type: "video", Codec: codec}}, Duration: 1320}, nil
+	}
+	h.c.joinVideoFn = func(_ context.Context, parts []string, _ []videojoin.Layout, out string) error {
+		var size int64
+		for _, p := range parts {
+			fi, err := os.Stat(p)
+			if err != nil {
+				return err
+			}
+			size += fi.Size()
+		}
+		writeSparse(t, out, size)
+		return nil
 	}
 	hash, name, _ := dropDownload(t, h, tc.download, tc.files)
 	if tc.manual {
@@ -461,6 +685,10 @@ func describeSeason(t *testing.T, h *stallHarness, id int64, season int, hash st
 				for i, f := range files {
 					if ep.SizeBytes == layoutFileSize(i) {
 						holds = fileNumbers(f)
+					}
+					// Two files joined into one: "1&2".
+					if i+1 < len(files) && ep.SizeBytes == layoutFileSize(i)+layoutFileSize(i+1) {
+						holds = fileNumbers(f) + "&" + fileNumbers(files[i+1])
 					}
 				}
 			}

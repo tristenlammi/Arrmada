@@ -20,6 +20,13 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - A show-wide fix passes over subtitles taken from the video itself (its own track, AI made from its audio, a hash-matched download). Subtitles inside the video file are never touched.
   - A subtitle that changes while it's being measured is left alone.
 - **Finer timing buttons**: −0.1 s and +0.1 s beside the half-second and one-second steps.
+- **An episode a release split in two is joined back into one.** Some releases cut a double-length episode into "Part 1" and "Part 2" files and count each as an episode (Disney+ rips of Family Guy do), where the show's episode list has it once. Such a download used to be held in Needs you with "Titles disagree", and mapping it by hand couldn't keep both halves.
+  - The parts are joined into one file, placed on the one episode they are. Nothing is re-encoded, and the parts in the download are never changed, so it keeps seeding.
+  - The episodes after them are placed that much earlier, by their titles, or by the count alone where a title names nothing, as long as every title in the season that does name an episode agrees.
+  - Parts are only joined when they have the same tracks, encoded the same way, and the result is checked to be as long as the parts together. Otherwise the download is held and says why.
+  - Joining needs free space in the TV folder for the joined file plus 1 GB.
+  - A season with an extra episode the list doesn't have (Family Guy season 6's "100th Episode Special") is still held.
+- **Reject on downloads held for "Titles disagree" or "Numbering".** Those cards only offered Map files…, Choose different show… and Dismiss; Reject & find another removes the download, blocklists the release for that show and searches again.
 
 ### Changed
 

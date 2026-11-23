@@ -33,6 +33,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
+	"github.com/tristenlammi/arrmada/internal/videojoin"
 )
 
 // seriesCategory keeps TV downloads in a separate download-client category so the
@@ -106,6 +107,10 @@ type Coordinator struct {
 	// musicRefreshBudget overrides refresh-music-artists' MusicBrainz call budget (0: the
 	// default). See RefreshMusicArtists.
 	musicRefreshBudget int64
+	// probeVideoFn and joinVideoFn read and join the parts of an episode a release split
+	// (nil: ffprobe and ffmpeg, through videojoin). See splitparts.go.
+	probeVideoFn func(ctx context.Context, path string) (videojoin.Layout, error)
+	joinVideoFn  func(ctx context.Context, parts []string, want []videojoin.Layout, out string) error
 	// probeAudioFn measures an audio file (nil: ffprobe through mediainfo). See probeAudio.
 	probeAudioFn func(ctx context.Context, path string) (mediainfo.AudioInfo, error)
 	// musicTagsFn reads an audio file's tags and length for the matcher (nil: audiotag).
