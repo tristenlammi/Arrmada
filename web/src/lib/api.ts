@@ -1717,6 +1717,16 @@ export interface RecycleItem {
   expires_at: number; // unix: when retention deletes it for good (0 = retention off)
 }
 
+// What a bulk delete's "Also stop looking for these titles" did to one title (requests.StoppedTitle).
+export interface StoppedTitle {
+  media_type: "movie" | "series" | "book";
+  tmdb_id?: number;
+  ol_key?: string;
+  title: string;
+  stopped: boolean;
+  reason?: "still_requested" | "not_approved" | "not_in_library" | "already_off" | "book" | "error";
+}
+
 export interface MediaRequest {
   id: number;
   media_type: "movie" | "series" | "book";
@@ -3432,8 +3442,10 @@ export const api = {
   // Approve or decline several waiting requests at once, or delete several of any status
   // (staff; at most 100 per call). Each is handled on its own, so one failure doesn't stop
   // the rest. Deleting leaves the library as it is, as deleting one does.
-  bulkRequests: (body: { action: "approve" | "decline" | "delete"; ids: number[]; quality_profile?: string; reason?: string }) =>
-    req<{ results: { id: number; ok: boolean; error?: string }[] }>("/api/v1/requests/bulk", { method: "POST", body: JSON.stringify(body) }),
+  // A delete with stop_looking also unmonitors the films and turns searching off for the
+  // shows nothing else still asks for, and says per title what it did (titles).
+  bulkRequests: (body: { action: "approve" | "decline" | "delete"; ids: number[]; quality_profile?: string; reason?: string; stop_looking?: boolean }) =>
+    req<{ results: { id: number; ok: boolean; error?: string }[]; titles?: StoppedTitle[] }>("/api/v1/requests/bulk", { method: "POST", body: JSON.stringify(body) }),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
   // title resurrects it as pending. A series request may name `seasons` (empty or absent:

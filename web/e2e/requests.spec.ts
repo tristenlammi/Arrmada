@@ -32,13 +32,30 @@ test.describe("admin", () => {
     await page.getByLabel("Select all on this page").check();
     await page.getByRole("button", { name: "Delete 4" }).click();
     const dialog = page.getByRole("alertdialog").or(page.getByRole("dialog"));
-    await expect(dialog.getByText(/Nothing in the library changes/)).toBeVisible();
+    await expect(dialog.getByText(/nothing in the library changes/)).toBeVisible();
     await expect(dialog.getByText(/files already downloaded are kept/)).toBeVisible();
+    // Stopping the search for the titles is opt-in: the box starts unticked.
+    await expect(dialog.getByRole("checkbox", { name: /Also stop looking for these titles/ })).not.toBeChecked();
     await dialog.getByRole("button", { name: "Delete 4" }).click();
     await expect(page.getByText("Deleted 4 of 4")).toBeVisible();
     const calls = api.callsTo("POST", "/api/v1/requests/bulk");
     expect(calls).toHaveLength(1);
     expect(calls[0].body).toEqual({ action: "delete", ids: [1, 2, 3, 4] });
+  });
+
+  // #130 follow-up: ticking "Also stop looking" sends it with the delete, and the toast says
+  // how many titles were stopped and why the rest were left.
+  test("a bulk delete can also stop looking for the titles", async ({ page, api }) => {
+    await page.goto("/requests?tab=active");
+    await page.getByLabel("Select all on this page").check();
+    await page.getByRole("button", { name: "Delete 4" }).click();
+    const dialog = page.getByRole("alertdialog").or(page.getByRole("dialog"));
+    await dialog.getByRole("checkbox", { name: /Also stop looking for these titles/ }).check();
+    await dialog.getByRole("button", { name: "Delete 4" }).click();
+    await expect(page.getByText("Deleted 4 of 4; stopped looking for 3 titles; 1 left as it was (1 still requested)")).toBeVisible();
+    const calls = api.callsTo("POST", "/api/v1/requests/bulk");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({ action: "delete", ids: [1, 2, 3, 4], stop_looking: true });
   });
 
   test("Select all takes every matching request, not only the loaded page, and sends them in batches", async ({ page, api }) => {

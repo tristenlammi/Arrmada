@@ -43,6 +43,9 @@ type seriesLib interface {
 	SeasonProgress(ctx context.Context, seriesID int64) (map[int]series.SeasonProgress, error)
 	// EnsureMonitored wants the seasons a request for a show already held asks for.
 	EnsureMonitored(ctx context.Context, id int64, seasons []int, requestedBy string) error
+	// SetMonitored is the show's searching switch (Series → Searching on/off).
+	SetMonitored(ctx context.Context, id int64, monitored bool) error
+	AddEvent(ctx context.Context, id int64, event, detail string)
 	// SearchStatesFor is the missing-sweep's backoff for these shows.
 	SearchStatesFor(ctx context.Context, ids []int64) (map[int64]series.SearchStamp, error)
 }

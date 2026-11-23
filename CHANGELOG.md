@@ -39,7 +39,9 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - What a join stopped by a restart leaves in the TV folder's hidden .arrmada-join folder is cleared within the hour.
   - A season with an extra episode the list doesn't have (Family Guy season 6's "100th Episode Special") is still held.
 - **Reject on downloads held for "Titles disagree" or "Numbering".** Those cards only offered Map files…, Choose different show… and Dismiss; Reject & find another removes the download, blocklists the release for that show and searches again.
-- **Delete many requests at once.** Staff can tick requests on any tab of the Requests page (not only Needs approval), or **Select all** to take every request the tab, type and search match, beyond the rows loaded so far, then **Delete** them in one go. As with deleting one request, the library is left as it is: titles they added stay in Movies and Series and are still looked for, downloads carry on and files are kept. The confirmation says so; to stop looking for them, select them in Movies and choose **Unmonitor**, or in Series and choose **Searching off**.
+- **Delete many requests at once.** Staff can tick requests on any tab of the Requests page (not only Needs approval), or **Select all** to take every request the tab, type and search match, beyond the rows loaded so far, then **Delete** them in one go. As with deleting one request, the library is left as it is: titles they added stay in Movies and Series and are still looked for, downloads carry on and files are kept.
+  - Tick **Also stop looking for these titles** in the confirmation (it starts unticked) to unmonitor their movies and turn searching off for their shows as well, the same as **Unmonitor** in Movies and **Searching off** in Series. Files are never touched.
+  - A title is changed only when the deleted requests were all that held it. One with another request still waiting or approved, one none of whose deleted requests was ever approved, and books are left as they were. The message after says how many titles were stopped and why the rest were left.
 
 ### Changed
 
@@ -62,7 +64,7 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
   - Finished requests (completed, or already available) come in as ready only when the title is already in Arrmada's library, and are never searched. Import your Radarr and Sonarr library first so they find their titles.
   - Pending and failed requests become pending requests for you to decide.
   - Approved requests still on their way are added to the library and searched a few at a time, like a Radarr or Sonarr import, not hundreds at once.
-  - Already imported too much? Delete the requests in bulk from the Requests page, then select the titles they added in Movies (**Unmonitor**) and Series (**Searching off**) so they aren't looked for.
+  - Already imported too much? Delete the requests in bulk from the Requests page and tick **Also stop looking for these titles**, so the titles they added aren't looked for.
 - **"Source error" at every chapter of a very long audiobook in Lissen.** Lissen opens the file again for each chapter, and a 50-hour book in one file needs more memory than the phone gives it when two chapters are open at once.
   - Arrmada now cuts each chapter from the file the first time an app asks for it, without re-encoding. The file on disk is never changed, and Arrmada's own player still plays it whole.
   - The cut chapters are kept under `audioserver/chapters` in Arrmada's data folder: up to 8 GB, and a chapter nobody has asked for in a week is removed. They never take that disk's last 1 GB: short of room the oldest go first, and failing that the chapter isn't cut and the app is told it isn't available.

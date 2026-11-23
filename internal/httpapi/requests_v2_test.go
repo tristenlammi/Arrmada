@@ -263,6 +263,35 @@ func TestRequestsAPIBulkDelete(t *testing.T) {
 	if b := getList(t, s, "/api/v1/requests?section=all", manager); b.Total != 0 {
 		t.Errorf("left after bulk delete = %d, want 0", b.Total)
 	}
+	if strings.Contains(rec.Body.String(), `"titles"`) {
+		t.Errorf("a plain delete reported titles: %s", rec.Body)
+	}
+}
+
+// A bulk delete with stop_looking says what it did to each title the requests were for.
+func TestRequestsAPIBulkDeleteStopLooking(t *testing.T) {
+	s := requestsServer(t)
+	_, manager := s.user(t, "boss@example.com", auth.RoleManager)
+	approved := addRequest(t, s, 2, "Two", "approved", 7, "bob")
+	pending := addRequest(t, s, 3, "Three", "pending", 7, "bob")
+	rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, fmt.Sprintf(`{"action":"delete","ids":[%d,%d],"stop_looking":true}`, approved, pending))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk delete: HTTP %d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Results []requests.BulkResult   `json:"results"`
+		Titles  []requests.StoppedTitle `json:"titles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 2 || !got.Results[0].OK || !got.Results[1].OK {
+		t.Fatalf("results = %+v", got.Results)
+	}
+	// Neither film is in the library; the pending one was never approved.
+	if len(got.Titles) != 2 || got.Titles[0].Reason != requests.KeptNotInLibrary || got.Titles[1].Reason != requests.KeptNotApproved {
+		t.Fatalf("titles = %+v", got.Titles)
+	}
 }
 
 // The adult filter is always on, including for a request posted straight to the API: a
