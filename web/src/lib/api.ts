@@ -2845,6 +2845,10 @@ export interface ConvertSettings {
   // Every hardware encoder Convert would use can write 10-bit; false with a GPU means its
   // encodes of 8-bit files stay 8-bit whatever the 10-bit choice says.
   gpu_ten_bit?: boolean;
+  // The HDR formats ("HDR10", "HLG") the GPU's HEVC and AV1 encoders kept in their startup
+  // test, so GPU mode encodes those files on the GPU. Empty or missing: HDR on the CPU.
+  gpu_hdr?: string[];
+  gpu_hdr_av1?: string[];
 }
 export interface ConvertTrialSide { codec: string; encoder: string; bytes: number; ssim: number; est_bytes: number }
 export interface ConvertTrialResult { key: string; title: string; src_bytes: number; clips: number; seconds: number; hevc: ConvertTrialSide; av1: ConvertTrialSide; pick: string; why: string; files?: string[] }

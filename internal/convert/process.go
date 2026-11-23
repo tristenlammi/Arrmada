@@ -135,7 +135,13 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			rec.resume.h10pJSON = h10pJSON
 			defer os.Remove(h10pJSON)
 		}
-		enc = s.pickEncoder(job, mi, plan.VideoCodec, p.useGPU)
+		enc = s.pickEncoder(job, mi, plan.VideoCodec, p.useGPU, h10pJSON != "")
+		if cpu := cpuEncoder(plan.VideoCodec); enc.Hardware && resumed.Encoder == cpu.Name {
+			// Pieces are only ever the CPU's. An HDR film the CPU started before the GPU could
+			// take HDR finishes there, rather than throwing its finished pieces away.
+			enc = cpu
+			s.update(job, func(j *Job) { j.Encoder, j.encKind = enc.Label, enc.Kind })
+		}
 		if !s.canPreserveHDR(mi, plan, enc, h10pJSON != "") {
 			s.finishSkip(job, SkipHDRUnsupported, mi.EncodeHDR()+" couldn't be carried through a conversion on this machine — kept the original")
 			return
@@ -201,7 +207,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 		plan.VideoCodec, plan.Quality = codec, maxQualityCRF(codec, mi)
-		enc = s.pickEncoder(job, mi, plan.VideoCodec, p.useGPU)
+		enc = s.pickEncoder(job, mi, plan.VideoCodec, p.useGPU, h10pJSON != "")
 		if !s.canPreserveHDR(mi, plan, enc, h10pJSON != "") {
 			s.finishSkip(job, SkipHDRUnsupported, hdr+" couldn't be carried through a conversion on this machine — kept the original")
 			return
@@ -481,6 +487,9 @@ func (s *Service) chooseCodec(ctx context.Context, job *Job, src string, mi *Med
 	case p.useGPU && !s.gpuCan("av1"):
 		// GPU mode is about speed; AV1 on the CPU next to HEVC on the GPU isn't that.
 		return "hevc"
+	case p.useGPU && s.encoderChoice(mi, "hevc", true).Hardware && !s.encoderChoice(mi, "av1", true).Hardware:
+		// The same for an HDR film the GPU keeps the HDR of in HEVC but not in AV1.
+		return "hevc"
 	}
 	if c, ok := s.choices.get(ctx, src, mi.SizeBytes); ok {
 		return c
@@ -505,8 +514,8 @@ func (s *Service) chooseCodec(ctx context.Context, job *Job, src string, mi *Med
 // canPreserveHDR reports whether this plan converts the file without losing its HDR. A copy
 // always does. Static HDR (HDR10, HLG) is carried by the CPU encoders of both formats;
 // HDR10+ only by the HEVC pipeline, and a Dolby Vision layer being kept only by the HEVC
-// pipeline with dovi_tool. Hardware encoders can't write HDR metadata, which is why
-// pickEncoder sends HDR to the CPU.
+// pipeline with dovi_tool. A hardware encoder carries plain HDR10 or HLG only when it proved
+// at startup that it keeps them (gpuhdr.go); anything else on the GPU would lose its HDR.
 func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder, hasHDR10Plus bool) bool {
 	if plan.VideoCodec == "" {
 		return true
@@ -522,7 +531,11 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder, hasHDR10
 	if !isHDR(hdr) {
 		return true
 	}
-	if enc.Kind != "cpu" || !cpuWorks(plan.VideoCodec, s.encoders) {
+	if enc.Kind != "cpu" {
+		if !enc.Hardware || !s.gpuKeepsHDR(enc, mi.HDR, hasHDR10Plus) {
+			return false
+		}
+	} else if !cpuWorks(plan.VideoCodec, s.encoders) {
 		return false
 	}
 	// An HEVC stream with a PQ grade may carry HDR10+ that only the tool can find. Without
@@ -544,28 +557,35 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder, hasHDR10
 
 // pickEncoder chooses where a file is encoded:
 //
-//  1. HDR of any kind → CPU. Every HDR metadata path is software-only.
+//  1. HDR → CPU, unless it's plain HDR10 or HLG and the GPU encoder proved at startup that it
+//     keeps that kind (gpuhdr.go). HDR10+ (hasHDR10Plus: found by hdr10plus_tool) and Dolby
+//     Vision always go to the CPU.
 //  2. GPU mode on and a working hardware encoder for the format → GPU.
 //  3. Otherwise → CPU (the best quality per byte).
 //
 // The CPU encoder isn't guaranteed (a broken build fails every file); when it doesn't run,
 // hardware is used if there is any.
-func (s *Service) pickEncoder(job *Job, mi *MediaInfo, codec string, useGPU bool) Encoder {
-	enc := s.encoderChoice(mi, codec, useGPU)
+func (s *Service) pickEncoder(job *Job, mi *MediaInfo, codec string, useGPU, hasHDR10Plus bool) Encoder {
+	enc := s.encoderChoiceHDR(mi, codec, useGPU, hasHDR10Plus)
 	if job != nil {
 		s.update(job, func(j *Job) { j.Encoder, j.encKind = enc.Label, enc.Kind })
 	}
 	return enc
 }
 
+// encoderChoice is pickEncoder for a file not known to carry HDR10+ beyond its label.
 func (s *Service) encoderChoice(mi *MediaInfo, codec string, useGPU bool) Encoder {
+	return s.encoderChoiceHDR(mi, codec, useGPU, false)
+}
+
+func (s *Service) encoderChoiceHDR(mi *MediaInfo, codec string, useGPU, hasHDR10Plus bool) Encoder {
 	cpu := cpuEncoder(codec)
 	hw, hasHW := hardwareFor(codec, s.encoders)
 	hwOK := hasHW && !s.hardwareIsBroken(hw.Name)
 	if !cpuWorks(codec, s.encoders) && hwOK {
 		return hw
 	}
-	if isHDR(mi.EncodeHDR()) {
+	if isHDR(mi.EncodeHDR()) && !s.gpuKeepsHDR(hw, mi.HDR, hasHDR10Plus) {
 		return cpu
 	}
 	if useGPU && hwOK {
@@ -665,8 +685,10 @@ func (s *Service) runEncodeOnce(ctx context.Context, job *Job, src, dst, scratch
 	}
 	// VAAPI: first try a full-GPU pipeline (hardware decode → GPU encode). If the source
 	// can't be hardware-decoded, fall back to software decode + GPU encode, then CPU.
-	// (Not when removing black bars: the crop runs on system-memory frames.)
-	if enc.Kind == "vaapi" && plan.VideoCodec != "" && plan.Crop == nil {
+	// (Not when removing black bars: the crop runs on system-memory frames. Not for HDR
+	// either: the startup test that cleared this GPU for HDR decoded in software
+	// (gpuhdr.go), and the HDR metadata has to reach the encoder on the frames.)
+	if enc.Kind == "vaapi" && plan.VideoCodec != "" && plan.Crop == nil && !isHDR(mi.EncodeHDR()) {
 		if err := s.encode(ctx, job, src, dst, mi, enc, plan, true); err == nil {
 			return nil
 		} else if ctx.Err() != nil {
@@ -820,6 +842,15 @@ func verifyOutput(mi, out *MediaInfo, outSize int64, plan Plan) (kind, reason st
 	if want := len(keptSubs(mi, plan)); out.SubTracks != want {
 		return "", fmt.Sprintf("the converted file has %d subtitle track(s), expected %d", out.SubTracks, want)
 	}
+	// A re-encode keeps the HDR it went in with — colour tags, mastering display, light level
+	// — whichever encoder wrote it (gpuhdr.go). Refused the same way every time for this file
+	// on this encoder, so it counts toward the failure limit rather than failing each night.
+	if plan.VideoCodec != "" {
+		if why := hdrLost(mi, out); why != "" {
+			return SkipHDRUnsupported, why + " — kept the original"
+		}
+	}
+	// (A GPU encode that lost it is retried on the CPU instead: finalizeOutput.)
 	if outSize <= 0 {
 		return "", "the converted file is empty"
 	}
@@ -883,7 +914,25 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 	}
 	outSize := fileSize(dst)
 	rec.outInfo, rec.outSize = outInfo, outSize
-	if kind, reason := verifyOutput(mi, outInfo, outSize, plan); reason != "" {
+	kind, reason := verifyOutput(mi, outInfo, outSize, plan)
+	if hw, onGPU := s.encodedOnGPU(job, plan.VideoCodec); onGPU && plan.VideoCodec != "" && isHDR(mi.EncodeHDR()) {
+		// An HDR film the GPU encoded: its video stream must carry the HDR too, not just the
+		// container (streamHDRLost).
+		why := hdrLost(mi, outInfo)
+		if why == "" && reason == "" {
+			why = s.streamHDRLost(ctx, dst, mi, plan.VideoCodec)
+			if ctx.Err() != nil {
+				return
+			}
+		}
+		if why != "" {
+			// The GPU passed the startup test but not this film: its HDR files go to the CPU
+			// from now on, and this one is tried again there — not refused for good.
+			s.revokeGPUHDR(hw.Name, mi.HDR, why)
+			kind, reason = "", why+" on "+hw.Label+"; it will be converted on the CPU next time"
+		}
+	}
+	if reason != "" {
 		if kind != "" {
 			s.finishAfterEncode(job, kind, reason)
 		} else {

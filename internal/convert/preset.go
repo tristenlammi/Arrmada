@@ -448,7 +448,7 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		if ten {
 			a = append(a, hwTenBitArgs(enc)...)
 		}
-		a = append(a, colourTagArgs(mi)...)
+		a = append(a, hwColourArgs(mi)...)
 	case "nvenc":
 		if swVF != "" {
 			a = append(a, "-vf", swVF)
@@ -460,7 +460,7 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		if ten {
 			a = append(a, hwTenBitArgs(enc)...)
 		}
-		a = append(a, colourTagArgs(mi)...)
+		a = append(a, hwColourArgs(mi)...)
 	case "qsv":
 		if swVF != "" {
 			a = append(a, "-vf", swVF)
@@ -473,7 +473,7 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 		if ten {
 			a = append(a, hwTenBitArgs(enc)...)
 		}
-		a = append(a, colourTagArgs(mi)...)
+		a = append(a, hwColourArgs(mi)...)
 	default: // CPU
 		if swVF != "" {
 			a = append(a, "-vf", swVF)
@@ -593,6 +593,19 @@ func colourTagArgs(mi *MediaInfo) []string {
 		a = append(a, "-colorspace", mi.ColorSpace)
 	}
 	return a
+}
+
+// hwColourArgs are a hardware encode's colour tags. An HDR file (HDR10 or HLG — the only HDR
+// a GPU is given, gpuhdr.go) gets exactly the tags the CPU encoders write — BT.2020 and the
+// source's own curve — so whichever encoder converts it, the file comes out tagged the same.
+// The mastering display and light level aren't options: the encoder copies them from the
+// decoded frames. Anything else keeps its own tags (colourTagArgs).
+func hwColourArgs(mi *MediaInfo) []string {
+	if isHDR(mi.EncodeHDR()) {
+		_, tags := hdr10Params(mi)
+		return tags
+	}
+	return colourTagArgs(mi)
 }
 
 // hdr10Params re-applies static HDR to a libx265 encode: the BT.2020 colour tags plus the

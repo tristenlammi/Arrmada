@@ -11,6 +11,7 @@ import { fmtBytes } from "../../lib/disposal";
 import { LINKS } from "../../lib/links";
 import { langName, useLanguages } from "../../lib/languages";
 import { SAME_AS_SUBTITLES } from "../../lib/convertKeepSubs";
+import { gpuHdrSentence } from "../../lib/convertGpuHdr";
 import { useAutoSave, type AutoSave } from "../../lib/useAutoSave";
 import { SwitchOnDialog } from "../convert/ConfirmConvert";
 
@@ -238,7 +239,7 @@ function ConvertForm({ s, commit }: { s: Settings; commit: Commit }) {
         <TenBitChoice save={tenBit} transcoded={transcodingDevices(devices, "hevc10")} />
         {s.has_gpu && (
           <Toggle save={gpu} label="Use my GPU"
-            hint={`Many times faster, but files come out somewhat bigger for the same quality. HDR always encodes on the CPU (the GPU can't carry its metadata).${s.gpu_does_av1 ? "" : " Your GPU has no AV1 encoder, so GPU mode converts to HEVC."}${s.gpu_ten_bit === false ? " Your GPU can't write 10-bit video, so its conversions of 8-bit files stay 8-bit even with \"Always 10-bit\" chosen above." : ""}`} />
+            hint={`Many times faster, but files come out somewhat bigger for the same quality. ${gpuHdrSentence(s.gpu_hdr, s.gpu_hdr_av1, s.gpu_does_av1)}${s.gpu_does_av1 ? "" : " Your GPU has no AV1 encoder, so GPU mode converts to HEVC."}${s.gpu_ten_bit === false ? " Your GPU can't write 10-bit video, so its conversions of 8-bit files stay 8-bit even with \"Always 10-bit\" chosen above." : ""}`} />
         )}
         <Toggle save={crop} label="Remove black bars"
           hint="Widescreen films are encoded without the black bars above and below (or beside) the picture. The picture and its shape stay exactly the same and your TV letterboxes it as before. Files come out slightly smaller, and the quality check judges the picture alone instead of counting the bars as a perfect match. The film is checked about every 25 seconds (40 to 400 places): only what's black in every one of those frames is removed, and if any of them shows a different shape (IMAX or open-matte scenes) the film keeps its full frame. A wider shot shorter than the gap between checks could still be trimmed, which is why this is off unless you turn it on. Files that keep image subtitles keep their bars too — those subtitles are placed on the full frame." />

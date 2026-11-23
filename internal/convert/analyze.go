@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -521,12 +522,15 @@ func probeHDR10(ctx context.Context, ffprobe, path string, videoIndex int) (meta
 		}
 		switch sd.SideDataType {
 		case "Mastering display metadata":
-			// x265 wants the raw numerators (colour coords in 0.00002 units, luminance in
-			// 0.0001 cd/m² units) — exactly the numerators ffprobe reports as num/den.
+			// x265 wants colour coords in 0.00002 units and luminance in 0.0001 cd/m² units.
+			// HEVC and Matroska store exactly those (ffprobe reports n/50000 and n/10000); AV1
+			// stores other fractions (n/65536, n/256), so each value is scaled, not just read
+			// off its numerator.
+			c, l := func(s string) string { return ratUnits(s, 50000) }, func(s string) string { return ratUnits(s, 10000) }
 			m.MasterDisplay = fmt.Sprintf("G(%s,%s)B(%s,%s)R(%s,%s)WP(%s,%s)L(%s,%s)",
-				ratNum(sd.GreenX), ratNum(sd.GreenY), ratNum(sd.BlueX), ratNum(sd.BlueY),
-				ratNum(sd.RedX), ratNum(sd.RedY), ratNum(sd.WhitePointX), ratNum(sd.WhitePointY),
-				ratNum(sd.MaxLuminance), ratNum(sd.MinLuminance))
+				c(sd.GreenX), c(sd.GreenY), c(sd.BlueX), c(sd.BlueY),
+				c(sd.RedX), c(sd.RedY), c(sd.WhitePointX), c(sd.WhitePointY),
+				l(sd.MaxLuminance), l(sd.MinLuminance))
 		case "Content light level metadata":
 			m.MaxCLL = fmt.Sprintf("%d,%d", sd.MaxContent, sd.MaxAverage)
 		}
@@ -537,8 +541,27 @@ func probeHDR10(ctx context.Context, ffprobe, path string, videoIndex int) (meta
 	return m, hasDV
 }
 
-// ratNum returns the numerator of a "num/den" rational string (ffprobe reports HDR coordinates
-// this way); a bare integer is returned as-is.
+// ratUnits converts a "num/den" rational (ffprobe reports HDR coordinates this way) into
+// whole units of 1/scale, rounded: "13250/50000" at 50000 is "13250", "17367/65536" is
+// "13250". A bare integer, or a rational that can't be read, gives ratNum's answer.
+func ratUnits(s string, scale int64) string {
+	n, d, ok := strings.Cut(s, "/")
+	if !ok {
+		return ratNum(s)
+	}
+	num, err1 := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+	den, err2 := strconv.ParseInt(strings.TrimSpace(d), 10, 64)
+	if err1 != nil || err2 != nil || den <= 0 {
+		return ratNum(s)
+	}
+	if den == scale {
+		return strconv.FormatInt(num, 10)
+	}
+	return strconv.FormatInt(int64(math.Round(float64(num)*float64(scale)/float64(den))), 10)
+}
+
+// ratNum returns the numerator of a "num/den" rational string; a bare integer is returned
+// as-is.
 func ratNum(s string) string {
 	if i := strings.IndexByte(s, '/'); i >= 0 {
 		return s[:i]

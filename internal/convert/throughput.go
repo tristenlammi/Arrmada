@@ -104,8 +104,10 @@ func pixelBucket(w, h int) string {
 }
 
 // encoderClass is the class a file's encode runs in, chosen the way encoderChoice picks:
-// HDR always on the CPU (HDR10+ through its own pipeline), the GPU when asked for and able.
-func (s *Service) encoderClass(codec, encHDR string, hdr10plus, useGPU bool) string {
+// HDR on the CPU (HDR10+ through its own pipeline) unless it's HDR10 or HLG the GPU keeps,
+// the GPU when asked for and able. hdr is the file's own format (MediaInfo.HDR), encHDR
+// what the conversion carries (MediaInfo.EncodeHDR).
+func (s *Service) encoderClass(codec, hdr, encHDR string, hdr10plus, useGPU bool) string {
 	gpu, cpu := classGPUHEVC, classCPUHEVC
 	if codec == "av1" {
 		gpu, cpu = classGPUAV1, classCPUAV1
@@ -116,7 +118,7 @@ func (s *Service) encoderClass(codec, encHDR string, hdr10plus, useGPU bool) str
 		return gpu
 	case codec == "hevc" && hdr10plus:
 		return classCPUHEVCHDR10Plus
-	case isHDR(encHDR):
+	case isHDR(encHDR) && !s.encoderChoiceHDR(&MediaInfo{HDR: hdr, DVBase: encHDR}, codec, useGPU, hdr10plus).Hardware:
 		return cpu
 	case useGPU && hw:
 		return gpu
@@ -217,11 +219,11 @@ func (s *Service) newEstimator(ctx context.Context, p prefs) *estimator {
 }
 
 func (e *estimator) rate(f forecastFacts, w, h int) float64 {
-	k := fmt.Sprintf("%s|%v|%v|%s", f.codec, isHDR(f.encHDR), f.hdr10plus, pixelBucket(w, h))
+	k := fmt.Sprintf("%s|%s|%s|%v|%s", f.codec, f.hdr, f.encHDR, f.hdr10plus, pixelBucket(w, h))
 	if r, ok := e.memo[k]; ok {
 		return r
 	}
-	r := e.s.pixelRate(e.ctx, e.s.encoderClass(f.codec, f.encHDR, f.hdr10plus, e.p.useGPU), w, h)
+	r := e.s.pixelRate(e.ctx, e.s.encoderClass(f.codec, f.hdr, f.encHDR, f.hdr10plus, e.p.useGPU), w, h)
 	e.memo[k] = r
 	return r
 }
@@ -273,6 +275,7 @@ type forecastFacts struct {
 	size      int64
 	dur       float64
 	w, h      int
+	hdr       string // the file's own HDR format (MediaInfo.HDR)
 	encHDR    string
 	hdr10plus bool
 }
@@ -283,7 +286,7 @@ func factsFor(mi *MediaInfo, plan Plan, size int64) forecastFacts {
 		if f.size <= 0 {
 			f.size = mi.SizeBytes
 		}
-		f.dur, f.w, f.h, f.encHDR = mi.DurationSec, mi.Width, mi.Height, mi.EncodeHDR()
+		f.dur, f.w, f.h, f.hdr, f.encHDR = mi.DurationSec, mi.Width, mi.Height, mi.HDR, mi.EncodeHDR()
 		f.hdr10plus = f.encHDR == "HDR10+"
 	}
 	return f
