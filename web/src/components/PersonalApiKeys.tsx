@@ -5,6 +5,7 @@ import { Input } from "../ui/Input";
 import { Select } from "../ui/Select";
 import { API_KEYS_QUERY, apiKeysApi, expiryLabel, SCOPE_LABEL, type KeyScope, type MyApiKeys, type PersonalApiKey } from "../lib/apiKeysApi";
 import { formatAgo } from "../lib/format";
+import { isStaff, useMe } from "../lib/me";
 import { useQuery } from "../lib/query";
 import { signOut } from "../lib/session";
 
@@ -168,6 +169,9 @@ function CreateKeyForm({ state, onCancel, onMade }: { state: MyApiKeys; onCancel
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reauth, setReauth] = useState(false);
+  // Staff keys also read the library's history and a title's detail (what a media server's
+  // scanner needs); the server checks the role again on every request.
+  const staff = isStaff(useMe().user);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -194,7 +198,13 @@ function CreateKeyForm({ state, onCancel, onMade }: { state: MyApiKeys; onCancel
       <Field label="Name" hint="What it’s for, so you can tell your keys apart.">
         <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} placeholder="n8n" autoComplete="off" required />
       </Field>
-      <Field label="Access" hint={scope === "read" ? "Can look things up and read your requests, never change anything." : "Can do what you can, such as requesting titles, on the routes keys may use."}>
+      <Field label="Access" hint={scope === "read"
+        ? staff
+          ? "Can look things up, read requests, and read the library’s history and each movie’s or show’s files, never change anything."
+          : "Can look things up and read your requests, never change anything."
+        : staff
+          ? "Can do what you can on the routes keys may use: requesting, approving and declining titles, and reading the library’s history and each movie’s or show’s files."
+          : "Can do what you can, such as requesting titles, on the routes keys may use."}>
         <Select value={scope} onChange={(e) => setScope(e.target.value as KeyScope)}>
           <option value="read">Read only</option>
           <option value="full">Full</option>

@@ -778,24 +778,116 @@ func TestAPIKeysStayOutOfLogsAndBundle(t *testing.T) {
 // what changed; from outside the LAN too, as staff are. A requester's key still can't, and
 // the rest of the staff library stays closed to keys.
 func TestAPIKeyStaffLibraryReads(t *testing.T) {
-	s := newRouteServer(t, nil)
-	_, mc := s.user(t, "mgr@example.com", auth.RoleManager)
-	_, kc := s.user(t, "kid@example.com", auth.RoleRequester)
-	staff := s.makeKey(t, mc, "media server", "read", 0)
-	kid := s.makeKey(t, kc, "kid", "full", 0)
+	ctx := context.Background()
+	s := calendarServer(t) // real movie and series services
+	seedCalendar(t, s)     // movie 21, series 11
+	mgr, mc := s.user(t, "mgr@example.com", auth.RoleManager)
+	_, ac := s.user(t, "admin@example.com", auth.RoleAdmin)
+	kid, kc := s.user(t, "kid@example.com", auth.RoleRequester)
+	_, rc := s.user(t, "viewer@example.com", auth.RoleReadonly)
+	mgrKey := s.makeKey(t, mc, "media server", "read", 0)
+	adminKey := s.makeKey(t, ac, "autoscan", "full", 0)
+	kidKey := s.makeKey(t, kc, "kid", "full", 0)
+	viewerKey := s.makeKey(t, rc, "viewer", "full", 0)
 
-	for _, path := range []string{"/api/v1/history", "/api/v1/movies/999", "/api/v1/series/999"} {
-		for _, ip := range []string{"", "203.0.113.7"} {
-			rec := s.withKey(keyReq{method: "GET", path: path, key: staff.Key, ip: ip})
-			if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
-				t.Errorf("staff read-only key, GET %s from %q: HTTP %d %s", path, ip, rec.Code, rec.Body)
+	paths := []string{"/api/v1/history", "/api/v1/history?event=all", "/api/v1/movies/21", "/api/v1/series/11"}
+	for _, path := range paths {
+		// What the manager's own browser sees: the key gets exactly that, no more.
+		session := s.do("GET", path, mc)
+		if session.Code != http.StatusOK {
+			t.Fatalf("manager session, GET %s: HTTP %d %s", path, session.Code, session.Body)
+		}
+		for _, k := range []struct {
+			who string
+			key string
+		}{{"manager's read-only", mgrKey.Key}, {"admin's full", adminKey.Key}} {
+			// From home, and from outside it: staff are never limited to the outside view.
+			for _, ip := range []string{"", "203.0.113.7"} {
+				rec := s.withKey(keyReq{method: "GET", path: path, key: k.key, ip: ip})
+				if rec.Code != http.StatusOK {
+					t.Errorf("%s key, GET %s from %q: HTTP %d %s", k.who, path, ip, rec.Code, rec.Body)
+				}
 			}
 		}
-		if rec := s.withKey(keyReq{method: "GET", path: path, key: kid.Key}); rec.Code != http.StatusForbidden {
-			t.Errorf("requester key, GET %s: HTTP %d, want 403", path, rec.Code)
+		if rec := s.withKey(keyReq{method: "GET", path: path, key: mgrKey.Key}); rec.Body.String() != session.Body.String() {
+			t.Errorf("GET %s: the key's answer differs from the manager's session\nkey:     %s\nsession: %s", path, rec.Body, session.Body)
+		}
+		// Not staff: a requester's or a read-only account's key gets nothing, from home or away.
+		for _, k := range []string{kidKey.Key, viewerKey.Key} {
+			for _, ip := range []string{"", "203.0.113.7"} {
+				if rec := s.withKey(keyReq{method: "GET", path: path, key: k, ip: ip}); rec.Code != http.StatusForbidden {
+					t.Errorf("non-staff key, GET %s from %q: HTTP %d, want 403", path, ip, rec.Code)
+				}
+			}
 		}
 	}
-	if rec := s.withKey(keyReq{method: "GET", path: "/api/v1/queue", key: staff.Key}); rec.Code != http.StatusForbidden {
-		t.Errorf("staff key, GET /api/v1/queue: HTTP %d, want 403 (not opened to keys)", rec.Code)
+
+	// Writes on the same titles stay closed to every key, the admin's full one included.
+	for _, call := range []struct{ method, path, body string }{
+		{"PUT", "/api/v1/movies/21/monitor", `{"monitored":false}`},
+		{"DELETE", "/api/v1/movies/21", ""},
+		{"DELETE", "/api/v1/series/11", ""},
+		{"PUT", "/api/v1/series/11/monitor", `{"monitored":false}`},
+		{"POST", "/api/v1/movies", `{"tmdb_id":1}`},
+		{"GET", "/api/v1/movies/21/watch-stats", ""},
+		{"GET", "/api/v1/series/11/downloads", ""},
+		{"GET", "/api/v1/queue", ""},
+	} {
+		if rec := s.withKey(keyReq{method: call.method, path: call.path, body: call.body, key: adminKey.Key}); rec.Code != http.StatusForbidden {
+			t.Errorf("admin's full key, %s %s: HTTP %d, want 403", call.method, call.path, rec.Code)
+		}
+	}
+
+	// A requester promoted after making the key: the key stays a requester's.
+	if err := s.auth.UpdateUser(ctx, kid.ID, auth.RoleManager, auth.AutoApproval{}); err != nil {
+		t.Fatal(err)
+	}
+	// The manager demoted: the key loses the library at once, on the very next request.
+	if err := s.auth.UpdateUser(ctx, mgr.ID, auth.RoleRequester, auth.AutoApproval{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		for _, ip := range []string{"", "203.0.113.7"} {
+			if rec := s.withKey(keyReq{method: "GET", path: path, key: mgrKey.Key, ip: ip}); rec.Code != http.StatusForbidden {
+				t.Errorf("demoted manager's key, GET %s from %q: HTTP %d, want 403", path, ip, rec.Code)
+			}
+		}
+		if rec := s.withKey(keyReq{method: "GET", path: path, key: kidKey.Key}); rec.Code != http.StatusForbidden {
+			t.Errorf("promoted requester's old key, GET %s: HTTP %d, want 403", path, rec.Code)
+		}
+	}
+}
+
+// Keys change things only through these routes. A new entry here is a decision, not a side
+// effect: opening the staff library to keys stopped at reading it (#123); the rest of it is
+// the deferred Admin key level.
+func TestAPIKeyStaffRoutesOnlyRead(t *testing.T) {
+	writes := map[string]bool{
+		"POST /api/v1/requests":                     true,
+		"DELETE /api/v1/requests/{id}":              true,
+		"DELETE /api/v1/requests/{id}/subscription": true,
+		"POST /api/v1/requests/{id}/approve":        true,
+		"POST /api/v1/requests/{id}/decline":        true,
+		"POST /api/v1/requests/{id}/preview":        true,
+		"POST /api/v1/requests/bulk":                true,
+		"POST /api/v1/issues":                       true,
+		"POST /api/v1/me/notifications/read-all":    true,
+		"POST /api/v1/me/notifications/{id}/read":   true,
+	}
+	seen := map[string]bool{}
+	for _, s := range testRouter(t, true).specs {
+		if !s.APIKey || s.Method == http.MethodGet || s.Method == http.MethodHead {
+			continue
+		}
+		p := s.Method + " " + s.Pattern
+		seen[p] = true
+		if !writes[p] {
+			t.Errorf("%s is open to API keys and changes something: keys only change requests, issues and the inbox", p)
+		}
+	}
+	for p := range writes {
+		if !seen[p] {
+			t.Errorf("%s is listed here but not open to keys: drop it from the list", p)
+		}
 	}
 }

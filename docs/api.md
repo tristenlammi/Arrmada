@@ -93,7 +93,7 @@ logs, outside services' API keys and every admin page.
 | Your limits and shelf | `GET /api/v1/me/quota`, `GET /api/v1/me/books` |
 | Reporting a problem | `GET` and `POST /api/v1/issues` |
 | Your inbox | `GET /api/v1/me/notifications`, `POST /api/v1/me/notifications/read-all`, `POST /api/v1/me/notifications/{id}/read` |
-| Library changes (staff) | `GET /api/v1/history`, `GET /api/v1/movies/{id}`, `GET /api/v1/series/{id}`: what a media server's scanner reads to rescan only what changed |
+| Library changes (staff) | `GET /api/v1/history`, `GET /api/v1/movies/{id}`, `GET /api/v1/series/{id}`: what a media server's scanner reads to rescan only what changed. Read-only; a requester's key gets `403`, and so does a staff key once its owner stops being staff |
 
 The exact list is the source of truth: routes marked `key` in
 [`internal/httpapi/testdata/routes.golden`](../internal/httpapi/testdata/routes.golden), which

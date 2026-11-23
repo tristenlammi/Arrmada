@@ -8,8 +8,13 @@ package httpapi
 // The rule for what belongs here (docs/api.md repeats it for people writing scripts):
 //
 //   - only routes already marked ext() — the surface built to face callers from outside
-//     the home network — so a key never reaches anything a requester away from home
-//     couldn't (TestAPIKeyRoutesAreExternal);
+//     the home network — so a key never reaches anything its owner away from home
+//     couldn't (TestAPIKeyRoutesTable). Staff routes marked ext() change nothing for
+//     sessions: the outside limit never applies to staff, and a requester still gets 403
+//     from the role check;
+//   - a staff route here is a read (GET), unless it is approving or declining requests
+//     (TestAPIKeyStaffRoutesOnlyRead): the deferred Admin key level is what would open
+//     the rest of the staff library;
 //   - and of those, only what a script has a use for: Discover and title lookups,
 //     requests (and, for staff, approving and declining them), reporting problems, your
 //     inbox, your shelf and quota, who you are, and for staff, reading history and a
