@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { SmallerReleaseModal } from "../../components/SmallerReleaseModal";
 import { type ConvertPlan, type ConvertTrackDecision } from "../../lib/api";
 import { convertApi } from "../../lib/convertApi";
 import { posterThumb } from "../../lib/img";
 import { useQuery } from "../../lib/query";
-import { StatusChip } from "../../ui";
+import { StatusChip, useToast } from "../../ui";
 import { sizeLine, timeLine, trackLabel, videoLine } from "./plan";
 
 // The Library's "Conversion plan" card: what converting this one file would do, before
@@ -32,6 +33,38 @@ export function PlanCard({ itemKey }: { itemKey: string }) {
         </p>
       )}
       {data && <PlanDetails plan={data} />}
+      {data && <FindSmaller plan={data} />}
+    </div>
+  );
+}
+
+// movieOfKey reads a film's ids from a Convert key: "movie:ID" (its default file) or
+// "movie:ID:v:VID" (an extra version). Null for an episode.
+export function movieOfKey(key: string): { movieId: number; versionId: number } | null {
+  const m = /^movie:(\d+)(?::v:(\d+))?$/.exec(key);
+  return m ? { movieId: Number(m[1]), versionId: m[2] ? Number(m[2]) : 0 } : null;
+}
+
+// FindSmaller offers, for a film Convert would re-encode, to look for a release that is
+// already smaller instead — a download is minutes where an encode can be a day.
+function FindSmaller({ plan }: { plan: ConvertPlan }) {
+  const [open, setOpen] = useState(false);
+  const toast = useToast();
+  const ids = movieOfKey(plan.key);
+  if (!ids || !plan.needs.video) return null;
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+      <button type="button" onClick={() => setOpen(true)} className="rounded-lg px-2.5 py-1 text-xs font-semibold"
+        style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+        title="Search your indexers for a smaller release of this film that keeps what this file has">
+        Find a smaller release
+      </button>
+      <span>Instead of converting it, download a smaller copy that's already encoded.</span>
+      {open && (
+        <SmallerReleaseModal movieId={ids.movieId} versionId={ids.versionId} title={plan.title} convertSaveBytes={plan.needs.save}
+          onGrabbed={() => toast(`Grabbed a smaller release of ${plan.title} — it's checked against this file before it replaces it.`)}
+          onClose={() => setOpen(false)} />
+      )}
     </div>
   );
 }

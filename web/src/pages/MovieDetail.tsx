@@ -7,6 +7,7 @@ import { formatReleaseDay } from "../lib/format";
 import { availabilityWait } from "../lib/movieAvailability";
 import { AudioLangChips } from "../components/AudioLangChips";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
+import { SmallerReleaseModal } from "../components/SmallerReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -298,7 +299,7 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
     return (
       <>
         {clearedNotice}
-        {movie.file && <FilePanel file={movie.file} movieId={movie.id} audio={versions[0]} onChange={onChange} onCleared={onCleared} />}
+        {movie.file && <FilePanel file={movie.file} movieId={movie.id} title={movie.title} audio={versions[0]} onChange={onChange} onCleared={onCleared} />}
         {/* Other videos in the film's folder, by its file: the chip opens the list. */}
         {(movie.other_files?.count ?? 0) > 0 && <div className="mt-2"><OtherFilesChip movie={movie} /></div>}
         <button onClick={() => setAdding(true)} className="mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold" style={{ border: "1px dashed var(--line)", color: "var(--ink-dim)" }}>
@@ -395,7 +396,7 @@ function VersionCard({ movie, version, onChange, onCleared, flash, profileName }
 
   // Both destructive buttons ask first, naming the file, its size and where it goes.
   const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
-  const [panel, setPanel] = useState<"search" | "import" | "edit" | null>(null);
+  const [panel, setPanel] = useState<"search" | "import" | "edit" | "smaller" | null>(null);
 
   const status = trackStatus(version);
   const missing = status.key === "missing";
@@ -419,6 +420,7 @@ function VersionCard({ movie, version, onChange, onCleared, flash, profileName }
         <button onClick={() => setPanel("search")} disabled={busy} className={small} style={ghost}>Search</button>
         <button onClick={() => setPanel("import")} disabled={busy} className={small} style={ghost}>Import</button>
         {!version.is_default && <button onClick={() => setPanel("edit")} disabled={busy} className={small} style={ghost}>Edit</button>}
+        {f && !missing && <button onClick={() => setPanel("smaller")} disabled={busy} className={small} style={ghost} title="Search your indexers for a smaller release of this file that keeps what it has">Find a smaller release</button>}
         {f && <button onClick={() => setConfirm("file")} disabled={busy} className={small} style={missing ? ghost : { border: "1px solid var(--reject)", color: "var(--reject-text)" }}>{missing ? "Clear record" : "Delete file"}</button>}
         {!version.is_default && <button onClick={() => setConfirm("version")} disabled={busy} className="rounded-lg px-2.5 py-1 text-xs" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
       </div>
@@ -431,6 +433,9 @@ function VersionCard({ movie, version, onChange, onCleared, flash, profileName }
           onBlock={async (rel) => { await api.blockRelease(movieId, { token: rel.token ?? "", search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); onChange(); }}
           onClose={() => setPanel(null)}
         />
+      )}
+      {panel === "smaller" && (
+        <SmallerReleaseModal movieId={movieId} versionId={version.id} title={`${movie.title} · ${version.label}`} onGrabbed={onChange} onClose={() => setPanel(null)} />
       )}
       {panel === "import" && (
         <ManualImportModal movie={movie} versionId={version.id} onClose={() => setPanel(null)} onImported={() => { setPanel(null); onChange(); flash(`Imported into ${version.label}.`); }} />
@@ -1331,8 +1336,9 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
   );
 }
 
-function FilePanel({ file, movieId, audio, onChange, onCleared }: { file: MovieFile; movieId: number; audio?: TrackAudio; onChange: () => void; onCleared: () => void }) {
+function FilePanel({ file, movieId, title, audio, onChange, onCleared }: { file: MovieFile; movieId: number; title: string; audio?: TrackAudio; onChange: () => void; onCleared: () => void }) {
   const [confirming, setConfirming] = useState(false);
+  const [smaller, setSmaller] = useState(false);
   const tone = file.missing ? "var(--avoid)" : "var(--good)";
 
   return (
@@ -1342,10 +1348,17 @@ function FilePanel({ file, movieId, audio, onChange, onCleared }: { file: MovieF
           <div className="font-mono text-2xs uppercase" style={{ color: tone }}>{file.missing ? "File missing from disk" : "On disk"}</div>
           <FileBody movieId={movieId} versionId={0} file={file} audio={audio} onAdopted={onChange} />
         </div>
-        <div className="flex-none">
+        <div className="flex flex-none flex-col items-end gap-1.5">
           <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-sm font-semibold" style={file.missing ? { border: "1px solid var(--line)", color: "var(--ink)" } : { border: "1px solid var(--reject)", color: "var(--reject-text)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
+          {!file.missing && (
+            <button onClick={() => setSmaller(true)} title="Search your indexers for a smaller release of this film that keeps what this file has"
+              className="rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+              Find a smaller release
+            </button>
+          )}
         </div>
       </div>
+      {smaller && <SmallerReleaseModal movieId={movieId} title={title} onGrabbed={onChange} onClose={() => setSmaller(false)} />}
       {confirming && file.missing && (
         <ClearRecordDialog
           movieId={movieId}

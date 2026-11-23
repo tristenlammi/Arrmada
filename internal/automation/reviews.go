@@ -145,6 +145,10 @@ const (
 	ReasonImportFailed = "import_failed"
 	// ReasonNoMedia: nothing importable inside — still archived, or unreadable.
 	ReasonNoMedia = "no_media"
+	// ReasonReplaceCheck: grabbed to replace a film's file with a smaller one ("Find a
+	// smaller release"), but the download isn't what its name said in a way that matters —
+	// another resolution, no HDR, another length (smaller.go). The file there is untouched.
+	ReasonReplaceCheck = "replace_check"
 )
 
 const reviewCols = `id, hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, reason_code, size_bytes, indexer, created_at, status, match_json`
@@ -455,8 +459,17 @@ func (c *Coordinator) grabIndex(ctx context.Context, mediaType string) func(hash
 
 // HoldMovieImport is the import gate for the generic movie importer: it holds a
 // finished movie download for review when it was grabbed for one movie but its
-// content parses to a different one. Returns (reason, hold).
+// content parses to a different one, or when it was grabbed to replace a file with a
+// smaller one and isn't what its name said (smaller.go). Returns (reason, hold).
 func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPath string) (string, bool) {
+	if reason, hold := c.holdMovieImportByTitle(ctx, hash, name, contentPath); hold {
+		return reason, hold
+	}
+	return c.holdSmallerMismatch(ctx, hash, name, contentPath)
+}
+
+// holdMovieImportByTitle is HoldMovieImport's title check.
+func (c *Coordinator) holdMovieImportByTitle(ctx context.Context, hash, name, contentPath string) (string, bool) {
 	if c.movies == nil {
 		return "", false
 	}
@@ -934,6 +947,7 @@ func (c *Coordinator) importContentInto(ctx context.Context, r Review, dest int6
 				return err
 			}
 		}
+		c.keepReplacedBaseline(ctx, dest, r.Hash) // a "Find a smaller release" grab (smaller.go)
 	case "music":
 		// Books shipped with reviews their own ImportReview couldn't handle, so every
 		// "Import anyway" failed with "unknown media type". Music gets its case up front.

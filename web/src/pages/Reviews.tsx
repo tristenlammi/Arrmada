@@ -23,6 +23,7 @@ const REASON: Record<ReviewReason, { label: string; tone: Tone }> = {
   title_conflict: { label: "Titles disagree", tone: "accent" },
   import_failed: { label: "Import failing", tone: "reject" },
   no_media: { label: "Nothing to import", tone: "reject" },
+  replace_check: { label: "Not as named", tone: "avoid" },
   // The music matcher's (MUS-31): it says in words why underneath.
   low_confidence: { label: "Not sure", tone: "avoid" },
   close_editions: { label: "Two editions", tone: "accent" },
@@ -469,6 +470,13 @@ function ReviewCard({ r, busy: acting, importJob, importError, onImportDone, sel
               : linked && <button onClick={onImport} disabled={busy} className={btn} style={primary}>Import anyway</button>}
             <button onClick={onReassign} disabled={busy} className={btn} style={accent}>Choose different {label}…</button>
             <button onClick={() => onReject(true)} disabled={busy} className={btn} style={danger}>{linked ? "Reject & find another" : "Reject"}</button>
+          </>
+        )}
+        {r.reason_code === "replace_check" && (
+          <>
+            {/* A smaller release picked to replace a file: the file there is untouched. */}
+            {linked && <button onClick={onImport} disabled={busy} className={btn} style={primary}>Import anyway</button>}
+            <button onClick={() => onReject(false)} disabled={busy} className={btn} style={danger} title="Remove the download and block the release — your file stays">Reject</button>
           </>
         )}
         {r.reason_code === "no_media" && (

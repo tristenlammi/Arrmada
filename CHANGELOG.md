@@ -13,6 +13,12 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Added
 
+- **Find a smaller release, instead of converting.** A film Convert would re-encode now has **Find a smaller release** on its conversion plan card (Convert → Library, open the row), and every film's file has it on the movie page too. It searches your indexers and shows only the releases that would be a sensible replacement, each saying what it saves, what it keeps and what it gives up. A download takes minutes; a re-encode can take a day.
+  - A replacement must be at least 20% smaller, the same resolution and edition, HEVC or AV1 that Convert would leave alone, and inside your profile's bitrate window. When the profile sets no floor for that resolution, a built-in one keeps out starved encodes (3 Mb/s at 1080p, 10 Mb/s at 4K).
+  - It never gives up what your file has: HDR, Dolby Vision, HDR10+, Atmos, lossless audio, and the audio languages your profile asks for. What the search found that doesn't qualify is listed with the reason.
+  - When the download finishes, Arrmada reads it before importing it. If it isn't what its name said — another resolution, no HDR or Dolby Vision, or a different length (another cut) — it waits in **Needs you** and your file stays as it is.
+  - Once imported, the release your old file came from becomes the new file's baseline, so upgrades are measured against it and the big file is never fetched back.
+  - Nothing happens on its own: you pick each one. The replaced file goes to the recycle bin, like an upgrade's old file — not to Convert's originals hold, so there's no Revert in Convert's History for it. Films only for now.
 - **Emby support** ([#60](https://github.com/tristenlammi/Arrmada/issues/60)). Emby connects through the Jellyfin card in Settings → Connections: set **Server** to **Emby**, add its address and an API key (Emby: Dashboard → Advanced → API Keys).
   - Everything Jellyfin does works with Emby too: Watch links into Emby's web app, library updates after every change, requests counting as ready once Emby has them, Recently added, watch monitoring in Insights, and sign-in and account linking with an Emby username and password.
   - Emby has no Quick Connect, so it isn't offered. It's Jellyfin or Emby, alongside Plex, not both at once.

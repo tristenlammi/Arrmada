@@ -115,6 +115,11 @@ type Coordinator struct {
 	joins joinState
 	// probeAudioFn measures an audio file (nil: ffprobe through mediainfo). See probeAudio.
 	probeAudioFn func(ctx context.Context, path string) (mediainfo.AudioInfo, error)
+	// probeFileFn reads a film file's picture, length and sound for "Find a smaller release"
+	// (nil: ffprobe through mediainfo). smallerChecked holds the downloads of such grabs that
+	// passed their check, so the import sweep doesn't read them again. See smaller.go.
+	probeFileFn    func(path string) (mediainfo.Info, error)
+	smallerChecked sync.Map
 	// musicTagsFn reads an audio file's tags and length for the matcher (nil: audiotag).
 	// See readMatchFile.
 	musicTagsFn func(path string) (music.FileTags, int, error)
@@ -843,6 +848,9 @@ type RankedRelease struct {
 	// original language"). Set on every row, eligible or not.
 	AudioLangs     []string `json:"audio_langs,omitempty"`
 	AudioLangsNote string   `json:"audio_langs_note,omitempty"`
+	// Replace is set on the rows of "Find a smaller release" (smaller.go): what replacing
+	// the file with this release saves, keeps and gives up.
+	Replace *ReplaceFit `json:"replace,omitempty"`
 }
 
 // ReleaseList is the interactive-search response for one movie.
@@ -2841,6 +2849,7 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 	if !c.markMovieGrabImportedByHash(ctx, m.ID, rec.Hash) {
 		c.markGrabImportedForMovie(ctx, m.ID, rec.ReleaseName)
 	}
+	c.keepReplacedBaseline(ctx, m.ID, rec.Hash) // a "Find a smaller release" grab (smaller.go)
 	c.log.Info("automation: import attached to movie", "movie", m.Title)
 	return library.Attached, nil
 }
