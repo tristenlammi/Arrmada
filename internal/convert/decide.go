@@ -87,6 +87,9 @@ type prefs struct {
 	resumable bool
 	// measured holds what test encodes measured (see measured.go), keyed by measureKey.
 	measured map[string]measurement
+	// excl is what you told Convert to leave alone: titles, library folders, resolutions
+	// (exclusions.go).
+	excl exclusions
 }
 
 func (s *Service) prefs(ctx context.Context) prefs {
@@ -110,6 +113,7 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		measured:       s.measured.all(ctx),
 		dolbyVision:    dvPolicy(g.Get(ctx, keyDolbyVision, "")),
 		doviTool:       s.doviTool != "",
+		excl:           s.loadExclusions(ctx),
 	}
 	p.keepSubs = s.keepSubLangs(ctx, p.keepSubsSaved)
 	if p.subRules = s.subRulesFor(ctx, p.keepSubsSaved); p.subRules != nil && s.subProfiles.Key != nil {
@@ -130,8 +134,8 @@ func (s *Service) prefs(ctx context.Context) prefs {
 // cacheKey identifies the settings that change which files need work, for cached views —
 // and resumable, which changes the scratch space each one needs.
 func (p prefs) cacheKey() string {
-	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v|%v|%s", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
-		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable, p.subRules != nil, p.subKey)
+	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v|%s|%s|%v|%v|%s|%s", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
+		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks, p.dolbyVision, p.tenBit, p.resumable, p.subRules != nil, p.subKey, p.excl.key)
 }
 
 // Needs is the gap between a file and the target.
@@ -150,6 +154,14 @@ type Needs struct {
 	// (or any tracks-only rewrite, when you've asked for tidying). Everything that lists,
 	// counts or picks work for the runner goes by this, not by Any.
 	Worth bool `json:"worth"`
+	// Excluded names the rule that leaves the file alone because you said so: "title",
+	// "folder" or "resolution" (exclusions.go). Why then says which. Such a file needs
+	// nothing: every other field is empty.
+	Excluded string `json:"excluded,omitempty"`
+
+	// What the file would have needed without the rule, for the left-out counts.
+	leftOutWorth bool
+	leftOutSave  int64
 }
 
 // Any reports whether the file falls short of the target at all.
@@ -318,6 +330,12 @@ func (p prefs) planForTitle(mi *MediaInfo, path string, t titleRef, dirCache map
 		n.Worth = true
 	case n.Audio || n.Subs:
 		n.Worth = p.tidyTracks || n.Save*100 >= mi.SizeBytes*tidySavingPct
+	}
+	// Left out by your own rule: nothing to do, and a plan that keeps every track as it is.
+	// Worked out last so the counts can say what the rule is holding back.
+	if rule, why := p.excl.match(mi, path, t); rule != "" {
+		return Plan{Subs: SubPlan{ImageSubs: ImageSubsKeep}},
+			Needs{Excluded: rule, Why: why, leftOutWorth: n.Worth, leftOutSave: n.Save}
 	}
 	return plan, n
 }

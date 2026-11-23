@@ -1201,6 +1201,20 @@ func main() {
 	// Converted originals wait in a hidden hold on their own library folder (same drive, a
 	// rename) for the undo window — never in the recycle bin, whose cap would purge them.
 	convertSvc.SetHoldRoots(func() []libroots.Root { return roots.Libraries(context.Background()) }, cfg.DataDir)
+	// Settings → Convert can leave whole library folders alone: it lists every Movies and
+	// TV folder (the default first), and a file belongs to the folder it lies in.
+	convertSvc.SetLibraryFolders(func(ctx context.Context) []convert.LibraryFolder {
+		var out []convert.LibraryFolder
+		for _, media := range []string{libfolders.MediaMovie, libfolders.MediaSeries} {
+			for _, f := range libFolders.List(ctx, media) {
+				if f.Path == "" {
+					continue
+				}
+				out = append(out, convert.LibraryFolder{Key: convert.FolderKey(media, f.ID), Media: media, Path: f.Path, Label: f.Label})
+			}
+		}
+		return out
+	})
 	// "Same as Subtitles" for the subtitle tracks Convert keeps reads the Subtitles list.
 	convertSvc.SetSubtitleLangs(subtitlesSvc.Languages)
 	// ...and, for those languages, each title's own profile: full or forced, SDH, and

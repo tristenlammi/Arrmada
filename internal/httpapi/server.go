@@ -774,6 +774,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/convert/library", a.requireRole(auth.RoleManager, a.handleConvertLibrary))
 	mux.HandleFunc("GET /api/v1/convert/plan", a.requireRole(auth.RoleManager, a.handleConvertPlan))
 	mux.HandleFunc("GET /api/v1/convert/auto-preview", a.requireRole(auth.RoleManager, a.handleConvertAutoPreview))
+	mux.HandleFunc("GET /api/v1/convert/exclusions", a.requireRole(auth.RoleManager, a.handleConvertExclusions))
+	mux.HandleFunc("PUT /api/v1/convert/exclusions", a.requireRole(auth.RoleManager, a.handleConvertExclusionSet))
 	mux.HandleFunc("GET /api/v1/convert/stats", a.requireRole(auth.RoleManager, a.handleConvertStats))
 	mux.HandleFunc("GET /api/v1/convert/jobs", a.requireRole(auth.RoleManager, a.handleConvertJobs))
 	mux.HandleFunc("GET /api/v1/convert/logs", a.requireRole(auth.RoleManager, a.handleConvertLogs))

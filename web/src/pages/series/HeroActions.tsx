@@ -22,6 +22,7 @@ import { ProfileSelector } from "./ProfileSelector";
 import { SameNameHint } from "./SameNameHint";
 import { TitleProfilePicker } from "../subtitles/ProfileSelect";
 import { shownTitle } from "../../lib/displayTitle";
+import { LeftOutChip, exclusionMenuItem, isExcluded, useConvertExclusions, type ExclusionTarget } from "../../components/convert/ConvertExclusion";
 
 // The "Display title…" picker: loaded when it opens.
 const DisplayTitleDialog = lazy(() => import("../../components/DisplayTitleDialog"));
@@ -87,6 +88,10 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
   // With one folder neither appears.
   const folders = useLibraryFolders().data?.series;
   const multiFolder = !!folders?.multi;
+  // "Don't convert this": Convert leaves the show's files alone while it's on.
+  const exclusions = useConvertExclusions();
+  const leftOut: ExclusionTarget = { kind: "series", id: series.id, name };
+  const excluded = isExcluded(exclusions.data, leftOut);
 
   const searchMissing = async () => {
     setStarting(true);
@@ -120,6 +125,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
     { label: numberingLabel(series), busyLabel: "Saving…", onSelect: () => switchNumbering(series, onChange, flash) },
     ...(multiFolder ? [{ label: "Move to folder…", onSelect: () => setOpen("move") }] : []),
     { label: "Display title…", onSelect: () => setOpen("title") },
+    exclusionMenuItem(leftOut, excluded, flash),
     ...extraItems,
     { label: "Delete…", tone: "danger", onSelect: () => setOpen("delete") },
   ];
@@ -157,6 +163,7 @@ export function HeroActions({ series, onChange, flash, extraItems = [] }: { seri
           {search.running ? "Searching…" : searchResult?.text}
         </div>
       )}
+      <LeftOutChip target={leftOut} excluded={excluded} flash={flash} className="mt-2" />
       <LastSearches kind="series" id={series.id} />
       <SameNameHint seriesId={series.id} />
 

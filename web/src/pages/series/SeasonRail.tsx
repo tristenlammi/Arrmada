@@ -7,6 +7,7 @@ import { api, type Episode, type FitItem, type Season, type Series as SeriesT } 
 import { seriesApi } from "../../lib/seriesApi";
 import { qualityApi } from "../../lib/qualityApi";
 import { convertApi } from "../../lib/convertApi";
+import { LeftOutChip, isExcluded, useConvertExclusions, type ExclusionTarget } from "../../components/convert/ConvertExclusion";
 import { disposalLine, useRecycleMode } from "../../lib/disposal";
 import { posterThumb } from "../../lib/img";
 import { attemptLine, outcomeTone } from "../../lib/searchOutcome";
@@ -127,6 +128,9 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
   const eps = season.episodes ?? [];
   const c = seasonCounts(season);
   const name = seasonName(season.season_number);
+  // A season left out of Convert on its own (from Convert's plan card) says so here, with the way back.
+  const exclusions = useConvertExclusions();
+  const leftOut: ExclusionTarget = { kind: "series", id: series.id, name: series.title, season: season.season_number };
   const [busy, setBusy] = useState<null | "grab" | "resume" | "monitor">(null);
   const [choose, setChoose] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -236,6 +240,7 @@ export function SeasonPanel({ series, season, fits, onChange, flash }: { series:
           )}
         </div>
       </div>
+      <LeftOutChip target={leftOut} excluded={isExcluded(exclusions.data, leftOut)} flash={flash} className="mt-1" />
       {seasonDir && <div className="mt-1 truncate font-mono text-xs text-ink-faint" title={seasonDir}>{seasonDir}</div>}
       {anyMissing && last && !searching && <div className="mt-1 text-sm" style={{ color: outcomeTone(last.outcome) }}>{attemptLine(last)}</div>}
 

@@ -2735,7 +2735,19 @@ export interface ConvertMediaStats {
   h264: number; hevc: number; av1: number; other: number;
   // Every Dolby Vision file the Dolby Vision choice applies to, convertible or not.
   dolby_vision_files: number;
+  /** Files your own rules keep from converting that would otherwise be worth it. */
+  left_out?: ConvertLeftOut;
 }
+// How many files each "leave this alone" rule keeps from converting, and the space they'd free.
+export interface ConvertLeftOut { title: number; folder: number; resolution: number; save_bytes: number }
+// A film, show or season you told Convert to leave alone (GET /convert/exclusions).
+// season -1 = the whole title.
+export interface ConvertTitleExclusion { kind: "movie" | "series"; movie_id?: number; series_id?: number; season: number; title: string; created_at: string }
+// What turning "Don't convert this" on did: waiting requests taken off the queue, and a
+// conversion already running for it (left to finish).
+export interface ConvertExcludeResult { excluded: boolean; dropped: number; running?: string }
+// One Movies or TV library folder, for Settings → Convert's folder switches.
+export interface ConvertLibraryFolder { key: string; media: "movie" | "series"; path: string; label: string }
 // A book's series as the library can see it: the entries you own, in reading order, and
 // the numbered holes between them.
 export interface BookSeriesEntry {
@@ -2759,9 +2771,13 @@ export interface ConvertSeriesRollup {
   total_bytes: number;
   est_bytes: number;
   save_bytes: number;
+  left_out?: ConvertLeftOut;
+  /** The whole show is left out ("Don't convert this"). */
+  excluded?: boolean;
 }
 
-export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string; save: number; worth: boolean; measured?: boolean }
+// excluded: the rule that leaves the file alone because you said so (why says which).
+export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string; save: number; worth: boolean; measured?: boolean; excluded?: "title" | "folder" | "resolution" }
 // version_id/version_label: an extra version track of the movie (absent = its default file);
 // title stays the film's own.
 export interface ConvertCandidate { kind: "movie" | "episode"; key: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; worth: boolean; save_bytes: number; needs: ConvertNeeds; est_bytes: number; tracks?: string; version_id?: number; version_label?: string;
@@ -2842,6 +2858,12 @@ export interface ConvertSettings {
   scratch_dir: string; vaapi_device: string; cpu_cores: number; workers: number; scan_at: string;
   server_time: string; server_tz: string; plex_watching_known: boolean; can_pause: boolean;
   has_gpu: boolean; gpu_does_av1: boolean; hdr10plus_tool: boolean;
+  /** Library folders left alone, by key ("movie:0", "series:4"). */
+  skip_folders?: string[];
+  /** Resolutions left alone: "SD" | "720p" | "1080p" | "2160p". */
+  skip_resolutions?: string[];
+  /** Every Movies and TV library folder (read-only). */
+  library_folders?: ConvertLibraryFolder[];
 }
 export interface ConvertTrialSide { codec: string; encoder: string; bytes: number; ssim: number; est_bytes: number }
 export interface ConvertTrialResult { key: string; title: string; src_bytes: number; clips: number; seconds: number; hevc: ConvertTrialSide; av1: ConvertTrialSide; pick: string; why: string; files?: string[] }

@@ -13,6 +13,11 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ### Added
 
+- **Tell Convert what to leave alone.** Until now the only way to keep Convert off a file was to cancel it, which held it back for a month. Nothing is left out until you choose it, so a library converts as before.
+  - **Don't convert this** in a film's or a show's ⋯ menu. While it's on, the page shows **Not converted** with a button to undo it. A file's plan card under Convert → Library has the same switch: the film, or the episode's show or just its season.
+  - Settings → Convert → **Leave alone**: files that are SD, 720p, 1080p or 4K (by the picture's real size, as Convert read it from the file), and a switch for each Movies and TV library folder. The titles you've left out are listed there too, each with the way back.
+  - Left-out files are never picked, aren't counted as worth converting or in the space still to save, and say why on their plan card. The Overview says how many files worth converting each rule is holding back.
+  - Leaving a title out takes its files off the Convert-now queue. A conversion already running for it finishes (cancel it under Convert if you'd rather it didn't); converting it by hand is refused until you turn the rule off.
 - **Emby support** ([#60](https://github.com/tristenlammi/Arrmada/issues/60)). Emby connects through the Jellyfin card in Settings → Connections: set **Server** to **Emby**, add its address and an API key (Emby: Dashboard → Advanced → API Keys).
   - Everything Jellyfin does works with Emby too: Watch links into Emby's web app, library updates after every change, requests counting as ready once Emby has them, Recently added, watch monitoring in Insights, and sign-in and account linking with an Emby username and password.
   - Emby has no Quick Connect, so it isn't offered. It's Jellyfin or Emby, alongside Plex, not both at once.

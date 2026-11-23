@@ -37,6 +37,7 @@ import {
 } from "../lib/api";
 import { qualityApi } from "../lib/qualityApi";
 import { convertApi } from "../lib/convertApi";
+import { LeftOutChip, exclusionMenuItem, isExcluded, useConvertExclusions, type ExclusionTarget } from "../components/convert/ConvertExclusion";
 import { useLiveEvent } from "../lib/live";
 import { QUEUE_CHANGED, QUEUE_PROGRESS, progressByHash, queueChangedFor } from "../lib/queueLive";
 import { downloadPercent } from "../lib/percent";
@@ -1212,6 +1213,10 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
   const [showMove, setShowMove] = useState(false);
   const [showTitle, setShowTitle] = useState(false);
   const name = shownTitle(movie);
+  // "Don't convert this": Convert leaves the film's files alone while it's on.
+  const exclusions = useConvertExclusions();
+  const leftOut: ExclusionTarget = { kind: "movie", id: movie.id, name };
+  const excluded = isExcluded(exclusions.data, leftOut);
 
   // At most one primary button, and it matches the movie's state: Search when it's
   // monitored and has no file (or its file is gone), Search for upgrade when it has a
@@ -1275,6 +1280,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
             ...(hasAnyFile ? [{ label: "Rename…", onSelect: () => setShowRename(true) }] : []),
             ...(multiFolder ? [{ label: "Move to folder…", onSelect: () => setShowMove(true) }] : []),
             { label: "Display title…", onSelect: () => setShowTitle(true) },
+            exclusionMenuItem(leftOut, excluded, flash),
             { label: "Refresh & rescan", busyLabel: "Refreshing…", onSelect: () => run("refresh", async () => { await api.refreshMovie(movie.id); onChange(); flash("Refreshed metadata and rescanned disk."); }) },
             { label: "Delete movie…", tone: "danger" as const, onSelect: () => setShowDelete(true) },
           ]}
@@ -1285,6 +1291,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
           </span>
         )}
       </div>
+      <LeftOutChip target={leftOut} excluded={excluded} flash={flash} className="mt-2" />
       {showMove && folders && (
         <MoveFolderDialog
           media="movie" id={movie.id} title={name} current={movie.library_folder_id ?? 0} folders={folders}

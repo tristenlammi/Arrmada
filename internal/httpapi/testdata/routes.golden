@@ -101,6 +101,7 @@ GET /api/v1/convert/blocklist staff -
 GET /api/v1/convert/compare staff -
 GET /api/v1/convert/compare/files/{name} staff -
 GET /api/v1/convert/devices staff -
+GET /api/v1/convert/exclusions staff -
 GET /api/v1/convert/hardware staff -
 GET /api/v1/convert/history staff -
 GET /api/v1/convert/history/{id} staff -
@@ -579,6 +580,7 @@ PUT /api/v1/books/{id}/keep-catalogue staff -
 PUT /api/v1/books/{id}/metadata staff -
 PUT /api/v1/books/{id}/monitor staff -
 PUT /api/v1/books/{id}/profile staff -
+PUT /api/v1/convert/exclusions staff -
 PUT /api/v1/convert/settings staff -
 PUT /api/v1/downloadclients/{id} staff -
 PUT /api/v1/downloadclients/{id}/settings staff -

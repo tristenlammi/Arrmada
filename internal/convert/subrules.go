@@ -50,6 +50,7 @@ func (s *Service) SetSubtitleProfiles(sp SubtitleProfiles) { s.subProfiles = sp 
 type titleRef struct {
 	Kind              string // "movie" | "episode"; "" = not known: no per-title rules
 	MovieID, SeriesID int64
+	Season            int // an episode's season, for a season left out of Convert
 	OrigLang          string
 }
 

@@ -316,7 +316,7 @@ func (s *Service) computeCandidates(ctx context.Context, p prefs) []autoCand {
 		if json.Unmarshal([]byte(infoJSON), &mi) != nil {
 			continue
 		}
-		plan, n := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, OrigLang: orig}, dirCache)
+		plan, n := p.planForTitle(&mi, path, titleRef{Kind: mediaType, MovieID: movieID, SeriesID: seriesID, Season: season, OrigLang: orig}, dirCache)
 		if !n.Worth {
 			continue
 		}
@@ -366,6 +366,13 @@ func (s *Service) Request(ctx context.Context, key string) error {
 	s.mu.Unlock()
 	if running {
 		return ErrAlreadyQueued
+	}
+	// Left out by your own rule (a title, folder or resolution): say so now, rather than
+	// queue it to be skipped when its turn comes.
+	if r, err := s.indexRowFor(ctx, key); err == nil {
+		if _, n := s.prefs(ctx).planForTitle(r.Info, r.Path, r.ref(), nil); n.Excluded != "" {
+			return fmt.Errorf("this file is left out of Convert (%s) — turn that off to convert it", n.Why)
+		}
 	}
 	_, title, _, ok := s.resolveSource(ctx, it.job())
 	if !ok {

@@ -44,6 +44,11 @@ type Settings struct {
 	Workers     int    `json:"workers"`
 	ScanAt      string `json:"scan_at"`
 
+	// What Convert leaves alone (exclusions.go): library folders by key ("movie:0",
+	// "series:4") and resolutions ("SD", "720p", "1080p", "2160p"). Empty = nothing.
+	SkipFolders     []string `json:"skip_folders"`
+	SkipResolutions []string `json:"skip_resolutions"`
+
 	// Read-only context for the page.
 	ServerTime    string `json:"server_time"` // the hours are read on this clock
 	ServerTZ      string `json:"server_tz"`
@@ -53,6 +58,8 @@ type Settings struct {
 	GPUDoesAV1    bool   `json:"gpu_does_av1"`
 	HDR10PlusTool bool   `json:"hdr10plus_tool"`
 	DoviTool      bool   `json:"dovi_tool"` // Dolby Vision can be kept through a conversion
+	// LibraryFolders is every Movies and TV library folder, for the folder switches.
+	LibraryFolders []LibraryFolder `json:"library_folders"`
 }
 
 // GetSettings reads the current settings.
@@ -75,6 +82,8 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		ServerTime: time.Now().Format("15:04"), ServerTZ: zone,
 		PlexWatching: s.watchingKnown(), CanPause: canSuspend,
 		HasGPU: hasHEVC || hasAV1, GPUDoesAV1: hasAV1, HDR10PlusTool: s.hdr10plusTool != "", DoviTool: s.doviTool != "",
+		SkipFolders: s.skipFolderList(ctx), SkipResolutions: s.skipResolutionList(ctx),
+		LibraryFolders: append([]LibraryFolder{}, s.libraryFolders(ctx)...),
 	}
 }
 
@@ -116,6 +125,10 @@ type SettingsPatch struct {
 	CPUCores         *int    `json:"cpu_cores"`
 	Workers          *int    `json:"workers"`
 	ScanAt           *string `json:"scan_at"`
+
+	// What Convert leaves alone; an empty list clears the rule.
+	SkipFolders     *[]string `json:"skip_folders"`
+	SkipResolutions *[]string `json:"skip_resolutions"`
 }
 
 // UpdateSettings validates and saves a patch. Nothing is saved if any field is invalid.
@@ -167,6 +180,21 @@ func (s *Service) UpdateSettings(ctx context.Context, p SettingsPatch) (Settings
 	if p.HoldMaxGB != nil && (*p.HoldMaxGB < 0 || *p.HoldMaxGB > maxHoldGB) {
 		return Settings{}, fmt.Errorf("the originals hold can be 0–%d GB", maxHoldGB)
 	}
+	var skipRes, skipDirs *string
+	if p.SkipResolutions != nil {
+		v, err := cleanSkipResolutions(*p.SkipResolutions)
+		if err != nil {
+			return Settings{}, err
+		}
+		skipRes = &v
+	}
+	if p.SkipFolders != nil {
+		v, err := s.cleanSkipFolders(ctx, *p.SkipFolders)
+		if err != nil {
+			return Settings{}, err
+		}
+		skipDirs = &v
+	}
 
 	g := s.settings
 	var errs []string
@@ -205,6 +233,8 @@ func (s *Service) UpdateSettings(ctx context.Context, p SettingsPatch) (Settings
 	setS(keyScratchDir, p.ScratchDir, trim)
 	setS(keyVaapiDevice, p.VaapiDevice, trim)
 	setS(keyScanAt, p.ScanAt, trim)
+	setS(keySkipResolutions, skipRes, trim)
+	setS(keySkipFolders, skipDirs, trim)
 	if p.CPUCores != nil {
 		if err := g.Set(ctx, keyCPUCores, strconv.Itoa(*p.CPUCores)); err != nil {
 			errs = append(errs, keyCPUCores)
