@@ -2,7 +2,8 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { RequestSheet } from "../components/RequestSheet";
-import { api, type MediaRequest, type RequestCounts, type RequestSection } from "../lib/api";
+import { api, type MediaRequest, type RequestCounts, type RequestSection, type StoppedTitle } from "../lib/api";
+import { stopLookingSummary } from "../lib/stopLooking";
 import { isStaff, useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
 import { useRequestsFeed } from "../lib/useRequestsFeed";
@@ -195,11 +196,23 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       const yes = await confirm({ title: `Decline ${n}?`, body: "Each requester is told.", confirmLabel: `Decline ${ids.length}`, tone: "danger" });
       if (!yes) return;
     }
+    // A delete leaves the library as it is unless the box is ticked (off by default).
+    const stop = { on: false };
     if (action === "delete") {
-      // As deleting one request: the requests go, the library stays as it is.
       const yes = await confirm({
         title: `Delete ${n}?`,
-        body: "They’re removed for everyone following them. Nothing in the library changes: titles they added stay in Movies and Series and are still looked for, anything downloading carries on, and files already downloaded are kept. To stop looking for them, select them in Movies and choose Unmonitor, or in Series and choose Searching off.",
+        body: (
+          <>
+            <p>They’re removed for everyone following them. Anything downloading carries on, and files already downloaded are kept. Unless you tick the box, nothing in the library changes: titles they added stay in Movies and Series and are still looked for.</p>
+            <label className="mt-3 flex items-start gap-2 text-ink">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" onChange={(e) => { stop.on = e.target.checked; }} />
+              <span>
+                Also stop looking for these titles
+                <span className="mt-0.5 block text-xs text-ink-faint">Movies are unmonitored and shows have searching turned off — the same as Unmonitor in Movies and Searching off in Series. Files are kept. A title someone else still has a request open for is left as it is.</span>
+              </span>
+            </label>
+          </>
+        ),
         confirmLabel: `Delete ${ids.length}`,
         tone: "danger",
       });
@@ -208,10 +221,16 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
     setBusy(`bulk:${action}`);
     try {
       const results: { id: number; ok: boolean; error?: string }[] = [];
+      const titles: StoppedTitle[] = [];
       for (let i = 0; i < ids.length; i += BULK_MAX) {
         const chunk = ids.slice(i, i + BULK_MAX);
-        const r = await api.bulkRequests({ action, ids: chunk, ...(action === "decline" && bulkReason.trim() ? { reason: bulkReason.trim() } : {}) });
+        const r = await api.bulkRequests({
+          action, ids: chunk,
+          ...(action === "decline" && bulkReason.trim() ? { reason: bulkReason.trim() } : {}),
+          ...(action === "delete" && stop.on ? { stop_looking: true } : {}),
+        });
         results.push(...r.results);
+        titles.push(...(r.titles ?? []));
       }
       if (action === "decline") setBulkReason("");
       const failed: Record<number, string> = {};
@@ -220,7 +239,8 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       setRowErrors(failed);
       setSelected(new Set(Object.keys(failed).map(Number)));
       const done = action === "approve" ? "Approved" : action === "decline" ? "Declined" : "Deleted";
-      toast(`${done} ${ok} of ${ids.length}`, Object.keys(failed).length ? { tone: "error" } : undefined);
+      const stopped = action === "delete" && stop.on ? `; ${stopLookingSummary(titles)}` : "";
+      toast(`${done} ${ok} of ${ids.length}${stopped}`, Object.keys(failed).length ? { tone: "error" } : undefined);
       refreshAttention();
       await load();
     } catch (e) {

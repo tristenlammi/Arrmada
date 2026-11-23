@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tristenlammi/arrmada/internal/adultfilter"
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/kepub"
@@ -829,7 +830,7 @@ func (h *Handler) sendFile(w http.ResponseWriter, r *http.Request, wantKepub boo
 			defer kf.Close()
 			if st, err := kf.Stat(); err == nil {
 				w.Header().Set("Content-Type", kepub.ContentType)
-				w.Header().Set("Content-Disposition", books.AttachmentHeader(books.EbookDownloadName(b, kepub.Ext)))
+				w.Header().Set("Content-Disposition", attachment.Header(books.EbookDownloadName(b, kepub.Ext)))
 				w.Header().Set("Cache-Control", "private, no-store")
 				http.ServeContent(w, r, "", st.ModTime(), kf)
 				return
@@ -852,7 +853,7 @@ func (h *Handler) sendFile(w http.ResponseWriter, r *http.Request, wantKepub boo
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	w.Header().Set("Content-Type", contentType(ext))
-	w.Header().Set("Content-Disposition", books.AttachmentHeader(books.EbookDownloadName(b, ext)))
+	w.Header().Set("Content-Disposition", attachment.Header(books.EbookDownloadName(b, ext)))
 	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeContent(w, r, "", st.ModTime(), f)
 }

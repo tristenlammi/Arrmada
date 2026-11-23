@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/library"
 )
@@ -127,6 +128,6 @@ func (s *Server) sendEbook(w http.ResponseWriter, r *http.Request, it Item, e eb
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	// Named as the shelf's download names it: "Title - Author.epub".
-	w.Header().Set("Content-Disposition", books.AttachmentHeader(books.EbookDownloadName(it.Book, e.Ext)))
+	w.Header().Set("Content-Disposition", attachment.Header(books.EbookDownloadName(it.Book, e.Ext)))
 	http.ServeFile(w, r, e.Path)
 }

@@ -1,4 +1,4 @@
-import type { CollectionDetail, CollectionRow, DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, RequestPreview, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { CollectionDetail, CollectionRow, DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, RequestPreview, SeriesSeason, StoppedTitle, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -239,10 +239,19 @@ export function approved(id: number, body: unknown): MediaRequest {
   return { ...r, status: "approved", tracking: { stage: "searching" }, ...(b.seasons ? { seasons: b.seasons } : {}), ...(b.grab_preview ? { approve_grab: { mode: "preview" as const } } : {}) };
 }
 
-// bulk is POST /api/v1/requests/bulk: every id goes through.
-export function bulk(body: unknown): { results: { id: number; ok: boolean }[] } {
-  const ids = ((body ?? {}) as { ids?: number[] }).ids ?? [];
-  return { results: ids.map((id) => ({ id, ok: true })) };
+// bulk is POST /api/v1/requests/bulk: every id goes through. A delete with stop_looking
+// says it stopped looking for each one's title but the last, which another request holds.
+export function bulk(body: unknown): { results: { id: number; ok: boolean }[]; titles?: StoppedTitle[] } {
+  const b = (body ?? {}) as { ids?: number[]; stop_looking?: boolean };
+  const ids = b.ids ?? [];
+  const results = ids.map((id) => ({ id, ok: true }));
+  if (!b.stop_looking) return { results };
+  return {
+    results,
+    titles: ids.map((id, i): StoppedTitle => i === ids.length - 1
+      ? { media_type: "movie", tmdb_id: 7000 + id, title: `Film ${id}`, stopped: false, reason: "still_requested" }
+      : { media_type: "movie", tmdb_id: 7000 + id, title: `Film ${id}`, stopped: true }),
+  };
 }
 
 // created is what POST /api/v1/requests answers: a pending request for the card sent.

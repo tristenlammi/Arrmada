@@ -176,7 +176,10 @@ function JellyfinForm({ cfg, onChanged, testFirst, inWizard }: { cfg: JellyfinCo
       </Field>
 
       <div className="flex flex-col gap-2">
-        <Field label="Public address for Watch links" hint={`Where people open ${name} from outside your home. Starts as the server URL.`}>
+        <Field
+          label="Public address for Watch links"
+          hint={`Where people open ${name} from outside your home. Watch links in notifications and "ready" messages use this address. Left as the server URL, they point at the connection address, which usually only opens on your home network.`}
+        >
           <Input value={publicUrl} onChange={(e) => setOwnPublic(e.target.value)} placeholder={k.publicUrl} autoComplete="off" spellCheck={false} />
         </Field>
         {homeOnly && (

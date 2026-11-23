@@ -1,7 +1,6 @@
 package books
 
 import (
-	"mime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +16,7 @@ import (
 //	ext := strings.ToLower(filepath.Ext(path))
 //	ct := books.EbookContentType(ext)                   // "" = not an ebook
 //	name := books.EbookDownloadName(b, ext)             // "Dune - Frank Herbert.epub"
-//	w.Header().Set("Content-Disposition", books.AttachmentHeader(name))
+//	w.Header().Set("Content-Disposition", attachment.Header(name))
 //
 // None of these log or read anything but the path given; a caller that logs must not name
 // the book alongside the person (the audiobook privacy rule applies to reading too).
@@ -120,16 +119,6 @@ func EbookDownloadName(b Book, ext string) string {
 		name = "book"
 	}
 	return name + ext
-}
-
-// AttachmentHeader builds a Content-Disposition that survives non-ASCII titles: Go
-// encodes those per RFC 2231, and a name it still can't express falls back to the bare
-// extension rather than a broken header.
-func AttachmentHeader(name string) string {
-	if h := mime.FormatMediaType("attachment", map[string]string{"filename": name}); h != "" {
-		return h
-	}
-	return `attachment; filename="book` + filepath.Ext(name) + `"`
 }
 
 // KindleMaxBytes is the largest ebook Send to Kindle will email: Amazon's limit for a

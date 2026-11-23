@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/backup"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -303,7 +304,7 @@ func (a *api) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
 
 	h := w.Header()
 	h.Set("Content-Type", "application/gzip")
-	h.Set("Content-Disposition", `attachment; filename="`+b.Name+`.gz"`)
+	h.Set("Content-Disposition", attachment.Header(b.Name+".gz"))
 	h.Set("Cache-Control", "no-store, private")
 	h.Set("Pragma", "no-cache")
 	w.WriteHeader(http.StatusOK)

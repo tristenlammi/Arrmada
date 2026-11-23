@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/attachment"
 	"github.com/tristenlammi/arrmada/internal/books"
 )
 
@@ -90,7 +90,7 @@ func (s *Server) sendTrack(w http.ResponseWriter, r *http.Request, root string, 
 	w.Header().Set("Content-Type", mimeFor(f.Ext))
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	if attach {
-		w.Header().Set("Content-Disposition", attachment(f.Name))
+		w.Header().Set("Content-Disposition", attachment.Header(f.Name))
 	}
 	http.ServeFile(w, r, path)
 }
@@ -143,13 +143,13 @@ func (s *Server) WriteAudiobook(ctx context.Context, w http.ResponseWriter, r *h
 	if len(files) == 1 {
 		f := files[0]
 		w.Header().Set("Content-Type", mimeFor(f.Ext))
-		w.Header().Set("Content-Disposition", attachment(name+f.Ext))
+		w.Header().Set("Content-Disposition", attachment.Header(name+f.Ext))
 		w.Header().Set("Cache-Control", "private, no-store")
 		http.ServeFile(w, r, f.Path)
 		return nil
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", attachment(name+".zip"))
+	w.Header().Set("Content-Disposition", attachment.Header(name+".zip"))
 	w.Header().Set("Cache-Control", "private, no-store")
 	zw := zip.NewWriter(w)
 	for _, f := range files {
@@ -233,13 +233,6 @@ func (s *Server) handleAuthorImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "No image")
-}
-
-func attachment(name string) string {
-	if h := mime.FormatMediaType("attachment", map[string]string{"filename": name}); h != "" {
-		return h
-	}
-	return `attachment; filename="audiobook` + filepath.Ext(name) + `"`
 }
 
 func safeName(s string) string {

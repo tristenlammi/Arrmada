@@ -3,7 +3,6 @@ package books
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -63,10 +62,6 @@ func TestDownloadNameIsSafe(t *testing.T) {
 	}
 	if got := EbookDownloadName(Book{Title: "///"}, ".pdf"); got != "book.pdf" {
 		t.Errorf("junk title → %q, want book.pdf", got)
-	}
-	h := AttachmentHeader("Les Misérables - Victor Hugo.epub")
-	if !strings.HasPrefix(h, "attachment;") || !strings.Contains(h, "filename") {
-		t.Errorf("non-ASCII name produced an unusable header: %q", h)
 	}
 }
 

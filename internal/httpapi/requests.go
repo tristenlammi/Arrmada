@@ -179,15 +179,18 @@ func (a *api) handleUnsubscribeRequest(w http.ResponseWriter, r *http.Request) {
 // handleBulkRequests approves or declines up to 100 pending requests at once, or deletes up
 // to 100 requests of any status (staff only, as the route is: the same as deleting one as
 // staff, so the library is left alone). Each is handled on its own, so the answer says how
-// each one went: {results: [{id, ok, error}]}.
+// each one went: {results: [{id, ok, error}]}. A delete with stop_looking also stops
+// looking for the titles the requests were for, where nothing else still asks for them
+// (requests.DeleteAndStopLooking), and says what it did to each: {titles: [...]}.
 //
-//	POST /api/v1/requests/bulk {action: approve|decline|delete, ids, quality_profile?, reason?}
+//	POST /api/v1/requests/bulk {action: approve|decline|delete, ids, quality_profile?, reason?, stop_looking?}
 func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action         string  `json:"action"`
 		IDs            []int64 `json:"ids"`
 		QualityProfile string  `json:"quality_profile"`
-		Reason         string  `json:"reason"` // declines: what each requester is told
+		Reason         string  `json:"reason"`       // declines: what each requester is told
+		StopLooking    bool    `json:"stop_looking"` // deletes: also unmonitor / turn searching off
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -222,6 +225,11 @@ func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
 	var byName string
 	if u != nil {
 		by, byName = u.ID, u.Username
+	}
+	if req.Action == requests.BulkDelete && req.StopLooking {
+		results, titles := a.deps.Requests.DeleteAndStopLooking(r.Context(), ids)
+		a.writeJSON(w, http.StatusOK, map[string]any{"results": results, "titles": titles})
+		return
 	}
 	results := a.deps.Requests.Bulk(r.Context(), req.Action, ids, req.QualityProfile, reason, by, byName)
 	a.writeJSON(w, http.StatusOK, map[string]any{"results": results})
