@@ -13,6 +13,7 @@ import { downloadClientApi } from "../../lib/downloadClientApi";
 import { indexerApi } from "../../lib/indexerApi";
 import { connectionsApi, type ConnectionItem, type ConnectionSectionData, type ConnectionSectionId } from "../../lib/connectionsApi";
 import { jellyfinApi } from "../../lib/jellyfinApi";
+import { SERVER_LABEL } from "../../components/brand/servers";
 import { isAdmin, useMe } from "../../lib/me";
 import { hasUsenetClient, isUsenetClient } from "../../lib/network";
 import { useQuery } from "../../lib/query";
@@ -363,7 +364,7 @@ export function ConnectionsSettings() {
     const editor = editorFor(it);
     const open = editing === it.card && !!editor;
     const identity = server === "jellyfin" && jf.data?.server_name
-      ? `${jf.data.server_name}${jf.data.version ? ` · Jellyfin ${jf.data.version}` : ""}`
+      ? `${jf.data.server_name}${jf.data.version ? ` · ${SERVER_LABEL.jellyfin} ${jf.data.version}` : ""}`
       : undefined;
     return (
       <MediaServerCard

@@ -26,6 +26,9 @@ type Health struct {
 type pollHealth struct {
 	mu sync.Mutex
 	h  Health
+	// describe words an error for the health panel (Describe when nil); the service sets
+	// it so an Emby connection's errors name Emby.
+	describe func(error) string
 }
 
 // record notes one exchange and reports whether it changed between working and failing.
@@ -47,7 +50,11 @@ func (p *pollHealth) record(err error, now time.Time) (startedFailing, recovered
 	}
 	p.h.Consecutive++
 	p.h.LastErrAt = now
-	p.h.LastErr = Describe(err)
+	if p.describe != nil {
+		p.h.LastErr = p.describe(err)
+	} else {
+		p.h.LastErr = Describe(err)
+	}
 	p.h.Unauthorized = errors.Is(err, jellyfin.ErrUnauthorized)
 	return startedFailing, false
 }

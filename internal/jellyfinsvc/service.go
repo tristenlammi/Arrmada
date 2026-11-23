@@ -34,6 +34,10 @@ const (
 	KeyServerName = "jellyfin_server_name"
 	KeyVersion    = "jellyfin_server_version"
 	KeyDeviceID   = "jellyfin_device_id" // made once; Jellyfin files Arrmada's sessions under it
+	// KeyServerKind is which server this connection is: "jellyfin" (or unset) or "emby".
+	// Emby, the server Jellyfin grew out of, speaks nearly the same API, so it uses this
+	// same connection, index, scanner and sign-in; only the client's dialect changes.
+	KeyServerKind = "jellyfin_server_kind"
 	// Partial scans after changes (the plexscan.Scanner built for Jellyfin keeps these).
 	KeyScanOnImport = "jellyfin_scan_on_import"
 	KeyPathMap      = "jellyfin_path_map"
@@ -110,8 +114,21 @@ func New(o Options) *Service {
 		roots: o.Roots, pathMaps: o.PathMaps, log: log,
 	}
 	s.idx.build = s.buildIndex
+	s.health.describe = func(err error) string { return s.describe(context.Background(), err) }
 	return s
 }
+
+// ServerKind is the connected server's kind: jellyfin.ServerJellyfin (the default) or
+// jellyfin.ServerEmby.
+func (s *Service) ServerKind(ctx context.Context) string {
+	return jellyfin.NormalizeServerKind(s.settings.Get(ctx, KeyServerKind, ""))
+}
+
+// IsEmby reports whether the connection is to an Emby server.
+func (s *Service) IsEmby(ctx context.Context) bool { return s.ServerKind(ctx) == jellyfin.ServerEmby }
+
+// Label is the connected server's product name for people: "Jellyfin" or "Emby".
+func (s *Service) Label(ctx context.Context) string { return jellyfin.ServerLabel(s.ServerKind(ctx)) }
 
 // SetPathMaps sets where the path mappings come from (the Jellyfin scanner, built after
 // the service).
@@ -189,11 +206,11 @@ func (s *Service) DeviceID(ctx context.Context) string {
 // Client is a client for the saved server (its calls fail with ErrNotConfigured when
 // nothing is saved).
 func (s *Service) Client(ctx context.Context) *jellyfin.Client {
-	return s.clientFor(ctx, s.URL(ctx), s.apiKey(ctx))
+	return s.clientFor(ctx, s.ServerKind(ctx), s.URL(ctx), s.apiKey(ctx))
 }
 
-func (s *Service) clientFor(ctx context.Context, base, key string) *jellyfin.Client {
-	return jellyfin.New(base, key, s.DeviceID(ctx), s.version, s.hc)
+func (s *Service) clientFor(ctx context.Context, kind, base, key string) *jellyfin.Client {
+	return jellyfin.NewFor(kind, base, key, s.DeviceID(ctx), s.version, s.hc)
 }
 
 // Config is GET /api/v1/jellyfin: the saved connection and what the server last said about
@@ -264,6 +281,20 @@ func NormalizeURL(raw string) (string, error) {
 // collect the key (the identity check sends it there at once). An install-time key with
 // no address saved belongs to no address yet, so the first one needs it typed too.
 func (s *Service) Save(ctx context.Context, rawURL, rawPublic, apiKey string) error {
+	return s.SaveFor(ctx, "", rawURL, rawPublic, apiKey)
+}
+
+// SaveFor is Save that also says which server it is: kind is "jellyfin" or "emby", or ""
+// to keep the saved kind. A changed kind counts as a new server (its identity is read
+// again and the index rebuilt), but needs no new key: the key goes to the same address.
+func (s *Service) SaveFor(ctx context.Context, kind, rawURL, rawPublic, apiKey string) error {
+	if strings.TrimSpace(kind) == "" {
+		kind = s.ServerKind(ctx)
+	} else if k := strings.ToLower(strings.TrimSpace(kind)); k != jellyfin.ServerJellyfin && k != jellyfin.ServerEmby {
+		return inputError("Choose Jellyfin or Emby.")
+	}
+	kind = jellyfin.NormalizeServerKind(kind)
+	label := jellyfin.ServerLabel(kind)
 	base, err := NormalizeURL(rawURL)
 	if err != nil {
 		return err
@@ -279,12 +310,18 @@ func (s *Service) Save(ctx context.Context, rawURL, rawPublic, apiKey string) er
 	}
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" && s.apiKey(ctx) == "" {
-		return inputError("Add the API key made in Jellyfin (Dashboard → API Keys).")
+		return inputError("Add the API key made in " + label + " (" + keyMenu(kind) + ").")
 	}
 	if apiKey == "" && !netsafe.SameEndpoint(base, s.URL(ctx)) {
 		return ErrKeyForNewAddress
 	}
-	changed := base != s.URL(ctx) || (apiKey != "" && apiKey != s.apiKey(ctx))
+	changed := base != s.URL(ctx) || (apiKey != "" && apiKey != s.apiKey(ctx)) || kind != s.ServerKind(ctx)
+	if kind != s.ServerKind(ctx) {
+		// An install that never chose keeps the setting unset (it reads as Jellyfin).
+		if err := s.settings.Set(ctx, KeyServerKind, kind); err != nil {
+			return err
+		}
+	}
 	if apiKey != "" {
 		if s.keys == nil {
 			return errors.New("the key store isn't available")
@@ -354,6 +391,19 @@ type TestResult struct {
 // no key typed, only Jellyfin's public answer is checked. A passing test of the saved
 // connection also refreshes the stored identity.
 func (s *Service) Test(ctx context.Context, rawURL, apiKey string) TestResult {
+	return s.TestFor(ctx, "", rawURL, apiKey)
+}
+
+// TestFor is Test for a server kind ("jellyfin" or "emby"; "" = the saved kind). Choosing
+// another kind than the saved one tests what's typed as a new connection, so the saved
+// connection's health isn't touched.
+func (s *Service) TestFor(ctx context.Context, kind, rawURL, apiKey string) TestResult {
+	savedKind := s.ServerKind(ctx)
+	if strings.TrimSpace(kind) == "" {
+		kind = savedKind
+	}
+	kind = jellyfin.NormalizeServerKind(kind)
+	label := jellyfin.ServerLabel(kind)
 	saved := s.URL(ctx)
 	base := saved
 	if strings.TrimSpace(rawURL) != "" {
@@ -363,40 +413,85 @@ func (s *Service) Test(ctx context.Context, rawURL, apiKey string) TestResult {
 		}
 	}
 	if base == "" {
-		return TestResult{Detail: "Enter the Jellyfin server's address first."}
+		return TestResult{Detail: "Enter the " + label + " server's address first."}
 	}
 	key := strings.TrimSpace(apiKey)
 	usingSaved := key == "" && netsafe.SameEndpoint(base, saved)
 	if usingSaved {
 		key = s.apiKey(ctx)
 	}
-	if usingSaved && saved != "" {
+	if usingSaved && saved != "" && kind == savedKind {
 		// The saved connection: the answer is its health and its identity.
 		si, err := s.RefreshIdentity(ctx)
 		if err != nil {
-			return TestResult{Detail: Describe(err)}
+			return TestResult{Detail: DescribeFor(kind, err)}
 		}
 		return TestResult{OK: true, Detail: "Connected", ServerName: si.ServerName, Version: si.Version}
 	}
-	c := s.clientFor(ctx, base, "")
+	c := s.clientFor(ctx, kind, base, "")
 	pub, err := c.PublicSystemInfo(ctx)
 	if err != nil {
 		if errors.Is(err, jellyfin.ErrNotFound) || errors.Is(err, jellyfin.ErrUnauthorized) {
-			return TestResult{Detail: "Something answered at this address, but it isn't a Jellyfin server."}
+			return TestResult{Detail: "Something answered at this address, but it isn't " + article(label) + " server."}
 		}
-		return TestResult{Detail: Describe(err)}
+		return TestResult{Detail: DescribeFor(kind, err)}
+	}
+	if kind == jellyfin.ServerEmby && strings.Contains(strings.ToLower(pub.ProductName), "jellyfin") {
+		// Emby never sends a product name; Jellyfin says "Jellyfin Server".
+		return TestResult{Detail: "This is a Jellyfin server, not Emby: choose Jellyfin instead.", ServerName: pub.ServerName, Version: pub.Version}
 	}
 	if key == "" {
 		return TestResult{
-			Detail:     "Jellyfin answers at this address. Paste the API key to test it too (the saved key is only sent to the saved address).",
+			Detail:     label + " answers at this address. Paste the API key to test it too (the saved key is only sent to the saved address).",
 			ServerName: pub.ServerName, Version: pub.Version,
 		}
 	}
-	si, err := s.clientFor(ctx, base, key).SystemInfo(ctx)
+	si, err := s.clientFor(ctx, kind, base, key).SystemInfo(ctx)
 	if err != nil {
-		return TestResult{Detail: Describe(err), ServerName: pub.ServerName, Version: pub.Version}
+		return TestResult{Detail: DescribeFor(kind, err), ServerName: pub.ServerName, Version: pub.Version}
 	}
 	return TestResult{OK: true, Detail: "Connected", ServerName: si.ServerName, Version: si.Version}
+}
+
+func article(label string) string {
+	if label == "Emby" {
+		return "an Emby"
+	}
+	return "a " + label
+}
+
+// keyMenu is where each server makes API keys.
+func keyMenu(kind string) string {
+	if jellyfin.NormalizeServerKind(kind) == jellyfin.ServerEmby {
+		return "Dashboard → Advanced → API Keys"
+	}
+	return "Dashboard → API Keys"
+}
+
+// describe is DescribeFor the saved server kind.
+func (s *Service) describe(ctx context.Context, err error) string {
+	return DescribeFor(s.ServerKind(ctx), err)
+}
+
+// DescribeFor is Describe naming the right server: Jellyfin's words for Jellyfin, the same
+// sentences about Emby (and where Emby makes API keys) for Emby.
+func DescribeFor(kind string, err error) string {
+	if jellyfin.NormalizeServerKind(kind) != jellyfin.ServerEmby {
+		return Describe(err)
+	}
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, jellyfin.ErrNotConfigured):
+		return "Emby isn't connected: add its address and API key."
+	case errors.Is(err, jellyfin.ErrUnauthorized):
+		return "Emby rejected the API key. Make a new one in Emby (" + keyMenu(kind) + ") and paste it here."
+	case errors.Is(err, jellyfin.ErrForbidden):
+		return "Emby refused: the key isn't an administrator's API key."
+	case errors.Is(err, jellyfin.ErrUnsupported):
+		return "Emby doesn't offer that."
+	}
+	return strings.Replace(err.Error(), "jellyfin ", "emby ", 1)
 }
 
 // Describe puts a client error in plain words for a person. It never holds the key.

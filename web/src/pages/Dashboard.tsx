@@ -25,7 +25,7 @@ import { useLiveConnected } from "../lib/live";
 import { useLiveRefresh } from "../lib/useLiveQuery";
 import { QUEUE_CHANGED } from "../lib/queueLive";
 import { hwBadge } from "../lib/plexHw";
-import { ServerBadge, isMediaServer } from "../components/brand";
+import { SERVER_LABEL, ServerBadge, isMediaServer } from "../components/brand";
 import { Page } from "../ui/Page";
 
 // The dashboard fans out over Plex, the download client and the disks, so it isn't
@@ -70,7 +70,7 @@ export function Dashboard() {
   const streams = data?.streams?.streams ?? [];
   // Which media servers Now playing covers: Plex (the default), Jellyfin, or both.
   const bothServers = !!data?.plex_configured && !!data?.jellyfin_configured;
-  const serversLabel = bothServers ? "Plex & Jellyfin" : data?.jellyfin_configured && !data?.plex_configured ? "Jellyfin" : "Plex";
+  const serversLabel = bothServers ? `Plex & ${SERVER_LABEL.jellyfin}` : data?.jellyfin_configured && !data?.plex_configured ? SERVER_LABEL.jellyfin : "Plex";
   const listening = data?.listening ?? [];
   const lib = data?.library;
   // Music's part: the server sends it only while the Music module is on.

@@ -38,8 +38,44 @@ func (a *api) jellyfinLoginEnabled(ctx context.Context) bool {
 	return a.jellyfinConnected(ctx) && a.deps.Settings.GetBool(ctx, keyJellyfinLoginEnabled, false)
 }
 
-// jellyfinQuickConnectOn is the owner's Quick Connect switch (sign-in and linking).
+// jellyfinQuickConnectOn is whether Quick Connect is offered (sign-in and linking): the
+// owner's switch, and never for an Emby server, which has no Quick Connect.
 func (a *api) jellyfinQuickConnectOn(ctx context.Context) bool {
+	if a.deps.Jellyfin != nil && a.deps.Jellyfin.IsEmby(ctx) {
+		return false
+	}
+	return a.jellyfinQuickConnectSetting(ctx)
+}
+
+// jellyfinServerKind is "jellyfin" or "emby": which server the Jellyfin slot is set up for.
+func (a *api) jellyfinServerKind(ctx context.Context) string {
+	if a.deps.Jellyfin == nil {
+		return jellyfin.ServerJellyfin
+	}
+	return a.deps.Jellyfin.ServerKind(ctx)
+}
+
+// jfWords puts a sign-in or linking message in the connected server's name: Jellyfin's own
+// words, or the same about Emby (without the Quick Connect hint, which Emby can't use).
+func (a *api) jfWords(ctx context.Context, msg string) string {
+	if a.deps.Jellyfin == nil || !a.deps.Jellyfin.IsEmby(ctx) {
+		return msg
+	}
+	msg = strings.Replace(msg, " No password? Use Quick Connect instead.", "", 1)
+	return strings.ReplaceAll(msg, "Jellyfin", "Emby")
+}
+
+// jellyfinLoginKind is jellyfinServerKind for a signed-in caller, or while Sign in with
+// Jellyfin/Emby is offered; "" for anyone else (a stranger learns nothing about the setup).
+func (a *api) jellyfinLoginKind(ctx context.Context, authed bool) string {
+	if !authed && !a.jellyfinLoginEnabled(ctx) {
+		return ""
+	}
+	return a.jellyfinServerKind(ctx)
+}
+
+// jellyfinQuickConnectSetting is the owner's Quick Connect switch as saved.
+func (a *api) jellyfinQuickConnectSetting(ctx context.Context) bool {
 	return a.deps.Settings.GetBool(ctx, keyJellyfinQuickConnect, true)
 }
 
@@ -69,9 +105,9 @@ func (a *api) jellyfinAuthed(ctx context.Context, c *jellyfin.Client, res jellyf
 // person's credentials, in plain words. The client never puts what it sent into an error,
 // but an odd server's error text could echo it, so anything in secret (the password, the
 // Quick Connect secret) is blanked before the error is logged.
-func (a *api) jellyfinFailure(w http.ResponseWriter, err error, secret string) {
+func (a *api) jellyfinFailure(w http.ResponseWriter, r *http.Request, err error, secret string) {
 	if errors.Is(err, jellyfin.ErrUnreachable) {
-		a.writeError(w, http.StatusBadGateway, "Jellyfin isn't answering right now. Try again in a bit.")
+		a.writeError(w, http.StatusBadGateway, a.jfWords(r.Context(), "Jellyfin isn't answering right now. Try again in a bit."))
 		return
 	}
 	msg := err.Error()
@@ -79,7 +115,7 @@ func (a *api) jellyfinFailure(w http.ResponseWriter, err error, secret string) {
 		msg = strings.ReplaceAll(msg, secret, "«redacted»")
 	}
 	a.deps.Log.Warn("users: Jellyfin sign-in call failed", "err", msg)
-	a.writeError(w, http.StatusBadGateway, "Jellyfin couldn't sign you in right now. Try again in a bit.")
+	a.writeError(w, http.StatusBadGateway, a.jfWords(r.Context(), "Jellyfin couldn't sign you in right now. Try again in a bit."))
 }
 
 // jellyfinPasswordAuth checks a Jellyfin username and password under the sign-in limits
@@ -95,14 +131,14 @@ func (a *api) jellyfinPasswordAuth(w http.ResponseWriter, r *http.Request, flow,
 	ctx := r.Context()
 	username = strings.TrimSpace(username)
 	if username == "" {
-		a.writeError(w, http.StatusBadRequest, "Enter your Jellyfin username.")
+		a.writeError(w, http.StatusBadRequest, a.jfWords(ctx, "Enter your Jellyfin username."))
 		return jellyfin.User{}, false
 	}
 	// A Jellyfin user without a password signs in on Jellyfin's own login page with a
 	// blank one. Arrmada may be reachable from places Jellyfin isn't, so a name alone is
 	// never enough here: such users can use Quick Connect.
 	if password == "" {
-		a.writeError(w, http.StatusBadRequest, "Enter your Jellyfin password. No password? Use Quick Connect instead.")
+		a.writeError(w, http.StatusBadRequest, a.jfWords(ctx, "Enter your Jellyfin password. No password? Use Quick Connect instead."))
 		return jellyfin.User{}, false
 	}
 	ip := netutil.ClientIP(r)
@@ -143,16 +179,16 @@ func (a *api) jellyfinPasswordAuth(w http.ResponseWriter, r *http.Request, flow,
 		if flow != jfFlowLogin {
 			code = http.StatusBadRequest
 		}
-		a.writeError(w, code, "Wrong Jellyfin username or password.")
+		a.writeError(w, code, a.jfWords(ctx, "Wrong Jellyfin username or password."))
 		return jellyfin.User{}, false
 	}
 	if errors.Is(err, jellyfin.ErrForbidden) {
 		// Jellyfin turns a disabled (or locked-out) user away this way.
-		a.writeError(w, http.StatusForbidden, "Jellyfin won't let this user sign in. They may be disabled in Jellyfin.")
+		a.writeError(w, http.StatusForbidden, a.jfWords(ctx, "Jellyfin won't let this user sign in. They may be disabled in Jellyfin."))
 		return jellyfin.User{}, false
 	}
 	if err != nil {
-		a.jellyfinFailure(w, err, password)
+		a.jellyfinFailure(w, r, err, password)
 		return jellyfin.User{}, false
 	}
 	if l != nil {
@@ -168,15 +204,15 @@ func (a *api) jellyfinQCStart(w http.ResponseWriter, r *http.Request, flow strin
 	ctx := r.Context()
 	st, err := a.deps.Jellyfin.Client(ctx).QuickConnectInitiate(ctx)
 	if errors.Is(err, jellyfin.ErrUnauthorized) || errors.Is(err, jellyfin.ErrForbidden) {
-		a.writeError(w, http.StatusConflict, "Quick Connect is switched off in Jellyfin (Dashboard → General).")
+		a.writeError(w, http.StatusConflict, a.jfWords(ctx, "Quick Connect is switched off in Jellyfin (Dashboard → General)."))
 		return
 	}
 	if err != nil {
-		a.jellyfinFailure(w, err, "")
+		a.jellyfinFailure(w, r, err, "")
 		return
 	}
 	if st.Secret == "" || st.Code == "" {
-		a.writeError(w, http.StatusBadGateway, "Jellyfin didn't give a Quick Connect code. Try again.")
+		a.writeError(w, http.StatusBadGateway, a.jfWords(ctx, "Jellyfin didn't give a Quick Connect code. Try again."))
 		return
 	}
 	id, err := a.bindJFQC(w, r, flow, userID, st.Secret)
@@ -206,7 +242,7 @@ func (a *api) jellyfinQCPoll(w http.ResponseWriter, r *http.Request, flow string
 		return jellyfin.User{}, false
 	}
 	if err != nil {
-		a.jellyfinFailure(w, err, secret)
+		a.jellyfinFailure(w, r, err, secret)
 		return jellyfin.User{}, false
 	}
 	if !st.Authenticated {
@@ -221,7 +257,7 @@ func (a *api) jellyfinQCPoll(w http.ResponseWriter, r *http.Request, flow string
 	}
 	res, err := c.AuthenticateWithQuickConnect(ctx, secret)
 	if err != nil {
-		a.jellyfinFailure(w, err, secret)
+		a.jellyfinFailure(w, r, err, secret)
 		return jellyfin.User{}, false
 	}
 	return a.jellyfinAuthed(ctx, c, res), true
@@ -230,7 +266,7 @@ func (a *api) jellyfinQCPoll(w http.ResponseWriter, r *http.Request, flow string
 // handleJellyfinLogin: POST /api/v1/auth/jellyfin {username, password}.
 func (a *api) handleJellyfinLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.jellyfinLoginEnabled(r.Context()) {
-		a.writeError(w, http.StatusForbidden, "Jellyfin sign-in is off.")
+		a.writeError(w, http.StatusForbidden, a.jfWords(r.Context(), "Jellyfin sign-in is off."))
 		return
 	}
 	var body struct {
@@ -285,7 +321,7 @@ func (a *api) handleJellyfinQCPoll(w http.ResponseWriter, r *http.Request) {
 func (a *api) finishJellyfinSignIn(w http.ResponseWriter, r *http.Request, ju jellyfin.User) {
 	ctx := r.Context()
 	if ju.ID == "" {
-		a.writeError(w, http.StatusBadGateway, "Jellyfin didn't say who you are. Try again.")
+		a.writeError(w, http.StatusBadGateway, a.jfWords(ctx, "Jellyfin didn't say who you are. Try again."))
 		return
 	}
 	if ok, msg := a.jellyfinSignInAllowed(ctx, ju.ID, nil); !ok {
@@ -293,7 +329,7 @@ func (a *api) finishJellyfinSignIn(w http.ResponseWriter, r *http.Request, ju je
 		return
 	}
 	if ju.Policy.IsDisabled {
-		a.writeError(w, http.StatusForbidden, "This Jellyfin user is disabled in Jellyfin.")
+		a.writeError(w, http.StatusForbidden, a.jfWords(ctx, "This Jellyfin user is disabled in Jellyfin."))
 		return
 	}
 	u, err := a.deps.Auth.UserByJellyfinID(ctx, ju.ID)
@@ -303,7 +339,7 @@ func (a *api) finishJellyfinSignIn(w http.ResponseWriter, r *http.Request, ju je
 	}
 	if u == nil {
 		if ju.Policy.IsAdministrator {
-			a.writeError(w, http.StatusConflict, "This is a Jellyfin administrator. Sign in with your password, then link Jellyfin from your account page.")
+			a.writeError(w, http.StatusConflict, a.jfWords(ctx, "This is a Jellyfin administrator. Sign in with your password, then link Jellyfin from your account page."))
 			return
 		}
 		if u, err = a.deps.Auth.FindOrCreateJellyfinUser(ctx, ju.ID, ju.Name, auth.RoleRequester, a.jellyfinAutoApproval(ctx)); err != nil {
@@ -319,7 +355,7 @@ func (a *api) finishJellyfinSignIn(w http.ResponseWriter, r *http.Request, ju je
 	if u.Role.AtLeast(auth.RoleManager) {
 		if !a.deps.Settings.GetBool(ctx, keyJellyfinSignInStaff, false) {
 			a.deps.Log.Warn("users: Jellyfin sign-in into a staff account refused", "user_id", u.ID)
-			a.writeError(w, http.StatusForbidden, "This Jellyfin user is linked to a staff account. Sign in with your password.")
+			a.writeError(w, http.StatusForbidden, a.jfWords(ctx, "This Jellyfin user is linked to a staff account. Sign in with your password."))
 			return
 		}
 		a.deps.Log.Info("users: staff signed in with Jellyfin", "user_id", u.ID)
@@ -340,7 +376,7 @@ func (a *api) handleMyJellyfin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	l, err := a.deps.Auth.JellyfinLinkFor(ctx, me.ID)
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not read your Jellyfin link")
+		a.writeError(w, http.StatusInternalServerError, a.jfWords(ctx, "could not read your Jellyfin link"))
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
@@ -359,7 +395,7 @@ func (a *api) handleJellyfinLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.jellyfinConnected(r.Context()) {
-		a.writeError(w, http.StatusServiceUnavailable, "Jellyfin isn't connected.")
+		a.writeError(w, http.StatusServiceUnavailable, a.jfWords(r.Context(), "Jellyfin isn't connected."))
 		return
 	}
 	var body struct {
@@ -422,7 +458,7 @@ func (a *api) linkJellyfinTo(w http.ResponseWriter, r *http.Request, me *auth.Us
 	if errors.As(err, &taken) {
 		body := map[string]any{
 			"status":            "error",
-			"message":           "This Jellyfin user is already linked to " + taken.Username + ".",
+			"message":           a.jfWords(r.Context(), "This Jellyfin user is already linked to ") + taken.Username + ".",
 			"already_linked_to": taken.Username,
 		}
 		if me.Role == auth.RoleAdmin && !taken.Role.AtLeast(auth.RoleManager) {
@@ -433,7 +469,7 @@ func (a *api) linkJellyfinTo(w http.ResponseWriter, r *http.Request, me *auth.Us
 		return
 	}
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not link your Jellyfin user")
+		a.writeError(w, http.StatusInternalServerError, a.jfWords(r.Context(), "could not link your Jellyfin user"))
 		return
 	}
 	a.deps.Log.Info("users: Jellyfin user linked", "user_id", me.ID)
@@ -450,11 +486,11 @@ func (a *api) handleJellyfinUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.deps.Auth.UnlinkJellyfin(r.Context(), me.ID, true)
 	if errors.Is(err, auth.ErrJellyfinOnlyLogin) {
-		a.writeError(w, http.StatusConflict, "You sign in only with Jellyfin, so unlinking it would lock you out. Ask an admin to set a password for your account first.")
+		a.writeError(w, http.StatusConflict, a.jfWords(r.Context(), "You sign in only with Jellyfin, so unlinking it would lock you out. Ask an admin to set a password for your account first."))
 		return
 	}
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not unlink Jellyfin")
+		a.writeError(w, http.StatusInternalServerError, a.jfWords(r.Context(), "could not unlink Jellyfin"))
 		return
 	}
 	a.deps.Log.Info("users: Jellyfin user unlinked", "user_id", me.ID)

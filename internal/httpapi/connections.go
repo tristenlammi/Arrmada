@@ -482,7 +482,7 @@ func (a *api) plexUses(ctx context.Context, monitoring bool) []string {
 func (a *api) jellyfinItem(ctx context.Context) connectionItem {
 	h := a.deps.Jellyfin.Health(ctx)
 	it := connectionItem{
-		Kind: connKindJellyfin, Ref: singletonRef, Card: "jellyfin", Name: "Jellyfin", Subtitle: displayURL(a.deps.Jellyfin.URL(ctx)),
+		Kind: connKindJellyfin, Ref: singletonRef, Card: "jellyfin", Name: a.deps.Jellyfin.Label(ctx), Subtitle: displayURL(a.deps.Jellyfin.URL(ctx)),
 		Configured: h.Configured, Enabled: h.Configured, Testable: h.Configured, FixPath: health.FixJellyfinConnection.Path,
 		LastOKAt: timePtr(h.LastOKAt), State: connstatus.PhaseUnknown,
 	}
@@ -716,18 +716,19 @@ func (a *api) testConnection(ctx context.Context, kind, ref string) (detail stri
 		if ref != singletonRef || a.deps.Jellyfin == nil {
 			return "", nil, false
 		}
+		label := a.deps.Jellyfin.Label(ctx) // "Emby" when the slot is set up for Emby
 		if !a.deps.Jellyfin.Configured(ctx) {
-			return "", errors.New("Jellyfin isn't connected yet"), true
+			return "", errors.New(label + " isn't connected yet"), true
 		}
 		// Recorded in Jellyfin's health record, which the card reads.
 		si, err := a.deps.Jellyfin.RefreshIdentity(ctx)
 		if err != nil {
-			return "", errors.New(jellyfinsvc.Describe(err)), true
+			return "", errors.New(jellyfinsvc.DescribeFor(a.deps.Jellyfin.ServerKind(ctx), err)), true
 		}
 		if si.ServerName != "" {
-			return "Jellyfin (" + si.ServerName + ") is answering.", nil, true
+			return label + " (" + si.ServerName + ") is answering.", nil, true
 		}
-		return "Jellyfin is answering.", nil, true
+		return label + " is answering.", nil, true
 
 	case connKindAudioServer:
 		if ref != singletonRef || a.deps.AudioManager == nil || a.deps.Settings == nil {

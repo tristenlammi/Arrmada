@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, SIGNED_OUT_EVENT, type AuthUser } from "./api";
 import { rememberNext } from "./session";
+import { setJellyfinSlotKind } from "../components/brand/servers";
 
 interface MeState {
   user: AuthUser | null;
@@ -53,6 +54,8 @@ export function MeProvider({ children }: { children: ReactNode }) {
       setBooksEnabled(status.value.books_enabled);
       setMusicEnabled(status.value.music_enabled);
       setMetadataReady(status.value.metadata_ready ?? true);
+      // An Emby server in the Jellyfin slot is named and drawn as Emby everywhere.
+      setJellyfinSlotKind(status.value.jellyfin_server_kind);
     }
     setUnreachable(false);
     setLoading(false);

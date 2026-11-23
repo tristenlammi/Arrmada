@@ -1,0 +1,28 @@
+{
+  "Items": [
+    {
+      "Name": "Movies",
+      "Locations": ["/data/movies"],
+      "CollectionType": "movies",
+      "LibraryOptions": {"EnableRealtimeMonitor": true, "PathInfos": [{"Path": "/data/movies"}]},
+      "ItemId": "4",
+      "Id": "4",
+      "Guid": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+      "PrimaryImageItemId": "4",
+      "RefreshProgress": 0,
+      "RefreshStatus": "Idle"
+    },
+    {
+      "Name": "TV Shows",
+      "Locations": ["/data/tv"],
+      "CollectionType": "tvshows",
+      "LibraryOptions": {"EnableRealtimeMonitor": true, "PathInfos": [{"Path": "/data/tv"}]},
+      "ItemId": "7",
+      "Id": "7",
+      "Guid": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "PrimaryImageItemId": "7",
+      "RefreshStatus": "Idle"
+    }
+  ],
+  "TotalRecordCount": 2
+}

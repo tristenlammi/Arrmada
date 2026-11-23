@@ -64,7 +64,7 @@ export function JellyfinNoBuffering({ plays }: { plays?: number }) {
   return (
     <div role="note" className="flex flex-wrap items-center gap-2 rounded-lg px-3.5 py-2 text-sm text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <ServerBadge server="jellyfin" />
-      <span>Jellyfin doesn't report buffering, so {plays ? `its ${plays.toLocaleString()} play${plays === 1 ? " in this window isn't" : "s in this window aren't"}` : "its plays aren't"} counted here.</span>
+      <span>{SERVER_LABEL.jellyfin} doesn't report buffering, so {plays ? `its ${plays.toLocaleString()} play${plays === 1 ? " in this window isn't" : "s in this window aren't"}` : "its plays aren't"} counted here.</span>
     </div>
   );
 }

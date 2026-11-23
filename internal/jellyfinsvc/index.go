@@ -379,6 +379,8 @@ func (s *Service) buildIndex(ctx context.Context) (*index, error) {
 
 var _ mediaserver.Server = (*Service)(nil)
 
+// Kind is mediaserver.Jellyfin for an Emby connection too: Emby uses the Jellyfin slot (its
+// settings, its recorded plays, its linked accounts). Label tells them apart for people.
 func (s *Service) Kind() mediaserver.Kind { return mediaserver.Jellyfin }
 
 // Name is the server's own name, as it last said.
@@ -516,7 +518,7 @@ func (s *Service) WatchURL(ctx context.Context, media string, ids mediaserver.Ex
 	if idx == nil {
 		return ""
 	}
-	return jellyfin.WatchURL(s.PublicURL(ctx), idx.serverID, it.ID)
+	return jellyfin.WatchURLFor(s.ServerKind(ctx), s.PublicURL(ctx), idx.serverID, it.ID)
 }
 
 // RecentlyAddedTMDB is Jellyfin's newest movies and episodes mapped to TMDB titles: an

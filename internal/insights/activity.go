@@ -259,7 +259,7 @@ func proxyImage(path string) string {
 // server-side: a Plex image path, or a Jellyfin one in its strict form (IsJellyfinImage).
 // The image proxy and alert posters both come through here.
 func (s *Service) Image(ctx context.Context, path string) (*http.Response, error) {
-	if strings.HasPrefix(path, jellyfinImagePrefix) {
+	if strings.HasPrefix(path, jellyfinImagePrefix) || strings.HasPrefix(path, embyImagePrefix) {
 		return s.jellyfinImage(ctx, path)
 	}
 	return s.client(ctx).Image(ctx, path)

@@ -51,6 +51,23 @@ const jellyfinAttachPrefix = "jellyfin:"
 
 var jellyfinImageRe = regexp.MustCompile(`^/Items/[0-9a-f]{32}/Images/Primary$`)
 
+// embyAttachPrefix is jellyfinAttachPrefix for an Emby item, which Emby numbers:
+// "emby:/Items/<digits>/Images/Primary", fetched the same way with Emby's key.
+const embyAttachPrefix = "emby:"
+
+var embyImageRe = regexp.MustCompile(`^/Items/[0-9]{1,19}/Images/Primary$`)
+
+// serverAttach reports whether a is a Jellyfin or Emby poster in its strict form.
+func serverAttach(a string) bool {
+	if p, ok := strings.CutPrefix(a, jellyfinAttachPrefix); ok {
+		return jellyfinImageRe.MatchString(p)
+	}
+	if p, ok := strings.CutPrefix(a, embyAttachPrefix); ok {
+		return embyImageRe.MatchString(p)
+	}
+	return false
+}
+
 // maxPosterBytes bounds a fetched Plex image.
 const maxPosterBytes = 10 << 20
 
@@ -72,8 +89,8 @@ func validAttach(a string) bool {
 	if p, ok := strings.CutPrefix(a, plexAttachPrefix); ok {
 		return plexImageRe.MatchString(p)
 	}
-	if p, ok := strings.CutPrefix(a, jellyfinAttachPrefix); ok {
-		return jellyfinImageRe.MatchString(p)
+	if strings.HasPrefix(a, jellyfinAttachPrefix) || strings.HasPrefix(a, embyAttachPrefix) {
+		return serverAttach(a)
 	}
 	return AllowedAttachURL(a)
 }
@@ -142,7 +159,7 @@ func (s *Service) attachFor(ctx context.Context, key string, d map[string]any) s
 			return plexAttachPrefix + thumb
 		}
 		// A Jellyfin stream's thumb already carries its prefix ("jellyfin:/Items/…").
-		if p, ok := strings.CutPrefix(thumb, jellyfinAttachPrefix); ok && jellyfinImageRe.MatchString(p) {
+		if serverAttach(thumb) { // or an Emby one's ("emby:/Items/…")
 			return thumb
 		}
 		return ""
@@ -173,7 +190,7 @@ func (s *Service) resolveAttach(ctx context.Context, a string) (arg string, done
 	// The image function takes a Plex path as is, and a Jellyfin one with its prefix.
 	p, ok := strings.CutPrefix(a, plexAttachPrefix)
 	if !ok {
-		if !strings.HasPrefix(a, jellyfinAttachPrefix) {
+		if !serverAttach(a) {
 			return a, noop
 		}
 		p = a

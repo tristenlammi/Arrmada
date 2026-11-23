@@ -14,6 +14,25 @@ export const SERVER_FILL: Record<MediaServerKind, string> = { plex: "var(--plex)
 /** The words and mark drawn on SERVER_FILL. */
 export const SERVER_INK: Record<MediaServerKind, string> = { plex: "var(--plex-ink)", jellyfin: "var(--jellyfin-ink)" };
 
+// Emby, the server Jellyfin grew out of, connects through the Jellyfin slot (same settings,
+// recorded plays and linked accounts). When it does, the slot is named and drawn as Emby
+// everywhere these tables are read. The app sets it from /status (and the connection card
+// after a save); nothing else changes.
+let embyInSlot = false;
+
+/** Says which server the Jellyfin slot is connected to ("emby", else Jellyfin). */
+export function setJellyfinSlotKind(kind: string | undefined | null): void {
+  embyInSlot = kind === "emby";
+  SERVER_LABEL.jellyfin = embyInSlot ? "Emby" : "Jellyfin";
+  SERVER_FILL.jellyfin = embyInSlot ? "var(--emby)" : "var(--jellyfin)";
+  SERVER_INK.jellyfin = embyInSlot ? "var(--emby-ink)" : "var(--jellyfin-ink)";
+}
+
+/** Whether the Jellyfin slot is connected to an Emby server. */
+export function jellyfinSlotIsEmby(): boolean {
+  return embyInSlot;
+}
+
 export function isMediaServer(s: string | undefined | null): s is MediaServerKind {
   return s === "plex" || s === "jellyfin";
 }

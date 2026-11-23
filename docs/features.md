@@ -47,7 +47,7 @@ wired up.
 
 ## Media servers
 
-Connect Plex, Jellyfin or both (Settings → Connections); how Arrmada uses each is Settings → Media servers. The connections themselves are an admin's (the server they name decides who may sign in with it); managers see them, test them and run watch monitoring. A saved token or key is only ever sent to the address it was saved with: change the address and you type it again (or sign in with Plex again).
+Connect Plex, Jellyfin or both (Settings → Connections); Emby connects through Jellyfin's card (set its **Server** to Emby) and works the same way, without Quick Connect, which Emby doesn't have; how Arrmada uses each is Settings → Media servers. The connections themselves are an admin's (the server they name decides who may sign in with it); managers see them, test them and run watch monitoring. A saved token or key is only ever sent to the address it was saved with: change the address and you type it again (or sign in with Plex again).
 
 - **Watch buttons** — a request counts as ready once either server has the title, and the requester's notice and the title's page get a Watch button for each server that has it, their own server's first.
 - **Library updates** — after every import, upgrade, rename, delete or conversion, the server is asked to rescan just that folder, with path mappings when its folders have other names.

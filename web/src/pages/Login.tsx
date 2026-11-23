@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { FleetMark } from "../components/FleetMark";
-import { JellyfinMark, PlexMark } from "../components/brand/marks";
+import { EmbyMark, JellyfinMark, PlexMark } from "../components/brand/marks";
+import { setJellyfinSlotKind } from "../components/brand/servers";
 import { api, resetSignedOut, type AuthUser, type LoginAnswer } from "../lib/api";
 import { nextAfterSignIn } from "../lib/session";
 import { Field } from "../ui/Field";
@@ -35,7 +36,7 @@ export function Login({ signedOut = false }: { signedOut?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [plexEnabled, setPlexEnabled] = useState(false);
   const [plexBusy, setPlexBusy] = useState(false);
-  const [jellyfin, setJellyfin] = useState({ enabled: false, quickConnect: false, open: false });
+  const [jellyfin, setJellyfin] = useState({ enabled: false, quickConnect: false, emby: false, open: false });
   const [error, setError] = useState<string | null>(null);
   // The two-factor step after a right password: a ticket, never a session.
   const [second, setSecond] = useState<{ step: "code" | "setup"; ticket: string } | null>(null);
@@ -44,7 +45,8 @@ export function Login({ signedOut = false }: { signedOut?: boolean }) {
     api.status().then((s) => {
       setMode(!s.needs_setup ? "login" : s.setup_blocked ? "remote" : "setup");
       setPlexEnabled(s.plex_login);
-      setJellyfin((j) => ({ ...j, enabled: !!s.jellyfin_login, quickConnect: !!s.jellyfin_quickconnect }));
+      setJellyfinSlotKind(s.jellyfin_server_kind);
+      setJellyfin((j) => ({ ...j, enabled: !!s.jellyfin_login, quickConnect: !!s.jellyfin_quickconnect, emby: s.jellyfin_server_kind === "emby" }));
     }).catch(() => setMode("login"));
   }, []);
 
@@ -142,8 +144,8 @@ export function Login({ signedOut = false }: { signedOut?: boolean }) {
             {/* Sign in with Jellyfin: Jellyfin checks the username and password (or the
                 Quick Connect code) and the server signs that user into their account. */}
             {!setup && jellyfin.enabled && (
-              <button type="button" disabled={busy || plexBusy} onClick={() => { setError(null); setJellyfin((j) => ({ ...j, open: true })); }} className={SERVER_BUTTON} style={{ background: "var(--jellyfin)", color: "var(--jellyfin-ink)" }}>
-                <JellyfinMark />Sign in with Jellyfin
+              <button type="button" disabled={busy || plexBusy} onClick={() => { setError(null); setJellyfin((j) => ({ ...j, open: true })); }} className={SERVER_BUTTON} style={jellyfin.emby ? { background: "var(--emby)", color: "var(--emby-ink)" } : { background: "var(--jellyfin)", color: "var(--jellyfin-ink)" }}>
+                {jellyfin.emby ? <><EmbyMark />Sign in with Emby</> : <><JellyfinMark />Sign in with Jellyfin</>}
               </button>
             )}
           </form>

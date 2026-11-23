@@ -230,8 +230,8 @@ func jellyfinSession(js jellyfin.Session, srcKbps int64) (mediaserver.Session, b
 		state = "paused"
 	}
 	out := mediaserver.Session{
-		Server: mediaserver.Jellyfin, SessionKey: JellyfinSessionKey(js.ID), RatingKey: np.ID, Type: mt,
-		Title: np.Name, Year: np.ProductionYear, Thumb: JellyfinItemImage(np.ID),
+		Server: mediaserver.Jellyfin, SessionKey: JellyfinSessionKey(js.ID), RatingKey: jellyfinRatingKey(np.ID), Type: mt,
+		Title: np.Name, Year: np.ProductionYear, Thumb: serverItemImage(np.ID),
 		DurationMS: jellyfin.TicksToDuration(np.RunTimeTicks).Milliseconds(),
 		OffsetMS:   js.PlayState.Position().Milliseconds(),
 		UserID:     js.UserID, UserName: js.UserName,
@@ -246,6 +246,8 @@ func jellyfinSession(js jellyfin.Session, srcKbps int64) (mediaserver.Session, b
 		}
 		if isGUID(np.SeriesID) {
 			out.ShowRatingKey, out.ShowThumb = np.SeriesID, JellyfinItemImage(np.SeriesID)
+		} else if jellyfin.IsEmbyItemID(np.SeriesID) {
+			out.ShowRatingKey, out.ShowThumb = jellyfinRatingKey(np.SeriesID), EmbyItemImage(np.SeriesID)
 		}
 	}
 	if v := np.VideoStream(); v != nil {
@@ -297,13 +299,34 @@ func audioStream(streams []jellyfin.MediaStream) *jellyfin.MediaStream {
 	return first
 }
 
-// jellyfinPlatform is the app without the brand ("Jellyfin Android TV" → "Android TV").
+// jellyfinPlatform is the app without the brand ("Jellyfin Android TV" → "Android TV",
+// "Emby for Android" → "Android").
 func jellyfinPlatform(client string) string {
-	if p := strings.TrimSpace(strings.TrimPrefix(client, "Jellyfin ")); p != "" {
+	p := strings.TrimPrefix(client, "Jellyfin ")
+	if p == client {
+		p = strings.TrimPrefix(strings.TrimPrefix(client, "Emby "), "for ")
+	}
+	if p = strings.TrimSpace(p); p != "" {
 		return p
 	}
 	return client
 }
+
+// jellyfinRatingKey is the key a Jellyfin or Emby item's plays are recorded under. A
+// Jellyfin id (32 hex digits) is kept as is; an Emby item number gets an "emby-" prefix,
+// because a bare number could be mistaken for a Plex rating key (Plex numbers its items
+// too) and link a play to the wrong Plex title.
+func jellyfinRatingKey(id string) string {
+	if jellyfin.IsEmbyItemID(id) {
+		return embyKeyPrefix + id
+	}
+	return id
+}
+
+const embyKeyPrefix = "emby-"
+
+// isServerKey reports whether a recorded rating key is a Jellyfin or Emby one, never Plex's.
+func isServerKey(k string) bool { return isGUID(k) || strings.HasPrefix(k, embyKeyPrefix) }
 
 // clientIP is a RemoteEndPoint as a bare address: no port, no IPv4-mapped prefix.
 func clientIP(ep string) string {
@@ -336,12 +359,12 @@ func (j *jellyfinSource) syncUsers(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, u := range users {
-		if !isGUID(u.ID) {
+		if !isGUID(u.ID) && !jellyfin.IsEmbyItemID(u.ID) {
 			continue
 		}
 		thumb := ""
 		if u.PrimaryImageTag != "" {
-			thumb = JellyfinUserImage(u.ID)
+			thumb = serverUserImage(u.ID)
 		}
 		if err := j.s.repo.upsertUser(ctx, mediaserver.Jellyfin, u.ID, u.Name, thumb, 0); err != nil {
 			j.s.log.Debug("insights: couldn't save a Jellyfin user", "err", err)
@@ -370,6 +393,40 @@ func JellyfinUserImage(id string) string {
 // IsJellyfinImage reports whether path names a Jellyfin image (strictly).
 func IsJellyfinImage(path string) bool { return jellyfinImageRe.MatchString(path) }
 
+// Emby images. Emby numbers its items, so an Emby poster travels as
+// "emby:/Items/<digits>/Images/Primary" (and a person's picture, when Emby gives a numeric
+// user id, as "emby:/Users/<digits>/Images/Primary"); GUID ids use the Jellyfin form above.
+// Either is fetched from the connected server, which is Jellyfin or Emby, never both.
+const embyImagePrefix = "emby:"
+
+var embyImageRe = regexp.MustCompile(`^emby:/(Items|Users)/([0-9]{1,19})/Images/Primary$`)
+
+// EmbyItemImage is the image path of an Emby item's poster.
+func EmbyItemImage(id string) string { return embyImagePrefix + "/Items/" + id + "/Images/Primary" }
+
+// IsEmbyImage reports whether path names an Emby image (strictly).
+func IsEmbyImage(path string) bool { return embyImageRe.MatchString(path) }
+
+// IsServerImage reports whether path names a Jellyfin or an Emby image (strictly).
+func IsServerImage(path string) bool { return IsJellyfinImage(path) || IsEmbyImage(path) }
+
+// serverItemImage is an item's poster path in the form its id calls for: the Emby form for
+// an Emby item number, the Jellyfin form otherwise.
+func serverItemImage(id string) string {
+	if jellyfin.IsEmbyItemID(id) {
+		return EmbyItemImage(id)
+	}
+	return JellyfinItemImage(id)
+}
+
+// serverUserImage is serverItemImage for a person's picture.
+func serverUserImage(id string) string {
+	if jellyfin.IsEmbyItemID(id) {
+		return embyImagePrefix + "/Users/" + id + "/Images/Primary"
+	}
+	return JellyfinUserImage(id)
+}
+
 // isGUID: 32 hex digits, as Jellyfin writes its ids.
 func isGUID(s string) bool {
 	if len(s) != 32 {
@@ -386,6 +443,9 @@ func isGUID(s string) bool {
 // jellyfinImage fetches a Jellyfin image path (IsJellyfinImage) with the key server-side.
 func (s *Service) jellyfinImage(ctx context.Context, path string) (*http.Response, error) {
 	m := jellyfinImageRe.FindStringSubmatch(path)
+	if m == nil {
+		m = embyImageRe.FindStringSubmatch(path)
+	}
 	if m == nil {
 		return nil, errors.New("unsupported image path")
 	}

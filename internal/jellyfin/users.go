@@ -29,9 +29,20 @@ type UserPolicy struct {
 	EnableRemoteAccess bool `json:"EnableRemoteAccess"`
 }
 
-// Users lists the server's accounts (admin key).
+// Users lists the server's accounts (admin key). Emby's current API lists them at
+// /Users/Query ({Items, TotalRecordCount}); a 404 there (an older Emby) falls back to the
+// bare list at /Users.
 func (c *Client) Users(ctx context.Context) ([]User, error) {
 	var out []User
+	if c.emby {
+		var page struct {
+			Items []User `json:"Items"`
+		}
+		err := c.call(ctx, http.MethodGet, "/Users/Query", nil, nil, &page, true)
+		if !errors.Is(err, ErrNotFound) {
+			return page.Items, err
+		}
+	}
 	err := c.call(ctx, http.MethodGet, "/Users", nil, nil, &out, true)
 	return out, err
 }
@@ -84,7 +95,13 @@ type QuickConnectState struct {
 
 // QuickConnectEnabled reports whether the server allows Quick Connect (Dashboard →
 // General → "Enable Quick Connect"; on by default in 12.2). It needs no key.
+//
+// Emby has no Quick Connect: every Quick Connect call on an Emby client is ErrUnsupported,
+// and this one is simply false.
 func (c *Client) QuickConnectEnabled(ctx context.Context) (bool, error) {
+	if c.emby {
+		return false, nil
+	}
 	var on bool
 	err := c.anon().call(ctx, http.MethodGet, "/QuickConnect/Enabled", nil, nil, &on, false)
 	return on, err
@@ -94,6 +111,9 @@ func (c *Client) QuickConnectEnabled(ctx context.Context) (bool, error) {
 // ErrUnauthorized (12.2 answers 401).
 func (c *Client) QuickConnectInitiate(ctx context.Context) (QuickConnectState, error) {
 	var st QuickConnectState
+	if c.emby {
+		return st, ErrUnsupported
+	}
 	err := c.anon().call(ctx, http.MethodPost, "/QuickConnect/Initiate", nil, nil, &st, false)
 	return st, err
 }
@@ -102,6 +122,9 @@ func (c *Client) QuickConnectInitiate(ctx context.Context) (QuickConnectState, e
 // code. An expired or unknown secret is ErrNotFound.
 func (c *Client) QuickConnectConnect(ctx context.Context, secret string) (QuickConnectState, error) {
 	var st QuickConnectState
+	if c.emby {
+		return st, ErrUnsupported
+	}
 	if secret == "" {
 		return st, errors.New("no quick connect secret")
 	}
@@ -112,6 +135,9 @@ func (c *Client) QuickConnectConnect(ctx context.Context, secret string) (QuickC
 // QuickConnectAuthorize approves a code as the user this client acts for (WithToken). It is
 // what a Jellyfin app does when someone types the code in; Arrmada only needs it in tests.
 func (c *Client) QuickConnectAuthorize(ctx context.Context, code string) error {
+	if c.emby {
+		return ErrUnsupported
+	}
 	if code == "" {
 		return errors.New("no quick connect code")
 	}
@@ -127,6 +153,9 @@ func (c *Client) QuickConnectAuthorize(ctx context.Context, code string) error {
 
 // AuthenticateWithQuickConnect trades an approved request's secret for a sign-in.
 func (c *Client) AuthenticateWithQuickConnect(ctx context.Context, secret string) (AuthResult, error) {
+	if c.emby {
+		return AuthResult{}, ErrUnsupported
+	}
 	if secret == "" {
 		return AuthResult{}, errors.New("no quick connect secret")
 	}

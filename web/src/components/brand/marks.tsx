@@ -1,4 +1,4 @@
-import type { MediaServerKind } from "./servers";
+import { jellyfinSlotIsEmby, type MediaServerKind } from "./servers";
 
 // Small marks for the media servers: simple geometric versions, not the official logos.
 // They draw in currentColor, so they take the ink of whatever they sit on, and they are
@@ -29,6 +29,18 @@ export function JellyfinMark({ size = 16, className }: MarkProps) {
   );
 }
 
+// Emby: a play triangle in a hexagon.
+export function EmbyMark({ size = 16, className }: MarkProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true" focusable="false" className={className}>
+      <path fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinejoin="round" d="M12 2.8 20 7.4v9.2l-8 4.6-8-4.6V7.4z" />
+      <path fill="currentColor" stroke="currentColor" strokeWidth={1.2} strokeLinejoin="round" d="M10 8.6v6.8l5.6-3.4z" />
+    </svg>
+  );
+}
+
+// The Jellyfin slot draws Emby's mark when it's connected to Emby.
 export function ServerMark({ server, ...rest }: MarkProps & { server: MediaServerKind }) {
-  return server === "plex" ? <PlexMark {...rest} /> : <JellyfinMark {...rest} />;
+  if (server === "plex") return <PlexMark {...rest} />;
+  return jellyfinSlotIsEmby() ? <EmbyMark {...rest} /> : <JellyfinMark {...rest} />;
 }

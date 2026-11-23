@@ -45,4 +45,16 @@
 // Sign-in. A non-admin token can still list /Users but not admin calls (403). Quick Connect
 // is on by default; an unknown or unapproved secret is 404; an approved secret keeps signing
 // in until the request expires, so a caller must forget it after its first use.
+//
+// Emby. NewFor(ServerEmby, …) speaks to an Emby server, the one Jellyfin was forked from.
+// None of this was checked against a running Emby; it follows Emby's REST API reference
+// (dev.emby.media) and the old open-source server, and the fakes in testdata/emby mirror
+// those shapes. The differences the client handles: every path goes under /emby; the
+// credentials go in X-Emby-Authorization ("Emby Client=…, Token=…") and X-Emby-Token, never
+// Authorization; libraries and users come from the /Query routes ({Items, …}), falling back
+// to Jellyfin's bare lists on a 404 (older Emby); a user's picture is
+// /Users/{id}/Images/Primary; item ids are numbers, not GUIDs; a transcode says per stream
+// whether the decoder and encoder ran on hardware (folded into HardwareAccelerationType);
+// the Watch link is /web/index.html#!/item?id=…&serverId=…; and there is no Quick Connect
+// (ErrUnsupported, nothing sent).
 package jellyfin

@@ -1,6 +1,7 @@
 import { useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { HistoryEntry, InsightsServer, UserEntry } from "../../lib/api";
 import { insightsApi } from "../../lib/insightsApi";
+import { jellyfinSlotIsEmby } from "../../components/brand";
 import { useSearchParamState } from "../../lib/useSearchState";
 import { IconButton, Modal } from "../../ui";
 import { Field } from "../../ui/Field";
@@ -214,7 +215,9 @@ function HistoryHW({ startedAt, server }: { startedAt: number; server?: string }
   const since = useContext(InsightsCfg)?.hw_since ?? 0;
   if (server === "jellyfin") {
     return (
-      <span title="Jellyfin's configured hardware acceleration — it doesn't say whether the GPU took this stream."
+      <span title={jellyfinSlotIsEmby()
+        ? "Emby ran this stream's video on hardware."
+        : "Jellyfin's configured hardware acceleration — it doesn't say whether the GPU took this stream."}
         className="rounded-full px-2.5 py-0.5 text-xs font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW</span>
     );
   }

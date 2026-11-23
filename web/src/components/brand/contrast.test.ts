@@ -54,6 +54,7 @@ function fillColours(v: string): number[][] {
 const PAIRS = [
   { fill: "--plex", ink: "--plex-ink" },
   { fill: "--jellyfin", ink: "--jellyfin-ink" },
+  { fill: "--emby", ink: "--emby-ink" },
 ];
 
 describe("brand token contrast", () => {
