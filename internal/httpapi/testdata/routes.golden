@@ -140,7 +140,7 @@ GET /api/v1/downloads/unmanaged staff -
 GET /api/v1/files/info staff -
 GET /api/v1/flaresolverr/status staff -
 GET /api/v1/health/system staff -
-GET /api/v1/history staff -
+GET /api/v1/history staff ext key
 GET /api/v1/indexers staff -
 GET /api/v1/indexers/prowlarr staff -
 GET /api/v1/insights/activity staff -
@@ -215,7 +215,7 @@ GET /api/v1/movies/organize staff -
 GET /api/v1/movies/search-queue staff -
 GET /api/v1/movies/unmatched staff -
 GET /api/v1/movies/wanted staff -
-GET /api/v1/movies/{id} staff -
+GET /api/v1/movies/{id} staff ext key
 GET /api/v1/movies/{id}/blocklist staff -
 GET /api/v1/movies/{id}/collection staff -
 GET /api/v1/movies/{id}/delete-preview staff -
@@ -272,7 +272,7 @@ GET /api/v1/seeding/check admin -
 GET /api/v1/series staff -
 GET /api/v1/series/lookup staff -
 GET /api/v1/series/unmatched staff -
-GET /api/v1/series/{id} staff -
+GET /api/v1/series/{id} staff ext key
 GET /api/v1/series/{id}/aliases staff -
 GET /api/v1/series/{id}/blocklist staff -
 GET /api/v1/series/{id}/borrowed staff -
