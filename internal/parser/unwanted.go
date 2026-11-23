@@ -238,6 +238,18 @@ func detectLanguages(t tags, later bool) (out []string, multi, dual bool) {
 			titleWords++
 		}
 	}
+	// Italian trackers write the subtitles after the word: "ENG.Sub.ITA" is English audio
+	// with Italian subtitles, "Sub.ITA" Italian subtitles. Read since issue #58's second
+	// report: the languages straight after a subtitle word are subtitles, and a language
+	// before one that's followed by them is the audio. "ENG.SUBS" and "German.Subbed", with
+	// nothing after, stay subtitles. Files are read this way too: the old reading took
+	// "ENG.Sub.ITA" for Italian audio, so an English-only file kept passing an Italian Must.
+	subsAfter := make([]bool, len(words))
+	for i := 1; i < len(words); i++ {
+		if (subsWords[words[i-1].lc] || subsAfter[i-1]) && tokenLanguage(words[i], later) != "" {
+			subsAfter[i] = true
+		}
+	}
 	for i, tok := range words {
 		next := ""
 		if i+1 < len(words) {
@@ -257,24 +269,11 @@ func detectLanguages(t tags, later bool) (out []string, multi, dual bool) {
 			}
 			continue
 		}
-		code := ""
-		switch {
-		case sceneLanguages[tok.lc] != "":
-			code = langs.Base(sceneLanguages[tok.lc])
-		case languageCodes3[tok.lc]:
-			if sceneCased(tok.raw) {
-				code = langs.ISO1(tok.lc)
-			}
-		case laterCodes3[tok.lc] != "":
-			if later && sceneCased(tok.raw) && !tok.title {
-				code = laterCodes3[tok.lc]
-			}
-		case len(tok.lc) >= 4:
-			if l, ok := langs.Lookup(tok.lc); ok && langs.IsToken(tok.lc, true) {
-				code = l.ISO1
-			}
+		code := tokenLanguage(tok, later)
+		if code == "" || subsAfter[i] {
+			continue
 		}
-		if code == "" || subsWords[next] {
+		if subsWords[next] && !(i+2 < len(words) && subsAfter[i+2]) {
 			continue
 		}
 		if !containsStr(out, code) {
@@ -292,6 +291,28 @@ func detectLanguages(t tags, later bool) (out []string, multi, dual bool) {
 		}
 	}
 	return out, multi, dual
+}
+
+// tokenLanguage is the language a tail word names as a tag, "" when it names none. later
+// reads laterCodes3 too (see detectLanguages).
+func tokenLanguage(tok tagToken, later bool) string {
+	switch {
+	case sceneLanguages[tok.lc] != "":
+		return langs.Base(sceneLanguages[tok.lc])
+	case languageCodes3[tok.lc]:
+		if sceneCased(tok.raw) {
+			return langs.ISO1(tok.lc)
+		}
+	case laterCodes3[tok.lc] != "":
+		if later && sceneCased(tok.raw) && !tok.title {
+			return laterCodes3[tok.lc]
+		}
+	case len(tok.lc) >= 4:
+		if l, ok := langs.Lookup(tok.lc); ok && langs.IsToken(tok.lc, true) {
+			return l.ISO1
+		}
+	}
+	return ""
 }
 
 // reEpisodeMarkerWord is the episode marker the tail starts with ("s01e01", "1x05", "e12",

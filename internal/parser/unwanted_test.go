@@ -159,6 +159,16 @@ func TestLanguages(t *testing.T) {
 		{"Movie.2020.ENG.SUBS.1080p.WEB-DL-GRP", nil, false},
 		{"Movie.2020.MULTi.SUBS.1080p.WEB-DL-GRP", nil, false},
 		{"Movie.2020.VOSTFR.1080p.WEB-DL-GRP", nil, false},
+		// Italian trackers write the subtitles after the word (issue #58): "ENG Sub ITA" is
+		// English audio with Italian subtitles, never Italian audio.
+		{"Show.S01E03.1080p.WEB.ENG.Sub.ITA.H264-GRP", []string{"en"}, false},
+		{"Show.S01E03.1080p.WEB-DL.ENG.SUB-ITA.H264-GRP", []string{"en"}, false},
+		{"Show.S01E03.1080p.WEB-DL.H264.Sub.ITA-GRP", nil, false},
+		{"Show.S01E03.1080p.WEB-DL.ENG.Subs.ITA.ENG.H264-GRP", []string{"en"}, false},
+		{"Show.S01E03.1080p.WEB-DL.ITA.ENG.Sub.ITA.ENG.H264-GRP", []string{"it", "en"}, false},
+		{"Show.S01E03.1080p.WEB.MULTi.Sub.ITA.H264-GRP", nil, false},
+		{"Movie.2020.1080p.WEB-DL.Subbed.Italian-GRP", nil, false},
+		{"Movie.2020.SUBITA.1080p.WEB-DL-GRP", nil, false},
 		// Titles and episode titles aren't tags.
 		{"French.Kiss.1995.1080p.BluRay.x264-GRP", nil, false},
 		{"The.Italian.Job.2003.1080p.BluRay.x264-GRP", nil, false},
@@ -191,6 +201,9 @@ func TestFileLanguagesLeaveOutNewSpellings(t *testing.T) {
 		{"Movie.2020.MULTi.VFB.1080p.WEB-DL.x264-GRP", nil, true},
 		{"Movie.2020.ITA.ENG.1080p.BluRay.x264-GRP", []string{"it", "en"}, false},
 		{"Movie.2020.German.DL.1080p.BluRay.x264-GRP", []string{"de"}, true},
+		// Subtitles named after the word are subtitles for a file too (issue #58): the old
+		// reading took this for Italian audio.
+		{"Show.S01E03.1080p.WEB.ENG.Sub.ITA.H264-GRP", []string{"en"}, false},
 	}
 	for _, tc := range cases {
 		r := Parse(tc.name)
