@@ -275,7 +275,8 @@ func (s *Service) UpgradePick(ctx context.Context, ref string, current CurrentFi
 			// exception (#137): a file whose every language the profile avoids may give
 			// up resolution for a release that carries a language it wants (langEscape).
 			// The import gates accept the same (IsLanguageUpgrade, IsQualityUpgrade).
-			if bar.langEscape(sp.UpgradeTrigger, ev) && !bar.excludes(ev.Candidate.Name) {
+			// At most once per track or episode, ever (CurrentFile.EscapeUsed).
+			if bar.langEscape(sp.UpgradeTrigger, ev) && !bar.excludes(ev.Candidate.Name) && !current.escapeUsed(ctx) {
 				return ev.Candidate, KeyPreferences, true
 			}
 			continue
@@ -342,9 +343,11 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	}
 	// Below the file's resolution (or its original's) the sweep takes only a language
 	// escape (UpgradePick, #137) — accepted here too, so a converted file whose name the
-	// caller reads at an equal resolution isn't refused what the sweep grabbed.
+	// caller reads at an equal resolution isn't refused what the sweep grabbed. Once the
+	// title has taken its one escape, it's refused outright: no other verdict may let a
+	// second one through.
 	if resRank[ev.Candidate.Release.Resolution] < bar.resRank && bar.langEscape(sp.UpgradeTrigger, ev) {
-		return true
+		return !current.escapeUsed(ctx)
 	}
 	// The same verdict the searcher applied (upgradeBar.gain, in the ranking mode in
 	// effect), so a release it grabbed as an upgrade is placed, and one it wouldn't have
@@ -362,24 +365,66 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 // grabbed for its language is placed when it arrives. Nothing else lower is ever taken.
 //
 // The same profile gates as IsQualityUpgrade: upgrades enabled, never the file's own
-// release or the one it was converted from.
+// release or the one it was converted from. And at most once per track or episode, ever
+// (CurrentFile.EscapeUsed): a caller that places a release on this answer records it.
 func (s *Service) IsLanguageUpgrade(ctx context.Context, ref, candRelease string, candSizeGB float64, current CurrentFile) bool {
+	ok, _ := s.languageEscape(ctx, ref, candRelease, candSizeGB, current)
+	return ok
+}
+
+// IsLanguageEscape reports whether placing an arriving release the caller reads at the
+// file's resolution or above is still the language escape by the quality rules' reading —
+// a converted file whose original had the higher resolution, a probe that reads higher
+// than the name. IsQualityUpgrade accepts exactly those (so the sweep's grab isn't
+// refused on arrival); the caller records them like any escape, so the title's one escape
+// is spent however the gate read the resolution.
+func (s *Service) IsLanguageEscape(ctx context.Context, ref, candRelease string, candSizeGB float64, current CurrentFile) bool {
+	ok, lower := s.languageEscape(ctx, ref, candRelease, candSizeGB, current)
+	return ok && lower
+}
+
+// languageEscape is IsLanguageUpgrade's verdict, and whether the release is below the
+// file's resolution (or its original's) as the quality rules read it.
+func (s *Service) languageEscape(ctx context.Context, ref, candRelease string, candSizeGB float64, current CurrentFile) (ok, lower bool) {
 	if strings.TrimSpace(candRelease) == "" || strings.TrimSpace(current.Release) == "" {
-		return false
+		return false, false
 	}
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil || !sp.UpgradesEnabled {
+		return false, false
+	}
+	p, e := s.Resolve(ctx, ref)
+	if !p.avoidsALanguage() {
+		return false, false // nothing is all-avoided by language: no escape, and no bar to build
+	}
+	bar := current.upgradeBar(p, e)
+	if bar.excludes(candRelease) {
+		return false, false
+	}
+	ev := e.Evaluate(p, current.arriving(candRelease, candSizeGB))
+	if !bar.langEscape(sp.UpgradeTrigger, ev) || current.escapeUsed(ctx) {
+		return false, false
+	}
+	return true, resRank[ev.Candidate.Release.Resolution] < bar.resRank
+}
+
+// IntoAvoidedLanguage reports an arriving release whose name says it carries only
+// languages the profile avoids, over a file that isn't all-avoided by language both ways
+// (its audio, and the release it's recorded under). The sweep never grabs such a release
+// as an upgrade (intoAvoid), so an import gate's own equal-resolution accepts — the
+// bitrate margin, which reads no language — refuse it too: otherwise an English release
+// replaces the Italian file the language escape placed, and the escape is open again.
+// Always false for a profile that avoids no language.
+func (s *Service) IntoAvoidedLanguage(ctx context.Context, ref, candRelease string, current CurrentFile) bool {
+	if strings.TrimSpace(candRelease) == "" {
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)
 	if !p.avoidsALanguage() {
-		return false // nothing is all-avoided by language: no escape, and no bar to build
-	}
-	bar := current.upgradeBar(p, e)
-	if bar.excludes(candRelease) {
 		return false
 	}
-	return bar.langEscape(sp.UpgradeTrigger, e.Evaluate(p, current.arriving(candRelease, candSizeGB)))
+	bar := current.upgradeBar(p, e)
+	return bar.namesAvoided(candRelease) && !(bar.langAvoided && bar.recordedAvoided())
 }
 
 // arriving is a downloaded release as the import gates score it against this file.

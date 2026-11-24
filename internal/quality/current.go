@@ -42,6 +42,17 @@ type CurrentFile struct {
 	// language rules ("Original language", and what an untagged track or name is read as).
 	// "" leaves rules about the original language unapplied.
 	OrigLanguage string
+	// EscapeUsed reports that the title this file belongs to — a movie's track, an
+	// episode — has already taken its one language escape (#137, langEscape): a
+	// lower-resolution release in a wanted language over a file in avoided ones. Asked only
+	// when the escape would otherwise be taken, so nothing else ever pays for it. nil: none
+	// recorded (a file the caller keeps no such record for).
+	EscapeUsed func(context.Context) bool
+}
+
+// escapeUsed is EscapeUsed, false when the caller keeps no record.
+func (c CurrentFile) escapeUsed(ctx context.Context) bool {
+	return c.EscapeUsed != nil && c.EscapeUsed(ctx)
 }
 
 // upgradeBar is what a candidate has to beat to be an upgrade of the file.
@@ -194,8 +205,10 @@ func (b upgradeBar) intoAvoid(cand Evaluation) bool {
 // its recorded name never reads as avoided again, whatever its probe finds — the escape
 // can't fire twice in a row. A MULTi that probes as English only isn't eligible either, so
 // a MULTi 2160p taken over the escape's 1080p stays (and intoAvoid keeps such a file from
-// being replaced by one whose name is avoided, which would be eligible). So no chain of
-// replacements leads from what the escape placed back to a file it may leave by language.
+// being replaced by one whose name is avoided, which would be eligible). Names can still
+// drift — a pack's file dropping the MULTi its torrent had, a probe finding an avoid the
+// name hid — so the callers also make it one-shot: a track or episode takes it at most
+// once, ever (CurrentFile.EscapeUsed, recorded by the import gates).
 //
 // Only the upgrade sweep's and import gates' lower-resolution paths ask this; at the
 // same or a higher resolution the ordinary verdict (gain) decides, unchanged.

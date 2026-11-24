@@ -59,6 +59,7 @@ func (c *Coordinator) currentMovieFile(ctx context.Context, m movies.Movie, v mo
 		OrigSizeGB:  gbOf(v.ConvertedFromSize),
 		// For the profile's Audio language rules ("Original language", untagged audio).
 		OrigLanguage: movieOrigLanguage(m),
+		EscapeUsed:   c.movieEscapeUsed(m.ID, v),
 	}
 }
 
@@ -78,14 +79,15 @@ func (c *Coordinator) CurrentMovieFile(ctx context.Context, m movies.Movie) qual
 // the episode length, Convert's probed facts when they still describe the file, and what
 // it was before a conversion.
 func (c *Coordinator) currentEpisodeFile(ctx context.Context, s series.Series, e series.Episode) quality.CurrentFile {
-	return c.episodeFileOf(ctx, s, series.EpisodeFile{
+	return c.episodeFileOf(ctx, s, e.SeasonNumber, e.EpisodeNumber, series.EpisodeFile{
 		Path: e.FilePath, SizeBytes: e.SizeBytes, SourceRelease: e.SourceRelease, RuntimeMin: e.Runtime,
 		ConvertedFromRelease: e.ConvertedFromRelease, ConvertedFromSize: e.ConvertedFromSize,
 	})
 }
 
-// episodeFileOf is currentEpisodeFile for an EpisodeFile row of show s.
-func (c *Coordinator) episodeFileOf(ctx context.Context, s series.Series, f series.EpisodeFile) quality.CurrentFile {
+// episodeFileOf is currentEpisodeFile for an EpisodeFile row of show s: the file of the
+// episode season/episode.
+func (c *Coordinator) episodeFileOf(ctx context.Context, s series.Series, season, episode int, f series.EpisodeFile) quality.CurrentFile {
 	return quality.CurrentFile{
 		Release:     f.SourceRelease,
 		SizeGB:      gbOf(f.SizeBytes),
@@ -95,6 +97,7 @@ func (c *Coordinator) episodeFileOf(ctx context.Context, s series.Series, f seri
 		OrigSizeGB:  gbOf(f.ConvertedFromSize),
 		// For the profile's Audio language rules ("Original language", untagged audio).
 		OrigLanguage: seriesOrigLanguage(s),
+		EscapeUsed:   c.episodeEscapeUsed(s.ID, season, episode),
 	}
 }
 

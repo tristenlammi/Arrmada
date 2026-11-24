@@ -2838,7 +2838,7 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 		return library.Unmatched, fmt.Errorf("no movie in the library matches %q", titleYear(rec.Title, rec.Year))
 	}
 	if err := c.movies.MarkImportedToAllowing(ctx, m.ID, versionID, rec.TargetPath, rec.ReleaseName, false,
-		c.movieLanguageDowngradeOK(ctx, m, rec)); err != nil {
+		c.movieReplaceJudge(ctx, m, rec)); err != nil {
 		if errors.Is(err, movies.ErrWorseQuality) || errors.Is(err, movies.ErrPathOwnedByOtherTrack) {
 			return library.Refused, err
 		}
@@ -2855,20 +2855,44 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 	return library.Attached, nil
 }
 
-// movieLanguageDowngradeOK is the movie import gate's one exception to "never a lower
-// resolution" (#137): the track's file carries only audio languages its profile avoids,
-// and the download carries one the profile wants — the downgrade the upgrade sweep grabs
-// (quality.UpgradePick). It judges the track's file exactly as the sweep does
+// movieReplaceJudge is the movie import gate's language rules (#137), for
+// MarkImportedToAllowing. It judges the track's file exactly as the sweep does
 // (currentMovieFile), and the download by the name the track records for it
-// (rec.ReleaseName): a name that doesn't say the wanted language would read as avoided
-// again once placed, and the file would be replaced again.
-func (c *Coordinator) movieLanguageDowngradeOK(ctx context.Context, m movies.Movie, rec library.ImportRecord) func(movies.Version) bool {
-	return func(v movies.Version) bool {
+// (rec.ReleaseName):
+//
+//   - lower resolution: refused, but for the one downgrade the upgrade sweep grabs
+//     (quality.IsLanguageUpgrade) — the track's file carries only audio languages its
+//     profile avoids, and the download's name states one it wants — at most once per
+//     track, recorded here before it's placed (langescape.go);
+//   - equal resolution: under a profile that avoids a language, refused when the download
+//     says it carries only avoided languages and the file isn't all-avoided
+//     (quality.IntoAvoidedLanguage), as the sweep would never grab it; and an accept the
+//     quality rules read as the escape (quality.IsLanguageEscape) spends the track's one;
+//   - higher or unknown: taken, as always.
+func (c *Coordinator) movieReplaceJudge(ctx context.Context, m movies.Movie, rec library.ImportRecord) movies.ReplaceJudge {
+	return func(v movies.Version, cmp int) bool {
+		if cmp > 0 {
+			return true
+		}
 		if v.UpgradeHold || c.quality == nil {
-			return false // kept as it is: nothing replaces it on the importer's own initiative
+			// Kept as it is: nothing lower replaces it on the importer's own initiative.
+			// An equal one is taken, as MarkImportedTo always has.
+			return cmp == 0
 		}
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
-		return c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, gbOf(rec.SizeBytes), c.currentMovieFile(ctx, m, v))
+		cur := c.currentMovieFile(ctx, m, v)
+		size := gbOf(rec.SizeBytes)
+		if cmp < 0 {
+			return c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, size, cur) &&
+				c.recordMovieEscape(ctx, m.ID, v)
+		}
+		if c.quality.IntoAvoidedLanguage(ctx, profile, rec.ReleaseName, cur) {
+			return false
+		}
+		if c.quality.IsLanguageEscape(ctx, profile, rec.ReleaseName, size, cur) {
+			return c.recordMovieEscape(ctx, m.ID, v)
+		}
+		return true
 	}
 }
 

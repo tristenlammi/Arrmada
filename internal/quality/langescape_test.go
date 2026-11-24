@@ -1,8 +1,11 @@
 package quality
 
 import (
+	"context"
 	"strconv"
 	"testing"
+
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // Issue #137: which way an upgrade goes when the profile's Audio language row wants one
@@ -397,6 +400,181 @@ func TestLanguageEscapeSkippedWithoutAnAvoid(t *testing.T) {
 					t.Errorf("%v %s: the lower-resolution import gate took it", row, cur.Release)
 				}
 			}
+		}
+	})
+}
+
+// usedEscape is an EscapeUsed answering used, counting how often it was asked.
+func usedEscape(used bool, asked *int) func(context.Context) bool {
+	return func(context.Context) bool {
+		*asked++
+		return used
+	}
+}
+
+// The escape is one-shot (#137): once the title's track or episode has taken it, no
+// later file takes another — not on the sweep, not at either import gate, however its
+// name and probe read. Before it is taken, the same file escapes.
+func TestLanguageEscapeIsOneShot(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := escapeProfile(t, s, itaWantEngAvoid, TriggerAny)
+		conv := escapeFile("2160p", "eng")
+		conv.Release = "Film.2021.2160p.BluRay.x265-OLD"
+		conv.Facts = &FileFacts{Resolution: "2160p", Codec: "hevc", HDR: "SDR", AudioLangs: []string{"eng"}}
+		conv.OrigRelease, conv.OrigSizeGB = "Film.2021.2160p.BluRay.REMUX.AVC-ORIG", 50
+		for _, base := range []CurrentFile{escapeFile("2160p", "eng"), conv} {
+			var asked int
+			fresh := base
+			fresh.EscapeUsed = usedEscape(false, &asked)
+			if _, key, ok := s.UpgradePick(ctx, ref, fresh, []Candidate{enCand(escITA1080, 8)}); !ok || key != KeyPreferences {
+				t.Errorf("%s, escape not yet taken: sweep %v %s, want the escape", base.Release, ok, key)
+			}
+			if !s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, fresh) || !s.IsLanguageEscape(ctx, ref, escITA1080, 8, fresh) {
+				t.Errorf("%s, escape not yet taken: an import gate refused it", base.Release)
+			}
+			if asked == 0 {
+				t.Errorf("%s: the escape was taken without asking whether it had been", base.Release)
+			}
+			spent := base
+			spent.EscapeUsed = usedEscape(true, &asked)
+			if pick, key, ok := s.UpgradePick(ctx, ref, spent, []Candidate{enCand(escITA1080, 8), enCand("Film.2021.iTALiAN.720p.WEB-DL.x264-SPQR", 4)}); ok {
+				t.Errorf("%s, escape taken: sweep took %s (%s)", base.Release, pick.Name, key)
+			}
+			if s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, spent) || s.IsLanguageEscape(ctx, ref, escITA1080, 8, spent) {
+				t.Errorf("%s, escape taken: an import gate took it again", base.Release)
+			}
+			// IsQualityUpgrade's escape branch is refused outright once spent, not handed to
+			// another verdict.
+			if s.IsQualityUpgrade(ctx, ref, escITA1080, 8, spent) {
+				t.Errorf("%s, escape taken: the quality verdict took it again", base.Release)
+			}
+			// An ordinary upgrade still works: the Italian 2160p.
+			if _, _, ok := s.UpgradePick(ctx, ref, spent, []Candidate{enCand(escITA2160, 20)}); !ok {
+				t.Errorf("%s, escape taken: an Italian 2160p is no longer an upgrade", base.Release)
+			}
+		}
+	})
+}
+
+// The review's series chain (#137): the escape placed an Italian 1080p episode, the sweep
+// took a MULTi 2160p on resolution, and the gate recorded it under the file inside the
+// torrent — which dropped MULTi. Untagged and probed English, it reads all-avoided by name
+// and tracks alike, so the names alone would escape again; the one-shot record refuses it.
+func TestLanguageEscapeMULTiRecordedUntagged(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := escapeProfile(t, s, itaWantEngAvoid, TriggerAny)
+		ita := CurrentFile{Release: escITA1080, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en",
+			Facts: &FileFacts{Resolution: "1080p", Codec: "h264", HDR: "SDR", AudioLangs: []string{"ita"}}}
+		const multi = "Film.2021.MULTi.2160p.WEB-DL.x265-MIX"
+		if _, key, ok := s.UpgradePick(ctx, ref, ita, []Candidate{enCand(multi, 20)}); !ok || key != KeyResolution {
+			t.Fatalf("MULTi 2160p over the Italian 1080p: %v %s, want a resolution upgrade", ok, key)
+		}
+		var asked int
+		placed := CurrentFile{Release: "Film.2021.2160p.WEB-DL.x265-MIX.mkv", SizeGB: 20, RuntimeMin: 120, OrigLanguage: "en",
+			Facts:      &FileFacts{Resolution: "2160p", Codec: "hevc", HDR: "SDR", AudioLangs: []string{"eng"}},
+			EscapeUsed: usedEscape(true, &asked)}
+		const other = "Film.2021.iTALiAN.1080p.WEB-DL.x264-ROMA"
+		if pick, key, ok := s.UpgradePick(ctx, ref, placed, []Candidate{enCand(other, 8)}); ok {
+			t.Errorf("escaped a second time to %s (%s)", pick.Name, key)
+		}
+		if s.IsLanguageUpgrade(ctx, ref, other, 8, placed) {
+			t.Error("the lower-resolution import gate escaped a second time")
+		}
+		if asked == 0 {
+			t.Error("the names allowed it, yet the one-shot record wasn't asked")
+		}
+		// Without the record, the names and probe alone would have let it through: the
+		// record is what closes this chain.
+		placed.EscapeUsed = nil
+		if !s.IsLanguageUpgrade(ctx, ref, other, 8, placed) {
+			t.Error("control: the untagged, English-probed 2160p no longer reads as escapable")
+		}
+	})
+}
+
+// The review's bitrate chain (#137): with a bitrate margin set, an English 1080p BluRay
+// would pass the import gate's equal-resolution bitrate check (which reads no language)
+// over the Italian 1080p the escape placed, and the episode could then escape again to a
+// 720p. The gate asks IntoAvoidedLanguage first; and the one-shot record refuses the 720p
+// whatever got placed.
+func TestLanguageEscapeBitratePath(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := upgradeProfile(t, s, StoredProfile{Name: "bitrate " + mode,
+			AllowedResolutions: []string{"720p", "1080p", "2160p"}, UpgradeTrigger: TriggerAny, UpgradeMinPercent: 20,
+			Ideal: &IdealFile{Language: itaWantEngAvoid}})
+		ita := CurrentFile{Release: escITA1080, SizeGB: 4, RuntimeMin: 120, OrigLanguage: "en",
+			Facts: &FileFacts{Resolution: "1080p", Codec: "h264", HDR: "SDR", AudioLangs: []string{"ita"}}}
+		const eng = "Film.2021.1080p.BluRay.x264-BRIT.mkv"
+		if !s.IsBitrateUpgrade(ctx, ref, Encode{SizeGB: 8, Codec: parser.CodecX264}, Encode{SizeGB: 4, Codec: parser.CodecX264}, 120) {
+			t.Fatal("setup: the bitrate margin should be met")
+		}
+		if !s.IntoAvoidedLanguage(ctx, ref, eng, ita) {
+			t.Error("an English release over the Italian file isn't refused before the bitrate check")
+		}
+		if s.IsQualityUpgrade(ctx, ref, eng, 8, ita) {
+			t.Error("the quality verdict takes the English release over the Italian file")
+		}
+		if _, _, ok := s.UpgradePick(ctx, ref, ita, []Candidate{enCand(eng, 8)}); ok {
+			t.Error("the sweep grabs the English release over the Italian file")
+		}
+		// A release that may carry Italian, or says so, is no such refusal.
+		for _, name := range []string{"Film.2021.MULTi.1080p.BluRay.x264-MIX", "Film.2021.iTALiAN.1080p.BluRay.x264-ROMA"} {
+			if s.IntoAvoidedLanguage(ctx, ref, name, ita) {
+				t.Errorf("%s refused as only avoided languages", name)
+			}
+		}
+		// A file all-avoided both ways may be replaced by another avoided release.
+		if s.IntoAvoidedLanguage(ctx, ref, eng, escapeFile("1080p", "eng")) {
+			t.Error("an English release over an English file is refused")
+		}
+		// Had it been placed anyway, the 720p escape from it is refused: the escape is spent.
+		var asked int
+		after := CurrentFile{Release: eng, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en",
+			Facts:      &FileFacts{Resolution: "1080p", Codec: "h264", HDR: "SDR", AudioLangs: []string{"eng"}},
+			EscapeUsed: usedEscape(true, &asked)}
+		const ita720 = "Film.2021.iTALiAN.720p.WEB-DL.x264-SPQR"
+		if _, _, ok := s.UpgradePick(ctx, ref, after, []Candidate{enCand(ita720, 2)}); ok {
+			t.Error("escaped a second time, to 720p")
+		}
+		if s.IsLanguageUpgrade(ctx, ref, ita720, 2, after) {
+			t.Error("the import gate escaped a second time, to 720p")
+		}
+	})
+}
+
+// A profile that avoids no language never asks for the one-shot record, never refuses a
+// release on IntoAvoidedLanguage, and never calls anything an escape.
+func TestLanguageEscapeRecordUnusedWithoutAnAvoid(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := escapeProfile(t, s, map[string]string{"it": PrefWant}, TriggerAny)
+		var asked int
+		ita := CurrentFile{Release: escITA1080, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en",
+			Facts:      &FileFacts{Resolution: "1080p", Codec: "h264", HDR: "SDR", AudioLangs: []string{"ita"}},
+			EscapeUsed: usedEscape(true, &asked)}
+		eng := escapeFile("2160p", "eng")
+		eng.EscapeUsed = usedEscape(false, &asked)
+		for _, cur := range []CurrentFile{ita, eng} {
+			_, _, _ = s.UpgradePick(ctx, ref, cur, []Candidate{enCand(escITA1080, 8), enCand(escENG2160, 40), enCand(escITA2160, 20)})
+			for _, name := range []string{escITA1080, escENG2160, "Film.2021.1080p.BluRay.x264-BRIT"} {
+				_ = s.IsQualityUpgrade(ctx, ref, name, 8, cur)
+				if s.IsLanguageUpgrade(ctx, ref, name, 8, cur) || s.IsLanguageEscape(ctx, ref, name, 8, cur) {
+					t.Errorf("%s over %s: an escape under a profile that avoids nothing", name, cur.Release)
+				}
+				if s.IntoAvoidedLanguage(ctx, ref, name, cur) {
+					t.Errorf("%s over %s: refused as only avoided languages under a profile that avoids nothing", name, cur.Release)
+				}
+			}
+		}
+		if asked != 0 {
+			t.Errorf("the one-shot record was asked %d times under a profile that avoids nothing", asked)
 		}
 	})
 }

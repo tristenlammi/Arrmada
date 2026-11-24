@@ -1625,7 +1625,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	}
 	// What Convert's analysis found in the file beats both names: a converted file is
 	// AV1 or HEVC whatever it was released as, and its real resolution is known.
-	curFile := c.episodeFileOf(ctx, s, cur)
+	curFile := c.episodeFileOf(ctx, s, season, episode, cur)
 	if curFile.Facts != nil {
 		probed := quality.ReleaseWithFacts(curParsed, *curFile.Facts)
 		curParsed.Resolution, curParsed.Codec = probed.Resolution, probed.Codec
@@ -1640,13 +1640,27 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		// it wants. Judged on the recorded release, like the quality verdict below, and on
 		// the name this file is recorded under: a file whose name doesn't say the wanted
 		// language would read as avoided again once placed, and be replaced again.
+		// At most once per episode, ever: recorded here, before it's placed (langescape.go).
 		if cur.SourceRelease != "" && c.quality.IsLanguageUpgrade(ctx, profile, candName, candShareGB, curFile) {
+			if !c.recordEpisodeEscape(ctx, s.ID, season, episode) {
+				return false
+			}
 			c.log.Info("series import: replacing a higher-resolution file — it has only audio languages the profile avoids, and this one has a language it wants",
 				"series", s.Title, "episode", epLabel,
 				"current", cur.SourceRelease, "candidate", candName)
 			return true
 		}
 		return false
+	}
+
+	// An equal-resolution accept the quality rules read as the language escape (a
+	// converted file whose original had the higher resolution) spends the episode's one
+	// escape like the branch above. Every other accept passes through untouched.
+	spendEscape := func() bool {
+		if cur.SourceRelease == "" || !c.quality.IsLanguageEscape(ctx, profile, candName, candShareGB, curFile) {
+			return true
+		}
+		return c.recordEpisodeEscape(ctx, s.ID, season, episode)
 	}
 
 	// Equal resolution. Two ways to win, and they're the same two the SEARCHER uses in
@@ -1659,9 +1673,17 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	if orig, ok := curFile.OriginalEncode(); ok {
 		curEncode = orig
 	}
-	if c.quality.IsBitrateUpgrade(ctx, profile,
+	// The bitrate margin reads no language, so under a profile that avoids one it never
+	// puts a release whose name says only avoided languages over a file that isn't
+	// all-avoided (#137) — the sweep's intoAvoid would never have grabbed it as an upgrade,
+	// and it would leave the language escape's Italian file English again. The quality
+	// verdict below still judges it, as the sweep does.
+	if !c.quality.IntoAvoidedLanguage(ctx, profile, candName, curFile) && c.quality.IsBitrateUpgrade(ctx, profile,
 		quality.Encode{SizeGB: candShareGB, Codec: cand.Codec},
 		curEncode, cur.RuntimeMin) {
+		if !spendEscape() {
+			return false
+		}
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", candShareGB)
@@ -1673,6 +1695,9 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
 		candName, candShareGB, curFile) {
+		if !spendEscape() {
+			return false
+		}
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
 			"current", cur.SourceRelease, "candidate", candName)

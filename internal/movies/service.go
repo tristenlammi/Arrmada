@@ -964,13 +964,19 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 	return s.MarkImportedToAllowing(ctx, id, versionID, path, sourceRelease, manual, nil)
 }
 
-// MarkImportedToAllowing is MarkImportedTo with lowerOK, asked only when an automatic
-// import has a known lower resolution than the track's file: true lets that one
-// replacement through the worse-quality gate. The automation passes the quality
-// profile's single downgrade it grabs — a file whose every audio language the profile
-// avoids, for a release in a language it wants (#137). nil refuses every lower
-// resolution, as MarkImportedTo always has.
-func (s *Service) MarkImportedToAllowing(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool, lowerOK func(Version) bool) error {
+// ReplaceJudge is asked about an automatic import that replaces a track's file (target),
+// with how the import's known resolution compares to the file's: -1 lower, 0 equal, +1
+// higher or unknown. For a lower one, true lets it through the worse-quality gate, which
+// otherwise refuses it; for any other, false refuses it (ErrWorseQuality).
+type ReplaceJudge func(target Version, cmp int) bool
+
+// MarkImportedToAllowing is MarkImportedTo with judge (see ReplaceJudge). The automation
+// passes the quality profile's language rules (#137): its single downgrade — a file whose
+// every audio language the profile avoids, for a release in a language it wants, once per
+// track — and, under a profile that avoids a language, no equal-resolution release that
+// says it carries only avoided languages over a file that doesn't. nil refuses every lower
+// resolution and takes every other, as MarkImportedTo always has.
+func (s *Service) MarkImportedToAllowing(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool, judge ReplaceJudge) error {
 	// The database rows (with the default track's cached media info) are all routing
 	// and the quality gate need; probing every track's file here cost one ffprobe per
 	// track on every import.
@@ -1014,14 +1020,30 @@ func (s *Service) MarkImportedToAllowing(ctx context.Context, id, versionID int6
 		if !manual {
 			newRes := importResolution(path, sourceRelease)
 			oldRes := existingResolution(target)
-			lower := newRes != parser.ResUnknown && oldRes != parser.ResUnknown &&
-				parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes)
-			if lower && lowerOK != nil && lowerOK(target) {
-				s.log.Info("replacing file with a lower-resolution import — it has an audio language the profile wants, the file only avoided ones",
-					"movie_id", id, "version", target.Label,
-					"existing", string(oldRes), "existing_path", target.FilePath,
-					"incoming", string(newRes), "incoming_path", path)
-				lower = false
+			known := newRes != parser.ResUnknown && oldRes != parser.ResUnknown
+			lower := known && parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes)
+			cmp := 1
+			switch {
+			case lower:
+				cmp = -1
+			case known && parser.ResolutionRank(newRes) == parser.ResolutionRank(oldRes):
+				cmp = 0
+			}
+			if judge != nil {
+				ok := judge(target, cmp)
+				if lower && ok {
+					s.log.Info("replacing file with a lower-resolution import — it has an audio language the profile wants, the file only avoided ones",
+						"movie_id", id, "version", target.Label,
+						"existing", string(oldRes), "existing_path", target.FilePath,
+						"incoming", string(newRes), "incoming_path", path)
+					lower = false
+				}
+				if !lower && !ok {
+					s.log.Warn("refusing to replace file — the import says it has only audio languages the profile avoids, and the file doesn't",
+						"movie_id", id, "version", target.Label,
+						"existing_path", target.FilePath, "incoming", sourceRelease, "incoming_path", path)
+					return fmt.Errorf("%w (only avoided audio languages)", ErrWorseQuality)
+				}
 			}
 			if lower {
 				s.log.Warn("refusing to replace file with lower-resolution import — keeping existing",
