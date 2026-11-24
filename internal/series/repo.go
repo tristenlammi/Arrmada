@@ -1345,14 +1345,23 @@ func (r *Repo) AdoptFoundEpisodeFile(ctx context.Context, seriesID int64, season
 // is unchanged. A new path ends the upgrade hold; the pre-conversion baseline always goes —
 // it described whatever was there before this import.
 func (r *Repo) SupersedeEpisodeFile(ctx context.Context, seriesID int64, season, episode int, path string, size int64, release string) error {
+	return r.SupersedeEpisodeFileEscaping(ctx, seriesID, season, episode, path, size, release, false)
+}
+
+// SupersedeEpisodeFileEscaping is SupersedeEpisodeFile that, when escaped, also records in
+// the same statement that the episode has taken its one language escape (#137,
+// lang_escaped): the record lands exactly when the file does, so a placement that fails
+// leaves the escape untaken and a retry of the same release passes the gate again.
+func (r *Repo) SupersedeEpisodeFileEscaping(ctx context.Context, seriesID int64, season, episode int, path string, size int64, release string, escaped bool) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE episodes SET
 		        source_release = CASE WHEN ? != '' THEN ? WHEN file_path = ? THEN source_release ELSE '' END,
 		        upgrade_hold = CASE WHEN file_path = ? THEN upgrade_hold ELSE 0 END,
 		        converted_from_release = '', converted_from_size = 0,
+		        lang_escaped = CASE WHEN ? THEN 1 ELSE lang_escaped END,
 		        has_file = 1, file_path = ?, size_bytes = ?
 		  WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-		release, release, path, path, path, size, seriesID, season, episode)
+		release, release, path, path, escaped, path, size, seriesID, season, episode)
 	return err
 }
 

@@ -564,7 +564,7 @@ func sweepJoinDir(base string, now time.Time, active map[string]bool) {
 // placeJoinedEpisode places an episode joined from its parts (joined) on its episode. It
 // reports the episodes that got the file, and whether it failed (the download is then
 // tried again).
-func (c *Coordinator) placeJoinedEpisode(ctx context.Context, s series.Series, imp *library.Importer, folder string, f resolvedVideo, joined string, wanted []series.EpisodeRef, sourceName string) (placed []series.EpisodeRef, failed bool) {
+func (c *Coordinator) placeJoinedEpisode(ctx context.Context, s series.Series, imp *library.Importer, folder string, f resolvedVideo, joined string, wanted []series.EpisodeRef, sourceName string, escapes []series.EpisodeRef) (placed []series.EpisodeRef, failed bool) {
 	names := make([]string, len(f.parts))
 	for i, p := range f.parts {
 		names[i] = filepath.Base(p.Path)
@@ -582,7 +582,10 @@ func (c *Coordinator) placeJoinedEpisode(ctx context.Context, s series.Series, i
 	}
 	c.log.Info("series import: an episode the release split into parts was joined into one file (nothing re-encoded; the parts stay in the download)",
 		"series", s.Title, "episode", label, "parts", strings.Join(names, ", "), "file", filepath.Base(ei.TargetPath))
-	if c.series.SupersedeEpisodeFile(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
+	// escapes: the episodes the gate took as their one language escape (#137), recorded
+	// with the file.
+	if c.series.SupersedeEpisodeFileEscaping(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes, sourceName,
+		refsContain(escapes, ref.Season, ref.Episode)) == nil {
 		placed = append(placed, ref)
 		c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("%s: joined from %d parts the release split it into (%s). Nothing was re-encoded.", label, len(names), strings.Join(names, ", ")))
 	}

@@ -42,6 +42,17 @@ type CurrentFile struct {
 	// language rules ("Original language", and what an untagged track or name is read as).
 	// "" leaves rules about the original language unapplied.
 	OrigLanguage string
+	// EscapeUsed reports that the title this file belongs to — a movie's track, an
+	// episode — has already taken its one language escape (#137, langEscape): a
+	// lower-resolution release in a wanted language over a file in avoided ones. Asked only
+	// when the escape would otherwise be taken, so nothing else ever pays for it. nil: none
+	// recorded (a file the caller keeps no such record for).
+	EscapeUsed func(context.Context) bool
+}
+
+// escapeUsed is EscapeUsed, false when the caller keeps no record.
+func (c CurrentFile) escapeUsed(ctx context.Context) bool {
+	return c.EscapeUsed != nil && c.EscapeUsed(ctx)
 }
 
 // upgradeBar is what a candidate has to beat to be an upgrade of the file.
@@ -65,6 +76,59 @@ type upgradeBar struct {
 	// origEv is the converted file's original, scored like ev; nil when never converted.
 	// Under v2 an upgrade must rank above it as well as above the file.
 	origEv *Evaluation
+	// langAvoided says every language the file carries is one the profile avoids, as the
+	// language rules read the file (its probed tracks over its name). Read with the
+	// profile's gates lifted when the profile no longer accepts the file, so both rankings
+	// read it alike.
+	langAvoided bool
+	// nameAvoided says the release the file is recorded under — and origLangAvoided the
+	// release it was converted from, when orig is set — says it carries only languages the
+	// profile avoids (nameLangAvoided). With langAvoided, the only files that may give up
+	// resolution for a language (langEscape): a probe alone never makes a file eligible.
+	nameAvoided, origLangAvoided bool
+	// langRules are the profile's Audio language rules for this title (nil for a profile
+	// without them), and titleLang the title's original language, for reading names.
+	langRules map[string]string
+	titleLang string
+}
+
+// nameLangAvoided reports a release name that says it carries only languages the rules
+// avoid, read as a release on offer is read (releaseLangs): the languages it names, and an
+// untagged name as the title's original language. A MULTi or Dual naming none (it may carry
+// others), a name stating a language the rules don't avoid, and an untagged name of a title
+// whose original language isn't known never are.
+func nameLangAvoided(rules map[string]string, name, titleLang string) bool {
+	if len(rules) == 0 || strings.TrimSpace(name) == "" {
+		return false
+	}
+	return judgeLangs(rules, releaseLangs(parser.Parse(name), titleLang), mustReading{}).avoided
+}
+
+// avoidsALanguage reports a profile with an Audio language set to Avoid — the only
+// profiles where a file can be all-avoided by language, so the only ones the language
+// escape (langEscape) and its guard (intoAvoid) can ever apply to. Book and music profiles
+// have no language rules (Evaluate).
+func (p Profile) avoidsALanguage() bool {
+	if p.NoUnwanted {
+		return false
+	}
+	for _, st := range p.Languages {
+		if st == PrefAvoid {
+			return true
+		}
+	}
+	return false
+}
+
+// namesAvoided is nameLangAvoided under this file's profile and title.
+func (b upgradeBar) namesAvoided(name string) bool {
+	return nameLangAvoided(b.langRules, name, b.titleLang)
+}
+
+// recordedAvoided reports a file whose recorded release — and, for a converted file, the
+// release it was converted from — says it carries only avoided languages.
+func (b upgradeBar) recordedAvoided() bool {
+	return b.nameAvoided && (b.orig == "" || b.origLangAvoided)
 }
 
 // gain is THE verdict on whether cand's quality is worth replacing the file for, and on
@@ -110,11 +174,77 @@ func (b upgradeBar) creditable(cand Evaluation) Evaluation {
 // upgrade, whatever else it has. Keeping the current file is always the preferable
 // alternative. Under v2 only the avoids that are a tier count (TargetAvoided) — a negative
 // custom format is a score there, as it is when ranking grabs.
+//
+// One more, for a file the language rules read as all-avoided (#137) whose recorded
+// release doesn't say so (a MULTi, or a name stating a wanted language, that probed as
+// English only): it is never replaced by a release whose name says it carries only avoided
+// languages. Such a replacement would be eligible for the language escape (langEscape)
+// where the file isn't, and the escape's lower-resolution pick could then be upgraded back
+// to a release like the file, round and round. Every other file is judged as before.
 func (b upgradeBar) intoAvoid(cand Evaluation) bool {
+	if b.langAvoided && !b.recordedAvoided() && b.namesAvoided(cand.Candidate.Name) {
+		return true
+	}
 	if b.mode == RankingV2 {
 		return cand.TargetAvoided && !b.ev.TargetAvoided
 	}
 	return cand.Avoided && !b.avoided
+}
+
+// langEscape reports a candidate that may replace the file even though it has a lower
+// resolution (#137): the file is in the avoided tier for its language — every language
+// the file carries is avoided, AND the release it is recorded under says so too (untagged,
+// read as an original language the profile avoids, or naming only avoided languages; for
+// a converted file, the release it came from as well) — and cand is a release the profile
+// would grab, alive, out of the avoided tier altogether, whose name states a language the
+// profile wants or requires that the file lacks (statesWanted). The gain is named like
+// escapeKey names a language escape, preferences, so a "resolution only" trigger never
+// takes it.
+//
+// Why both readings of the file: a release the escape places names a wanted language, so
+// its recorded name never reads as avoided again, whatever its probe finds — the escape
+// can't fire twice in a row. A MULTi that probes as English only isn't eligible either, so
+// a MULTi 2160p taken over the escape's 1080p stays (and intoAvoid keeps such a file from
+// being replaced by one whose name is avoided, which would be eligible). Names can still
+// drift — a pack's file dropping the MULTi its torrent had, a probe finding an avoid the
+// name hid — so the callers also make it one-shot: a track or episode takes it at most
+// once, ever (CurrentFile.EscapeUsed, recorded by the import gates).
+//
+// Only the upgrade sweep's and import gates' lower-resolution paths ask this; at the
+// same or a higher resolution the ordinary verdict (gain) decides, unchanged.
+func (b upgradeBar) langEscape(trigger string, cand Evaluation) bool {
+	if !b.langAvoided || !b.recordedAvoided() {
+		return false
+	}
+	if !cand.Eligible || !cand.Candidate.alive() || cand.Avoided || cand.TargetAvoided || cand.langAvoided {
+		return false
+	}
+	if !b.statesWanted(cand) {
+		return false
+	}
+	if b.mode == RankingV2 {
+		return v2TriggerAllows(trigger, KeyPreferences)
+	}
+	return triggerAllows(trigger, KeyPreferences)
+}
+
+// statesWanted reports a candidate whose name itself states a language the profile wants
+// or requires (ITA, iTALiAN…), one the file isn't merely unread for (creditable). For the
+// language escape only: a language the name leaves to be assumed — an untagged release
+// read as the title's original, the original a MULTi or Dual always carries — earns the
+// escape nothing, though ordinary ranking still credits it.
+func (b upgradeBar) statesWanted(cand Evaluation) bool {
+	for _, code := range cand.langPrefCodes {
+		if containsStr(b.ev.langUnknown, code) {
+			continue
+		}
+		for _, l := range cand.Candidate.Release.Languages {
+			if baseLang(l) == code {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // noWorse is the bitrate upgrade's other half: a heavier encode only replaces the file
@@ -184,8 +314,26 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		current: c.Release, curCodec: curCand.Release.Codec, ev: cur,
 		mode: NormalizeRanking(e.Ranking), fits: cur.Eligible,
 	}
-	if b.mode == RankingV2 && !cur.Eligible {
-		b.ev = e.describe(p, curCand)
+	// The language escape's readings (#137), only for a profile that avoids a language:
+	// without an Avoid nothing is ever all-avoided, so every other profile does exactly
+	// the work it always did.
+	escapable := p.avoidsALanguage()
+	if escapable {
+		b.titleLang = strings.TrimSpace(c.OrigLanguage)
+		b.langRules = langRules(p.Languages, b.titleLang)
+		b.nameAvoided = b.namesAvoided(c.Release)
+		b.langAvoided = cur.langAvoided
+	}
+	if !cur.Eligible && (escapable || b.mode == RankingV2) {
+		// Evaluate stops at the first gate a file fails (a missing Must language, a
+		// resolution no longer allowed), before the language avoid is read.
+		d := e.describe(p, curCand)
+		if escapable {
+			b.langAvoided = d.langAvoided
+		}
+		if b.mode == RankingV2 {
+			b.ev = d
+		}
 	}
 	if orig := strings.TrimSpace(c.OrigRelease); orig != "" && !strings.EqualFold(orig, strings.TrimSpace(c.Release)) {
 		size := c.OrigSizeGB
@@ -198,6 +346,11 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		o := e.Evaluate(p, oc)
 		if o.Total > b.total {
 			b.total = o.Total
+		}
+		// Read by its name, like the file's own recorded release (nameAvoided): a name
+		// read, never another Evaluate.
+		if escapable {
+			b.origLangAvoided = b.namesAvoided(orig)
 		}
 		if b.mode == RankingV2 {
 			if !o.Eligible {

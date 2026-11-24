@@ -37,6 +37,9 @@ type placementRow struct {
 	// Hold (upgrade_hold) is the owner's "keep this file": a kept file stays kept
 	// wherever it moves.
 	Hold bool
+	// LangEscaped (lang_escaped) is the one language escape the episode has taken (#137):
+	// it follows the file, as Hold does, so a renumber never hands the episode a second.
+	LangEscaped bool
 	// The pre-conversion baseline follows its file, or a renumbered converted episode
 	// would look like a small file worth replacing.
 	ConvRelease string
@@ -58,7 +61,7 @@ type querier interface {
 func snapshotRows(ctx context.Context, q querier, seriesID int64) ([]placementRow, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored,
-		        upgrade_hold, converted_from_release, converted_from_size
+		        upgrade_hold, converted_from_release, converted_from_size, lang_escaped
 		   FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number`, seriesID)
 	if err != nil {
 		return nil, err
@@ -67,12 +70,13 @@ func snapshotRows(ctx context.Context, q querier, seriesID int64) ([]placementRo
 	var out []placementRow
 	for rows.Next() {
 		var p placementRow
-		var hf, mon, hold int
+		var hf, mon, hold, escaped int
 		if err := rows.Scan(&p.Absolute, &p.Season, &p.Episode, &hf, &p.Path, &p.Size, &p.Release, &mon,
-			&hold, &p.ConvRelease, &p.ConvSize); err != nil {
+			&hold, &p.ConvRelease, &p.ConvSize, &escaped); err != nil {
 			return nil, err
 		}
 		p.HasFile, p.Monitored, p.Hold = hf != 0 && p.Path != "", mon != 0, hold != 0
+		p.LangEscaped = escaped != 0
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -323,9 +327,9 @@ func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons 
 	for _, p := range placed {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?, upgrade_hold = ?,
-			        converted_from_release = ?, converted_from_size = ?
+			        converted_from_release = ?, converted_from_size = ?, lang_escaped = ?
 			   WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			p.row.Path, p.row.Size, p.row.Release, b2i(p.row.Hold), p.row.ConvRelease, p.row.ConvSize,
+			p.row.Path, p.row.Size, p.row.Release, b2i(p.row.Hold), p.row.ConvRelease, p.row.ConvSize, b2i(p.row.LangEscaped),
 			seriesID, p.season, p.episode); err != nil {
 			return nil, err
 		}

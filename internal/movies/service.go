@@ -961,6 +961,34 @@ var ErrVersionNotFound = errors.New("that version isn't one of this movie's")
 // and edition as MarkImported always has, and so does a track that has been removed since.
 // manual skips the worse-quality gate (the user picked this file).
 func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool) error {
+	return s.MarkImportedToAllowing(ctx, id, versionID, path, sourceRelease, manual, nil)
+}
+
+// How an automatic import's resolution compares to the file it would replace, for a
+// ReplaceJudge.
+const (
+	ImportLower   = -1
+	ImportEqual   = 0
+	ImportHigher  = 1
+	ImportUnknown = 2 // one of the two resolutions isn't known
+)
+
+// ReplaceJudge is asked about an automatic import that replaces a track's file (target),
+// with how the import's resolution compares to the file's (ImportLower…ImportUnknown).
+// ok matters for a lower one only: true lets it through the worse-quality gate, which
+// otherwise refuses it; any other is taken, as MarkImportedTo always has. escape says the
+// placement is the track's one language escape (#137): it is recorded (lang_escaped) in
+// the transaction that records the new file, and the old file is recycled only after that
+// commits — a placement that fails leaves the escape untaken and the track on its old
+// file, so a retry of the same release passes again.
+type ReplaceJudge func(target Version, cmp int) (ok, escape bool)
+
+// MarkImportedToAllowing is MarkImportedTo with judge (see ReplaceJudge). The automation
+// passes the quality profile's language rules (#137): its single downgrade — a file whose
+// every audio language the profile avoids, for a release in a language it wants, once per
+// track. nil refuses every lower resolution and takes every other, as MarkImportedTo
+// always has.
+func (s *Service) MarkImportedToAllowing(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool, judge ReplaceJudge) error {
 	// The database rows (with the default track's cached media info) are all routing
 	// and the quality gate need; probing every track's file here cost one ffprobe per
 	// track on every import.
@@ -993,6 +1021,10 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 	// Upgrade is scoped to the target version: replacing the 1080p track's file
 	// never touches the 4K track's file.
 	upgrade := false
+	// escape: this placement is the track's one language escape (ReplaceJudge), and
+	// removeOld recycles the replaced file — after the record commits when it is.
+	escape := false
+	var removeOld func()
 	// The recorded path can be the new file spelt another way (another case on a
 	// case-insensitive disk, a symlinked folder): that's no upgrade, and removing the "old"
 	// file would remove the new one.
@@ -1004,8 +1036,29 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 		if !manual {
 			newRes := importResolution(path, sourceRelease)
 			oldRes := existingResolution(target)
-			if newRes != parser.ResUnknown && oldRes != parser.ResUnknown &&
-				parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes) {
+			known := newRes != parser.ResUnknown && oldRes != parser.ResUnknown
+			lower := known && parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes)
+			cmp := ImportUnknown
+			switch {
+			case lower:
+				cmp = ImportLower
+			case known && parser.ResolutionRank(newRes) == parser.ResolutionRank(oldRes):
+				cmp = ImportEqual
+			case known:
+				cmp = ImportHigher
+			}
+			if judge != nil {
+				ok, esc := judge(target, cmp)
+				if lower && ok {
+					s.log.Info("replacing file with a lower-resolution import — it has an audio language the profile wants, the file only avoided ones",
+						"movie_id", id, "version", target.Label,
+						"existing", string(oldRes), "existing_path", target.FilePath,
+						"incoming", string(newRes), "incoming_path", path)
+					lower = false
+				}
+				escape = esc && !lower
+			}
+			if lower {
 				s.log.Warn("refusing to replace file with lower-resolution import — keeping existing",
 					"movie_id", id, "version", target.Label,
 					"existing", string(oldRes), "existing_path", target.FilePath,
@@ -1015,14 +1068,20 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 		}
 		// The new file and the other versions' files keep their subtitles.
 		keep := append(otherFiles(versions, target.FilePath), path)
-		if err := s.removeFile(target.FilePath, keep); err != nil {
-			// The new file is already in place, so failing the import would only strand
-			// it. Keep the old file where it is instead of deleting it for good, and say so.
-			s.log.Warn("upgrade: the recycle bin refused the old file — kept it on disk",
-				"movie_id", id, "old", target.FilePath, "err", err)
-			_ = s.repo.AddEvent(ctx, id, "file.kept", "Old file kept: the recycle bin refused it ("+err.Error()+")")
-		} else {
-			s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
+		removeOld = func() {
+			if err := s.removeFile(target.FilePath, keep); err != nil {
+				// The new file is already in place, so failing the import would only strand
+				// it. Keep the old file where it is instead of deleting it for good, and say so.
+				s.log.Warn("upgrade: the recycle bin refused the old file — kept it on disk",
+					"movie_id", id, "old", target.FilePath, "err", err)
+				_ = s.repo.AddEvent(ctx, id, "file.kept", "Old file kept: the recycle bin refused it ("+err.Error()+")")
+			} else {
+				s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
+			}
+		}
+		if !escape {
+			removeOld() // as it always was: before the record
+			removeOld = nil
 		}
 		upgrade = true
 	}
@@ -1075,6 +1134,12 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 		if err := r.ClearConvertedFrom(ctx, id, target.ID); err != nil {
 			return err
 		}
+		// The track's one language escape (#137) is spent with the file that took it.
+		if escape {
+			if err := r.setLangEscaped(ctx, id, target.ID); err != nil {
+				return err
+			}
+		}
 		if !again {
 			_ = r.AddEvent(ctx, id, event, detail)
 			// A new file ends this track's upgrade hold: the hold kept the file it had, and
@@ -1088,6 +1153,9 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 	})
 	if err != nil {
 		return err
+	}
+	if removeOld != nil {
+		removeOld() // the escape's record committed: the old file can go
 	}
 
 	m, getErr := s.repo.Get(ctx, id)

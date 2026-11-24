@@ -2837,7 +2837,8 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 		}
 		return library.Unmatched, fmt.Errorf("no movie in the library matches %q", titleYear(rec.Title, rec.Year))
 	}
-	if err := c.movies.MarkImportedTo(ctx, m.ID, versionID, rec.TargetPath, rec.ReleaseName, false); err != nil {
+	if err := c.movies.MarkImportedToAllowing(ctx, m.ID, versionID, rec.TargetPath, rec.ReleaseName, false,
+		c.movieReplaceJudge(ctx, m, rec)); err != nil {
 		if errors.Is(err, movies.ErrWorseQuality) || errors.Is(err, movies.ErrPathOwnedByOtherTrack) {
 			return library.Refused, err
 		}
@@ -2852,6 +2853,40 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 	c.keepReplacedBaseline(ctx, m.ID, rec.Hash) // a "Find a smaller release" grab (smaller.go)
 	c.log.Info("automation: import attached to movie", "movie", m.Title)
 	return library.Attached, nil
+}
+
+// movieReplaceJudge is the movie import gate's language rules (#137), for
+// MarkImportedToAllowing. It judges the track's file exactly as the sweep does
+// (currentMovieFile), and the download by the name the track records for it
+// (rec.ReleaseName):
+//
+//   - lower resolution: refused, but for the one downgrade the upgrade sweep grabs
+//     (quality.IsLanguageUpgrade) — the track's file carries only audio languages its
+//     profile avoids, and the download's name states one it wants — at most once per
+//     track;
+//   - equal, higher or unknown: taken, as MarkImportedTo always has; but when the quality
+//     rules read it as the escape all the same (quality.IsLanguageEscape: a name with no
+//     resolution, a converted file whose original had the higher one), it spends the
+//     track's one escape like the lower branch.
+//
+// An escape is recorded by MarkImportedToAllowing in the transaction that records the new
+// file, so it is spent exactly when it is taken.
+func (c *Coordinator) movieReplaceJudge(ctx context.Context, m movies.Movie, rec library.ImportRecord) movies.ReplaceJudge {
+	return func(v movies.Version, cmp int) (ok, escape bool) {
+		lower := cmp == movies.ImportLower
+		if v.UpgradeHold || c.quality == nil {
+			// Kept as it is: nothing lower replaces it on the importer's own initiative.
+			return !lower, false
+		}
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		cur := c.currentMovieFile(ctx, m, v)
+		size := gbOf(rec.SizeBytes)
+		if lower {
+			ok := c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, size, cur)
+			return ok, ok
+		}
+		return true, c.quality.IsLanguageEscape(ctx, profile, rec.ReleaseName, size, cur)
+	}
 }
 
 // untrackedMovie reports whether a torrent no grab knows (see untrackedQueue) is for the
