@@ -79,7 +79,16 @@ func (b upgradeBar) v2Gain(trigger string, cand Evaluation) (RankKey, bool) {
 			return "", false
 		}
 	}
-	c, k := compareQualityKeys(&cand, &cur)
+	// Language priority check: if the profile has language preferences (want/avoid),
+// these should override quality key comparisons during upgrades.
+	// This ensures that when Italian = want and English = avoid:
+	// - English → Italian upgrade is always preferred (even with lower resolution)
+	// - Italian → English downgrade is never allowed (regardless of quality)
+	if !languagePriorityCheck(&cand, &cur, b.profileLangs) && c > 0 {
+		// The file ranks higher on what the release is. Leaving an avoided file for one that
+		// gives up a resolution, a preference or the source is no upgrade either.
+		return "", false
+	}
 	if c > 0 {
 		// The file ranks higher on what the release is. Leaving an avoided file for one that
 		// gives up a resolution, a preference or the source is no upgrade either.
@@ -100,6 +109,51 @@ func (b upgradeBar) v2Gain(trigger string, cand Evaluation) (RankKey, bool) {
 		}
 	}
 	return "", false
+}
+
+			}
+		}
+		if candHasAvoided {
+			break
+		}
+	}
+
+	// Check if current file has an avoided language that candidate lacks
+	curHasAvoided := false
+	for _,al := range avoidedLangs {
+		for _,cl := range curLangs {
+			if cl == al {
+				curHasAvoided = true
+				break
+			}
+		}
+		if curHasAvoided {
+			break
+		}
+	}
+
+	// If candidate has wanted language and current file doesn't (or has avoided),
+	// language priority overrides quality
+	if candHasWanted && !curHasWanted {
+		return true
+	}
+	// If current file has wanted language and candidate doesn't (or has avoided),
+	// language priority overrides quality (favor the file with wanted language)
+	if curHasWanted && !candHasWanted {
+		return true
+	}
+	// If candidate has avoided language and current file doesn't (or has wanted),
+	// this would be a language downgrade - favor the file without avoided
+	if candHasAvoided && !curHasAvoided {
+		return true
+	}
+	// If current file has avoided language and candidate doesn't (or has wanted),
+	// this would be a language upgrade - favor the file without avoided
+	if curHasAvoided && !candHasAvoided {
+		return true
+	}
+
+	return false
 }
 
 // escapeKey is the gain in leaving the avoided tier for a candidate that carries none of
@@ -157,3 +211,113 @@ func (e *Engine) describe(p Profile, c Candidate) Evaluation {
 	ev.fillRankKeys(p)
 	return ev
 }
+
+// languagePriorityCheck determines whether the profile's language preferences should
+// override the quality key comparison during an upgrade. This handles the core use case:
+// - Italian = want, English = avoid: English → Italian upgrade always wins
+// - Italian = want, English = avoid: Italian → English downgrade is blocked
+// - Even if Italian is 1080p and English is 2160p, Italian wins when it's the wanted language
+func languagePriorityCheck(cand, *cur *Evaluation, profileLangs map[string]string) bool {
+	if len(profileLangs) == 0 {
+		return false
+	}
+	// Determine which languages are wanted vs avoided per the profile
+	var wantedLangs, avoidedLangs []string
+	for code, state := range profileLangs {
+		switch state {
+		case "prefer", "want":
+			wantedLangs = append(wantedLangs, code)
+		case "avoid":
+			avoidedLangs = append(avoidedLangs, code)
+		}
+	}
+	if len(wantedLangs) == 0 && len(avoidedLangs) == 0 {
+		return false
+	}
+
+	// Get the audio languages from each evaluation
+	candLangs := cand.AudioLangs
+	curLangs := cur.AudioLangs
+
+	// Check if candidate has a wanted language
+	candHasWanted := false
+	for _,wl := range wantedLangs {
+		for _,cl := range candLangs {
+			if cl == wl {
+				candHasWanted = true
+				break
+			}
+		}
+		if candHasWanted {
+			break
+		}
+	}
+
+	// Check if current file has a wanted language
+	curHasWanted := false
+	for _,wl := range wantedLangs {
+		for _,cl := range curLangs {
+			if cl == wl {
+				curHasWanted = true
+				break
+			}
+		}
+		if curHasWanted {
+			break
+		}
+	}
+
+	// Check if candidate has an avoided language
+	candHasAvoided := false
+	for _,al := range avoidedLangs {
+		for _,cl := range candLangs {
+			if cl == al {
+				candHasAvoided = true
+				break
+			}
+		}
+		if candHasAvoided {
+			break
+		}
+	}
+
+	// Check if current file has an avoided language
+	curHasAvoided := false
+	for _,al := range avoidedLangs {
+		for _,cl := range curLangs {
+			if cl == al {
+				curHasAvoided = true
+				break
+			}
+		}
+		if curHasAvoided {
+			break
+		}
+	}
+
+	// Case 1: Candidate has wanted language and current file doesn't (or has avoided)
+	// → candidate wins (upgrade from avoided to wanted language)
+	if candHasWanted && !curHasWanted {
+		return true
+	}
+	// Case 2: Current file has wanted language and candidate doesn't (or has avoided)
+	// → current file wins (no downgrade in language priority)
+	if curHasWanted && !candHasWanted {
+		return false
+	}
+	// Case 3: Candidate has avoided language and current file doesn't (or has wanted)
+	// → this would be a language downgrade, block the upgrade
+	if candHasAvoided && !curHasAvoided {
+		return false
+	}
+	// Case 4: Current file has avoided language and candidate doesn't (or has wanted)
+	// → this would be a language upgrade, allow it
+	if curHasAvoided && !candHasAvoided {
+		return true
+	}
+
+	// If we get here, both have the same language status (both wanted or both avoided)
+	// or neither condition applied - fall through to quality key comparison
+	return false
+}
+

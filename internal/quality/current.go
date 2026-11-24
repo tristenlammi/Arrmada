@@ -65,6 +65,9 @@ type upgradeBar struct {
 	// origEv is the converted file's original, scored like ev; nil when never converted.
 	// Under v2 an upgrade must rank above it as well as above the file.
 	origEv *Evaluation
+	// profileLangs is the profile's language preferences (want/avoid map) used for
+	// language priority overrides during upgrades. Empty map means no language preferences.
+	profileLangs map[string]string
 }
 
 // gain is THE verdict on whether cand's quality is worth replacing the file for, and on
@@ -179,10 +182,11 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 	p.onDisk = true // the file and its original are judged as files, not releases on offer
 	cur := e.Evaluate(p, curCand)
 	b := upgradeBar{
-		total: cur.Total, avoided: cur.Avoided, resRank: resRank[curCand.Release.Resolution],
-		encode:  Encode{SizeGB: c.SizeGB, Codec: curCand.Release.Codec},
-		current: c.Release, curCodec: curCand.Release.Codec, ev: cur,
-		mode: NormalizeRanking(e.Ranking), fits: cur.Eligible,
+		total:     cur.Total, avoided: cur.Avoided, resRank: resRank[curCand.Release.Resolution],
+		encode:    Encode{SizeGB: c.SizeGB, Codec: curCand.Release.Codec},
+		current:   c.Release, curCodec: curCand.Release.Codec, ev: cur,
+		mode:      NormalizeRanking(e.Ranking), fits: cur.Eligible,
+		profileLangs: p.Languages,
 	}
 	if b.mode == RankingV2 && !cur.Eligible {
 		b.ev = e.describe(p, curCand)
