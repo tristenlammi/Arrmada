@@ -82,10 +82,11 @@ func TestLanguageUpgradeDirection(t *testing.T) {
 					t.Errorf("%s: equal-resolution import gate = %v, want %v", tc.name, got, tc.want)
 				}
 			default:
-				// A higher resolution passes the import gates on its own; the language
-				// escape must never be what lets one in.
-				if s.IsLanguageUpgrade(ctx, ref, tc.cand, tc.gb, tc.cur) && !tc.want {
-					t.Errorf("%s: the language escape accepted a release the sweep refuses", tc.name)
+				// A higher resolution: the ordinary verdict decides, and it must agree with
+				// the sweep — the Italian releases are upgrades, the English ones never are
+				// (an English 2160p is avoided where the Italian file isn't: intoAvoid).
+				if got := s.IsQualityUpgrade(ctx, ref, tc.cand, tc.gb, tc.cur); got != tc.want {
+					t.Errorf("%s: higher-resolution quality verdict = %v, want %v", tc.name, got, tc.want)
 				}
 			}
 		}
@@ -114,26 +115,155 @@ func TestLanguageEscapePicksTheBestRelease(t *testing.T) {
 }
 
 // After the swap the Italian 1080p file is never replaced back by an English 2160p one,
-// and an Italian 2160p release is an ordinary upgrade of it.
+// and an Italian 2160p release is an ordinary upgrade of it. A MULTi 2160p is an ordinary
+// resolution upgrade of it too (as before #137) — and once that MULTi is placed and its
+// probe finds English alone, the escape doesn't take another Italian 1080p: the chain
+// ends at the 2160p, as it always did. Its name doesn't say it carries only avoided
+// languages, and nothing whose name does replaces it either.
 func TestLanguageEscapeDoesNotLoop(t *testing.T) {
+	const (
+		escMULTi2160    = "Film.2021.MULTi.2160p.WEB-DL.x265-MIX"
+		escUntagged2160 = "Film.2021.2160p.BluRay.x265-GRP"
+		escITA1080Other = "Film.2021.iTALiAN.1080p.BluRay.x264-ROMA"
+	)
 	forEachRanking(t, func(t *testing.T, mode string) {
 		s, ctx := testService(t)
 		setRanking(t, s, mode)
 		ref := escapeProfile(t, s, itaWantEngAvoid, TriggerAny)
-		swapped := CurrentFile{Release: escITA1080, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en"}
-		for _, name := range []string{escENG2160, escENGRemux} {
-			if pick, _, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(name, 40)}); ok {
-				t.Errorf("the Italian file would be replaced back by %s", pick.Name)
+		// The escape's file, read by its name and, as a probe may well find a mislabelled
+		// track, by an English-only probe too.
+		for _, swapped := range []CurrentFile{
+			{Release: escITA1080, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en"},
+			{Release: escITA1080, SizeGB: 8, RuntimeMin: 120, OrigLanguage: "en",
+				Facts: &FileFacts{Resolution: "1080p", Codec: "h264", HDR: "SDR", AudioLangs: []string{"eng"}}},
+		} {
+			probed := swapped.Facts != nil
+			for _, name := range []string{escENG2160, escENGRemux, escUntagged2160} {
+				if pick, _, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(name, 40)}); ok {
+					t.Errorf("probed=%v: the Italian file would be replaced back by %s", probed, pick.Name)
+				}
+				if s.IsLanguageUpgrade(ctx, ref, name, 40, swapped) || s.IsQualityUpgrade(ctx, ref, name, 40, swapped) {
+					t.Errorf("probed=%v: an import gate takes %s over the Italian file", probed, name)
+				}
 			}
-			if s.IsLanguageUpgrade(ctx, ref, name, 40, swapped) || s.IsQualityUpgrade(ctx, ref, name, 40, swapped) {
-				t.Errorf("an import gate takes %s over the Italian file", name)
+			if s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, swapped) {
+				t.Errorf("probed=%v: the escape took the file's own release", probed)
+			}
+			// Nothing escapes from it: not a lower resolution, not another Italian 1080p.
+			const ita720 = "Film.2021.iTALiAN.720p.WEB-DL.x264-SPQR"
+			if pick, key, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(ita720, 4)}); ok {
+				t.Errorf("probed=%v: escaped again to %s (%s)", probed, pick.Name, key)
+			}
+			for _, name := range []string{escITA1080Other, ita720} {
+				if s.IsLanguageUpgrade(ctx, ref, name, 6, swapped) {
+					t.Errorf("probed=%v: the lower-resolution gate takes %s", probed, name)
+				}
+			}
+			if _, key, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(escITA2160, 20)}); !ok || key != KeyResolution {
+				t.Errorf("probed=%v: Italian 2160p over the Italian 1080p file: %v %s, want a resolution upgrade", probed, ok, key)
+			}
+			// A MULTi 2160p isn't avoided (it may carry Italian) and wins on resolution.
+			if pick, key, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(escMULTi2160, 20)}); !ok || pick.Name != escMULTi2160 || key != KeyResolution {
+				t.Errorf("probed=%v: MULTi 2160p over the Italian 1080p file: %v %s %s, want a resolution upgrade", probed, ok, pick.Name, key)
 			}
 		}
-		if s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, swapped) {
-			t.Error("the escape took the file's own release")
+
+		// The MULTi 2160p is placed, and its probe finds an English track alone: the file
+		// is all-avoided again, but its name isn't.
+		multi := CurrentFile{Release: escMULTi2160, SizeGB: 20, RuntimeMin: 120, OrigLanguage: "en",
+			Facts: &FileFacts{Resolution: "2160p", Codec: "hevc", HDR: "SDR", AudioLangs: []string{"eng"}}}
+		italians := []Candidate{enCand(escITA1080, 8), enCand(escITA1080Other, 8), enCand("Film.2021.iTALiAN.720p.WEB-DL.x264-SPQR", 4)}
+		if pick, key, ok := s.UpgradePick(ctx, ref, multi, italians); ok {
+			t.Errorf("the MULTi 2160p that probed English was replaced by %s (%s)", pick.Name, key)
 		}
-		if _, key, ok := s.UpgradePick(ctx, ref, swapped, []Candidate{enCand(escITA2160, 20)}); !ok || key != KeyResolution {
-			t.Errorf("Italian 2160p over the Italian 1080p file: %v %s, want a resolution upgrade", ok, key)
+		for _, c := range italians {
+			// The import gates ask this of every lower resolution (wantsEpisodeFile,
+			// MarkImportedToAllowing).
+			if s.IsLanguageUpgrade(ctx, ref, c.Name, c.SizeGB, multi) {
+				t.Errorf("the lower-resolution import gate takes %s over the MULTi 2160p", c.Name)
+			}
+		}
+		// Nor does a release whose name says only avoided languages replace it: that one
+		// would be eligible for the escape where the MULTi isn't.
+		for _, name := range []string{escENGRemux, escUntagged2160, "Film.2021.ENG.2160p.BluRay.REMUX.HEVC-BRIT"} {
+			if pick, key, ok := s.UpgradePick(ctx, ref, multi, []Candidate{enCand(name, 60)}); ok {
+				t.Errorf("the MULTi 2160p that probed English was replaced by %s (%s)", pick.Name, key)
+			}
+			if s.IsQualityUpgrade(ctx, ref, name, 60, multi) {
+				t.Errorf("the import gate takes %s over the MULTi 2160p", name)
+			}
+		}
+	})
+}
+
+// The escape credits only a language the candidate's name states (#137). With the
+// original language on Want and English on Avoid, an untagged release of an Italian film
+// reads as Italian by assumption — ordinary ranking still credits that — but it never
+// lets an English-only file give up resolution. One whose name says iTALiAN does.
+func TestLanguageEscapeNeedsAStatedLanguage(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := escapeProfile(t, s, map[string]string{LangOriginal: PrefWant, "en": PrefAvoid}, TriggerAny)
+		cur := CurrentFile{Release: "Film.2021.ENG.2160p.WEB-DL.x265-OLD", SizeGB: 20, RuntimeMin: 120, OrigLanguage: "it",
+			Facts: &FileFacts{Resolution: "2160p", Codec: "hevc", HDR: "SDR", AudioLangs: []string{"eng"}}}
+		itCand := func(name string) Candidate {
+			return NewCandidate(name, 8, 50).WithLanguage("it").WithRuntime(120)
+		}
+		const untagged = "Film.2021.1080p.BluRay.x264-GRP"
+		if pick, key, ok := s.UpgradePick(ctx, ref, cur, []Candidate{itCand(untagged)}); ok {
+			t.Errorf("assumed Italian: sweep took %s (%s)", pick.Name, key)
+		}
+		if s.IsLanguageUpgrade(ctx, ref, untagged, 8, cur) {
+			t.Error("assumed Italian: the lower-resolution import gate took it")
+		}
+		// A MULTi carries the original too, but doesn't say so either.
+		if s.IsLanguageUpgrade(ctx, ref, "Film.2021.MULTi.1080p.BluRay.x264-GRP", 8, cur) {
+			t.Error("MULTi: the lower-resolution import gate took it")
+		}
+		// The positive control: the name says Italian.
+		const stated = "Film.2021.iTALiAN.1080p.BluRay.x264-GRP"
+		if pick, key, ok := s.UpgradePick(ctx, ref, cur, []Candidate{itCand(untagged), itCand(stated)}); !ok || pick.Name != stated || key != KeyPreferences {
+			t.Errorf("stated Italian: %v %s %s, want %s on preferences", ok, pick.Name, key, stated)
+		}
+		if !s.IsLanguageUpgrade(ctx, ref, stated, 8, cur) {
+			t.Error("stated Italian: the lower-resolution import gate refused it")
+		}
+		if !s.IsLanguageUpgrade(ctx, ref, "Film.2021.ITA.1080p.BluRay.x264-GRP", 8, cur) {
+			t.Error("stated ITA: the lower-resolution import gate refused it")
+		}
+	})
+}
+
+// A probe alone never makes a file eligible: a MULTi file that probes as English only, and
+// one whose name states Italian, are left at their resolution; an untagged file of an
+// English film, or one naming only English, may escape.
+func TestLanguageEscapeReadsTheRecordedRelease(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		ref := escapeProfile(t, s, itaWantEngAvoid, TriggerAny)
+		engProbe := &FileFacts{Resolution: "2160p", Codec: "hevc", HDR: "SDR", AudioLangs: []string{"eng"}}
+		for _, tc := range []struct {
+			release string
+			want    bool
+		}{
+			{"Film.2021.2160p.WEB-DL.x265-OLD", true},
+			{"Film.2021.ENG.2160p.WEB-DL.x265-OLD", true},
+			{"Film.2021.MULTi.2160p.WEB-DL.x265-OLD", false},
+			{"Film.2021.DUAL.2160p.WEB-DL.x265-OLD", false},
+			{"Film.2021.iTALiAN.2160p.WEB-DL.x265-OLD", false},
+		} {
+			cur := CurrentFile{Release: tc.release, SizeGB: 20, RuntimeMin: 120, OrigLanguage: "en", Facts: engProbe}
+			_, _, ok := s.UpgradePick(ctx, ref, cur, []Candidate{enCand(escITA1080, 8)})
+			if ok != tc.want || s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, cur) != tc.want {
+				t.Errorf("%s probed English: escape = %v, want %v", tc.release, ok, tc.want)
+			}
+		}
+		// The title's original language unknown: an untagged name can't be told, so no escape.
+		cur := CurrentFile{Release: "Film.2021.2160p.WEB-DL.x265-OLD", SizeGB: 20, RuntimeMin: 120, Facts: engProbe}
+		if s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, cur) {
+			t.Error("untagged name, original unknown: the escape took it")
 		}
 	})
 }

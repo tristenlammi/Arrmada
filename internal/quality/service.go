@@ -355,8 +355,9 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 
 // IsLanguageUpgrade reports whether an arriving release with a LOWER resolution than the
 // file may still replace it: the one downgrade the upgrade sweep grabs (UpgradePick,
-// upgradeBar.langEscape, #137) — a file whose every audio language the profile avoids,
-// for a release that carries a language the profile wants or requires. The import gates
+// upgradeBar.langEscape, #137) — a file whose every audio language the profile avoids, by
+// its tracks and by the release it is recorded under, for a release whose name states a
+// language the profile wants or requires. The import gates
 // ask it where they would otherwise refuse a lower resolution, so a release the sweep
 // grabbed for its language is placed when it arrives. Nothing else lower is ever taken.
 //
