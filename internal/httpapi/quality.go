@@ -121,7 +121,7 @@ func (a *api) handleGetQualityProfile(w http.ResponseWriter, r *http.Request) {
 const stallMinutesError = "stall timeout must be -1 (off), 0 (use the default) or up to 10080 minutes (a week)"
 
 // upgradeTriggerError explains a rejected "Replace for" choice.
-const upgradeTriggerError = "upgrade_trigger must be any, source, format or resolution"
+const upgradeTriggerError = "upgrade_trigger must be any, source, format, resolution or language"
 
 func (a *api) handleCreateQualityProfile(w http.ResponseWriter, r *http.Request) {
 	var sp quality.StoredProfile

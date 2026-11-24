@@ -619,7 +619,7 @@ export interface Decision {
   shadow?: { mode?: "v1" | "v2"; winner: string; decided_by: RankKey; differs: boolean; over_key?: RankKey; v1_key?: RankKey };
 }
 
-export type UpgradeTrigger = "any" | "source" | "format" | "resolution";
+export type UpgradeTrigger = "any" | "source" | "format" | "resolution" | "language";
 
 // ProfileImpact mirrors quality.Impact: the files an edit would make eligible for
 // replacement — no longer meeting the profile (replace), or searched again (search).
