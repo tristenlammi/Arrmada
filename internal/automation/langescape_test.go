@@ -3,6 +3,8 @@ package automation
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +13,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // Issue #137 end to end: a file whose every audio language the profile avoids may be
@@ -561,4 +564,40 @@ func TestMovieEqualResolutionTakenAndOneShotHolds(t *testing.T) {
 			t.Error("an escape was recorded under a profile that avoids nothing")
 		}
 	})
+}
+
+// The escape through a real series import (importSeriesInto): the Italian 1080p arrives
+// in a download folder and is placed over the English-only 2160p episode, and the episode
+// row records the escape with the file — then a second escape is refused.
+func TestSeriesLanguageEscapeRecordedByTheImport(t *testing.T) {
+	u, _ := langEscapeShowWith(t, quality.StoredProfile{AllowedResolutions: []string{"1080p", "2160p"},
+		Ideal: &quality.IdealFile{Language: italianOverEnglish}}, "Show.S04E06.2160p.WEB-DL.x265-OLD.mkv")
+	u.h.c.imp = library.NewImporter(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	const rel = "Show.S04E06.iTALiAN.1080p.WEB-DL.x264-SPQR"
+	dl := filepath.Join(t.TempDir(), rel)
+	sparseFile(t, filepath.Join(dl, rel+".mkv"), 2<<30)
+	s, err := u.h.c.series.Get(u.h.ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed, _, _, failed, conflict, scanErr := u.h.c.importSeriesInto(u.h.ctx, s, dl, forceRule{})
+	if scanErr != nil || conflict != "" || failed != 0 {
+		t.Fatalf("import: failed=%d conflict=%q err=%v", failed, conflict, scanErr)
+	}
+	if want := []series.EpisodeRef{{Season: 4, Episode: 6}}; !reflect.DeepEqual(placed, want) {
+		t.Fatalf("placed %v, want %v", placed, want)
+	}
+	var source string
+	if err := u.h.c.db.QueryRow(`SELECT source_release FROM episodes WHERE series_id = ? AND season_number = 4 AND episode_number = 6`, u.id).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != rel+".mkv" {
+		t.Fatalf("the episode is recorded under %q, want the Italian release", source)
+	}
+	if !episodeEscaped(t, u) {
+		t.Fatal("the import placed the escape without recording it on the episode")
+	}
+	if importGateTakes(t, u, "Show.S04E06.iTALiAN.720p.WEB-DL.x264-SPQR.mkv") {
+		t.Error("a second escape after the import")
+	}
 }

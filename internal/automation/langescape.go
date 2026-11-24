@@ -22,11 +22,14 @@ import (
 // track or episode is still on its old file, and a retry of the same release passes
 // again), and one that succeeds can't be left unrecorded. Once recorded, the sweep and
 // both gates refuse the escape for that track or episode; the flag stays when the file is
-// later replaced or removed, follows an episode's file through a renumber, and goes only
-// with the row itself. A failed read of it counts as spent.
+// later replaced or removed, and goes with the row itself. A series renumber carries it
+// with the episode's file, like the upgrade hold: an episode that has no file when the
+// show is renumbered loses it. A failed read of it counts as spent.
 //
-// Placements the user approved (an interactive pick or upload, an approved review) skip
-// the gates and record nothing: they're the user's own choice.
+// Series placements the user approved (an interactive pick or upload, an approved
+// review) skip the gate and record nothing: they're the user's own choice. A movie the
+// user picks interactively is attached like any download (AttachMovieImport, not
+// manual), so the movie gate judges it — and records it when it is the escape.
 
 // movieEscapeUsed is the EscapeUsed of movie id's track v (the movie row for the default
 // track, its movie_versions row otherwise). Read only when the escape would be taken.
