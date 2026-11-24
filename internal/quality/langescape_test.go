@@ -364,3 +364,39 @@ func TestLanguageEscapeUnderAMust(t *testing.T) {
 		}
 	})
 }
+
+// A profile with no language on Avoid does the work it did before #137: none of the
+// escape's readings are taken, and every lower resolution is refused as it always was —
+// on the sweep and at the import gates, for a file that fits and one a Must rules out.
+func TestLanguageEscapeSkippedWithoutAnAvoid(t *testing.T) {
+	forEachRanking(t, func(t *testing.T, mode string) {
+		s, ctx := testService(t)
+		setRanking(t, s, mode)
+		eng2160 := escapeFile("2160p", "eng")
+		conv := eng2160
+		conv.Release = "Film.2021.2160p.BluRay.x265-OLD"
+		conv.OrigRelease, conv.OrigSizeGB = "Film.2021.2160p.BluRay.REMUX.AVC-ORIG", 50
+		for _, row := range []map[string]string{{"it": PrefWant}, {"it": PrefMust}, {LangOriginal: PrefWant, "it": PrefWant}} {
+			ref := escapeProfile(t, s, row, TriggerAny)
+			p, e := s.Resolve(ctx, ref)
+			if p.avoidsALanguage() {
+				t.Fatalf("%v: reads as avoiding a language", row)
+			}
+			for _, cur := range []CurrentFile{eng2160, conv} {
+				bar := cur.upgradeBar(p, e)
+				if bar.langRules != nil || bar.langAvoided || bar.nameAvoided || bar.origLangAvoided {
+					t.Errorf("%v %s: escape readings taken (%+v)", row, cur.Release, bar)
+				}
+				if bar.langEscape(TriggerAny, e.Evaluate(p, cur.arriving(escITA1080, 8))) {
+					t.Errorf("%v %s: langEscape fired", row, cur.Release)
+				}
+				if pick, key, ok := s.UpgradePick(ctx, ref, cur, []Candidate{enCand(escITA1080, 8)}); ok {
+					t.Errorf("%v %s: sweep took the lower resolution %s (%s)", row, cur.Release, pick.Name, key)
+				}
+				if s.IsLanguageUpgrade(ctx, ref, escITA1080, 8, cur) {
+					t.Errorf("%v %s: the lower-resolution import gate took it", row, cur.Release)
+				}
+			}
+		}
+	})
+}

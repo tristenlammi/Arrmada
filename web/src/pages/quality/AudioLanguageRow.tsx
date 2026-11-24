@@ -69,8 +69,9 @@ export function AudioLanguageRow({ value, onChange, picker, multiCounts, onMulti
         DL means the original plus the ones it names. A Must is only grabbed when the name says it (ITA, iTALiAN, VFF…) or
         it's the title's original language. Files in your library are judged by their actual audio tracks, and a file whose
         audio hasn't been read yet is left alone. Each Must is needed; Avoid only counts against a release whose every
-        language is avoided. With upgrades on, a file whose every language is avoided is replaced by a release in a
-        language you want, even at a lower resolution (not when Replace for is resolution only).
+        language is avoided. With upgrades on, a file whose audio and release name are both only avoided languages (a name
+        with no language counts as the original) can be replaced by a lower-resolution release whose name says a language
+        you want, unless Replace for is resolution only.
       </div>
       <div className="flex flex-col gap-1.5">
         {keys.map((k) => (

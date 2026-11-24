@@ -372,6 +372,9 @@ func (s *Service) IsLanguageUpgrade(ctx context.Context, ref, candRelease string
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)
+	if !p.avoidsALanguage() {
+		return false // nothing is all-avoided by language: no escape, and no bar to build
+	}
 	bar := current.upgradeBar(p, e)
 	if bar.excludes(candRelease) {
 		return false

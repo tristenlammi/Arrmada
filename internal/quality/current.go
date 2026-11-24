@@ -93,6 +93,22 @@ func nameLangAvoided(rules map[string]string, name, titleLang string) bool {
 	return judgeLangs(rules, releaseLangs(parser.Parse(name), titleLang), mustReading{}).avoided
 }
 
+// avoidsALanguage reports a profile with an Audio language set to Avoid — the only
+// profiles where a file can be all-avoided by language, so the only ones the language
+// escape (langEscape) and its guard (intoAvoid) can ever apply to. Book and music profiles
+// have no language rules (Evaluate).
+func (p Profile) avoidsALanguage() bool {
+	if p.NoUnwanted {
+		return false
+	}
+	for _, st := range p.Languages {
+		if st == PrefAvoid {
+			return true
+		}
+	}
+	return false
+}
+
 // namesAvoided is nameLangAvoided under this file's profile and title.
 func (b upgradeBar) namesAvoided(name string) bool {
 	return nameLangAvoided(b.langRules, name, b.titleLang)
@@ -285,17 +301,23 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		current: c.Release, curCodec: curCand.Release.Codec, ev: cur,
 		mode: NormalizeRanking(e.Ranking), fits: cur.Eligible,
 	}
-	b.titleLang = strings.TrimSpace(c.OrigLanguage)
-	if !p.NoUnwanted { // book and music profiles have no language rules (Evaluate)
+	// The language escape's readings (#137), only for a profile that avoids a language:
+	// without an Avoid nothing is ever all-avoided, so every other profile does exactly
+	// the work it always did.
+	escapable := p.avoidsALanguage()
+	if escapable {
+		b.titleLang = strings.TrimSpace(c.OrigLanguage)
 		b.langRules = langRules(p.Languages, b.titleLang)
+		b.nameAvoided = b.namesAvoided(c.Release)
+		b.langAvoided = cur.langAvoided
 	}
-	b.nameAvoided = b.namesAvoided(c.Release)
-	b.langAvoided = cur.langAvoided
-	if !cur.Eligible {
+	if !cur.Eligible && (escapable || b.mode == RankingV2) {
 		// Evaluate stops at the first gate a file fails (a missing Must language, a
 		// resolution no longer allowed), before the language avoid is read.
 		d := e.describe(p, curCand)
-		b.langAvoided = d.langAvoided
+		if escapable {
+			b.langAvoided = d.langAvoided
+		}
 		if b.mode == RankingV2 {
 			b.ev = d
 		}
@@ -312,8 +334,11 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		if o.Total > b.total {
 			b.total = o.Total
 		}
-		// Read by its name, like the file's own recorded release (nameAvoided).
-		b.origLangAvoided = b.namesAvoided(orig)
+		// Read by its name, like the file's own recorded release (nameAvoided): a name
+		// read, never another Evaluate.
+		if escapable {
+			b.origLangAvoided = b.namesAvoided(orig)
+		}
 		if b.mode == RankingV2 {
 			if !o.Eligible {
 				o = e.describe(p, oc)
