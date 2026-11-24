@@ -1265,9 +1265,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// The name that actually carries the quality tags — a pack's per-file names often carry
 	// none, so fall back to the release folder. SCORING the candidate needs the same name
 	// that gets recorded.
+	// escapes are the wanted episodes the gate took as their one language escape (#137):
+	// each is recorded by the statement that places it (supersede).
 	type gateAnswer struct {
-		sourceName     string
-		wanted, forced []series.EpisodeRef
+		sourceName              string
+		wanted, forced, escapes []series.EpisodeRef
 	}
 	gate := func(rv resolvedVideo) gateAnswer {
 		g := gateAnswer{sourceName: filepath.Base(rv.v.Path)}
@@ -1275,7 +1277,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			g.sourceName = filepath.Base(contentPath)
 		}
 		g.wanted, g.forced = refsToPlace(rv.refs, force, func(ref series.EpisodeRef) bool {
-			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rv.rel, g.sourceName, rv.v.Size, len(rv.refs))
+			want, escape := c.episodeGate(ctx, s, ref.Season, ref.Episode, rv.rel, g.sourceName, rv.v.Size, len(rv.refs))
+			if want && escape {
+				g.escapes = append(g.escapes, ref)
+			}
+			return want
 		})
 		return g
 	}
@@ -1328,6 +1334,12 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			g = gate(rv)
 		}
 		sourceName, wanted, forced := g.sourceName, g.wanted, g.forced
+		// supersede records a placed episode's file, and its language escape when the gate
+		// took it as one, in one statement.
+		supersede := func(season, episode int, path string, size int64) error {
+			return c.series.SupersedeEpisodeFileEscaping(ctx, s.ID, season, episode, path, size, sourceName,
+				refsContain(g.escapes, season, episode))
+		}
 		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
 				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(forced))
@@ -1348,7 +1360,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			if !ok {
 				continue // couldn't be joined this time: counted as failed above
 			}
-			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, path, wanted, sourceName)
+			got, bad := c.placeJoinedEpisode(ctx, s, imp, folder, rv, path, wanted, sourceName, g.escapes)
 			placed = append(placed, got...)
 			if bad {
 				failed++
@@ -1390,7 +1402,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				if !refsContain(wanted, rs, re) {
 					continue
 				}
-				if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
+				if supersede(rs, re, ei.TargetPath, ei.SizeBytes) == nil {
 					placed = append(placed, series.EpisodeRef{Season: rs, Episode: re})
 				}
 			}
@@ -1420,7 +1432,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"series", s.Title, "file", filepath.Base(v.Path), "episodes", refsLabel(wanted))
 		}
 		for _, w := range wanted {
-			if c.series.SupersedeEpisodeFile(ctx, s.ID, w.Season, w.Episode, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
+			if supersede(w.Season, w.Episode, ei.TargetPath, ei.SizeBytes) == nil {
 				placed = append(placed, w)
 			}
 		}
@@ -1579,13 +1591,22 @@ func inheritQuality(file, release parser.Release) parser.Release {
 // fileEpisodes is how many episodes the file holds. Its bytes are shared between them: an
 // E01E02 file costed against one episode's runtime read at twice its real bitrate.
 func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64, fileEpisodes int) bool {
+	want, _ := c.episodeGate(ctx, s, season, episode, cand, candName, candBytes, fileEpisodes)
+	return want
+}
+
+// episodeGate is wantsEpisodeFile, and whether placing the file is the episode's one
+// language escape (#137): the placement then records it in the same statement that
+// records the file (SupersedeEpisodeFileEscaping), so the escape is spent exactly when it
+// is taken — a placement that fails leaves it untaken, and a retry passes again.
+func (c *Coordinator) episodeGate(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64, fileEpisodes int) (want, escape bool) {
 	res := cand.Resolution
 	cur := c.series.CurrentEpisodeFile(ctx, s.ID, season, episode)
 	if cur.Path == "" {
-		return true // nothing there yet
+		return true, false // nothing there yet
 	}
 	if _, err := os.Stat(cur.Path); err != nil {
-		return true // recorded file is gone from disk — re-import it
+		return true, false // recorded file is gone from disk — re-import it
 	}
 	// Kept as it is when its profile changed: nothing replaces it on the importer's own
 	// initiative. A release the user picked for this episode, an upload or an approved
@@ -1593,7 +1614,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	if cur.Held {
 		c.log.Info("series import: keeping the episode's file — upgrades are paused for it",
 			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", season, episode))
-		return false
+		return false, false
 	}
 
 	const bytesPerGB = 1 << 30
@@ -1607,7 +1628,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	if over, why := c.quality.ExceedsCeiling(ctx, profile, candName, candShareGB, cur.RuntimeMin); over {
 		c.log.Info("series import: refusing an over-ceiling replacement",
 			"series", s.Title, "episode", epLabel, "candidate", candName, "reason", why)
-		return false
+		return false, false
 	}
 
 	// The library file is renamed on import, so its name often carries neither the
@@ -1631,36 +1652,30 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		curParsed.Resolution, curParsed.Codec = probed.Resolution, probed.Codec
 	}
 	curRes := curParsed.Resolution
+	// An accept the quality rules read as the language escape though this gate reads the
+	// resolution as equal or higher — a converted file whose original had the higher
+	// resolution, a name the probe contradicts — spends the episode's one escape like the
+	// lower-resolution branch below. Every other accept spends nothing.
+	escapes := func() bool {
+		return cur.SourceRelease != "" && c.quality.IsLanguageEscape(ctx, profile, candName, candShareGB, curFile)
+	}
 	switch {
 	case parser.ResolutionRank(res) > parser.ResolutionRank(curRes):
-		return true // a real resolution upgrade
+		return true, escapes() // a real resolution upgrade
 	case parser.ResolutionRank(res) < parser.ResolutionRank(curRes):
 		// Never downgrade — but for the one downgrade the upgrade sweep grabs (#137): a
 		// file whose every audio language the profile avoids, for a release in a language
 		// it wants. Judged on the recorded release, like the quality verdict below, and on
 		// the name this file is recorded under: a file whose name doesn't say the wanted
 		// language would read as avoided again once placed, and be replaced again.
-		// At most once per episode, ever: recorded here, before it's placed (langescape.go).
+		// At most once per episode, ever: the placement records it (episodeGate).
 		if cur.SourceRelease != "" && c.quality.IsLanguageUpgrade(ctx, profile, candName, candShareGB, curFile) {
-			if !c.recordEpisodeEscape(ctx, s.ID, season, episode) {
-				return false
-			}
 			c.log.Info("series import: replacing a higher-resolution file — it has only audio languages the profile avoids, and this one has a language it wants",
 				"series", s.Title, "episode", epLabel,
 				"current", cur.SourceRelease, "candidate", candName)
-			return true
+			return true, true
 		}
-		return false
-	}
-
-	// An equal-resolution accept the quality rules read as the language escape (a
-	// converted file whose original had the higher resolution) spends the episode's one
-	// escape like the branch above. Every other accept passes through untouched.
-	spendEscape := func() bool {
-		if cur.SourceRelease == "" || !c.quality.IsLanguageEscape(ctx, profile, candName, candShareGB, curFile) {
-			return true
-		}
-		return c.recordEpisodeEscape(ctx, s.ID, season, episode)
+		return false, false
 	}
 
 	// Equal resolution. Two ways to win, and they're the same two the SEARCHER uses in
@@ -1681,13 +1696,10 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	if !c.quality.IntoAvoidedLanguage(ctx, profile, candName, curFile) && c.quality.IsBitrateUpgrade(ctx, profile,
 		quality.Encode{SizeGB: candShareGB, Codec: cand.Codec},
 		curEncode, cur.RuntimeMin) {
-		if !spendEscape() {
-			return false
-		}
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", candShareGB)
-		return true
+		return true, escapes()
 	}
 	// Scoring needs the release the current file came FROM. The library file is renamed to
 	// a tagless scheme, so scoring its name would rate every candidate an upgrade and
@@ -1695,15 +1707,12 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
 		candName, candShareGB, curFile) {
-		if !spendEscape() {
-			return false
-		}
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
 			"current", cur.SourceRelease, "candidate", candName)
-		return true
+		return true, escapes()
 	}
-	return false
+	return false, false
 }
 
 // repairSourceRelease upgrades an episode's recorded source release when the stored one

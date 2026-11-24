@@ -7,21 +7,26 @@ import (
 )
 
 // The language escape (#137) is one-shot: a movie's track, or an episode, may give up
-// resolution for a wanted language at most once, ever. The quality rules decide whether
-// a release is the escape (quality.IsLanguageUpgrade and friends); this records that one
-// was taken (movies/movie_versions/episodes.lang_escaped, migration 0356) and answers the
-// rules' CurrentFile.EscapeUsed, so neither the sweep nor an import gate takes another.
+// resolution for a wanted language at most once, automatically. The quality rules decide
+// whether a release is the escape (quality.IsLanguageUpgrade, IsLanguageEscape); the
+// import gates say so (episodeGate, movieReplaceJudge); and the statement or transaction
+// that records the placed file records the escape with it (movies/movie_versions/
+// episodes.lang_escaped, migration 0356: series.SupersedeEpisodeFileEscaping,
+// movies.MarkImportedToAllowing). These answer the rules' CurrentFile.EscapeUsed, so
+// neither the sweep nor an import gate takes another.
 //
-// Why that is airtight whatever the names and probes say: every automatic placement that
-// is the escape passes one of the two import gates — wantsEpisodeFile (the lower-resolution
-// branch, or an equal-resolution accept the rules read as lower) and the movie gate
-// (movieReplaceJudge) — and each records it before it answers yes. Once recorded, the
-// sweep (UpgradePick) and both gates refuse the escape for that track or episode. The
-// flag stays when the file is replaced or removed, and goes only with the row itself.
+// Why that is airtight whatever later names and probes say: every automatic placement
+// over an existing file passes one of the two gates, and each reports an escape whenever
+// the quality rules read the placement as one — whatever resolution the gate itself read.
+// The record lands atomically with the file: a placement that fails records nothing (the
+// track or episode is still on its old file, and a retry of the same release passes
+// again), and one that succeeds can't be left unrecorded. Once recorded, the sweep and
+// both gates refuse the escape for that track or episode; the flag stays when the file is
+// later replaced or removed, follows an episode's file through a renumber, and goes only
+// with the row itself. A failed read of it counts as spent.
 //
-// It's recorded when the gate accepts, before the file is placed: an import that then
-// fails spends the escape without having taken it. That errs the safe way — a second
-// downgrade is never possible — and a failed read of the flag counts as spent too.
+// Placements the user approved (an interactive pick or upload, an approved review) skip
+// the gates and record nothing: they're the user's own choice.
 
 // movieEscapeUsed is the EscapeUsed of movie id's track v (the movie row for the default
 // track, its movie_versions row otherwise). Read only when the escape would be taken.
@@ -51,35 +56,4 @@ func (c *Coordinator) episodeEscapeUsed(seriesID int64, season, episode int) fun
 		}
 		return n != 0
 	}
-}
-
-// recordMovieEscape spends movie id's track v's language escape. false when it couldn't be
-// written: the caller then refuses the import, so an escape is never taken unrecorded.
-func (c *Coordinator) recordMovieEscape(ctx context.Context, id int64, v movies.Version) bool {
-	q, arg := `UPDATE movies SET lang_escaped = 1 WHERE id = ?`, id
-	if !v.IsDefault && v.ID != 0 {
-		q, arg = `UPDATE movie_versions SET lang_escaped = 1 WHERE id = ?`, v.ID
-	}
-	return c.recordEscape(ctx, q, arg)
-}
-
-// recordEpisodeEscape spends the show's episode season/episode's language escape, like
-// recordMovieEscape.
-func (c *Coordinator) recordEpisodeEscape(ctx context.Context, seriesID int64, season, episode int) bool {
-	return c.recordEscape(ctx,
-		`UPDATE episodes SET lang_escaped = 1 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-		seriesID, season, episode)
-}
-
-func (c *Coordinator) recordEscape(ctx context.Context, q string, args ...any) bool {
-	res, err := c.db.ExecContext(ctx, q, args...)
-	if err != nil {
-		c.log.Warn("couldn't record a language escape — refusing the import", "err", err)
-		return false
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		c.log.Warn("couldn't record a language escape: no such track or episode — refusing the import")
-		return false
-	}
-	return true
 }

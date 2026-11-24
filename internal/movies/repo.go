@@ -831,6 +831,23 @@ func (r *Repo) clearHold(ctx context.Context, movieID, versionID int64) error {
 	return err
 }
 
+// setLangEscaped records that a track has taken its one language escape (#137): the movie
+// row for the default track (versionID 0), its movie_versions row otherwise.
+func (r *Repo) setLangEscaped(ctx context.Context, movieID, versionID int64) error {
+	q, arg := `UPDATE movies SET lang_escaped = 1 WHERE id = ?`, movieID
+	if versionID != 0 {
+		q, arg = `UPDATE movie_versions SET lang_escaped = 1 WHERE id = ?`, versionID
+	}
+	res, err := r.q().ExecContext(ctx, q, arg)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("record the language escape: no such track (movie " + strconv.FormatInt(movieID, 10) + ", track " + strconv.FormatInt(versionID, 10) + ")")
+	}
+	return nil
+}
+
 // DeleteVersionsForMovie removes all extra version tracks for a movie (used when
 // deleting the movie).
 func (r *Repo) DeleteVersionsForMovie(ctx context.Context, movieID int64) error {

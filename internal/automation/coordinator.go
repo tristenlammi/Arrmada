@@ -2863,36 +2863,29 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 //   - lower resolution: refused, but for the one downgrade the upgrade sweep grabs
 //     (quality.IsLanguageUpgrade) — the track's file carries only audio languages its
 //     profile avoids, and the download's name states one it wants — at most once per
-//     track, recorded here before it's placed (langescape.go);
-//   - equal resolution: under a profile that avoids a language, refused when the download
-//     says it carries only avoided languages and the file isn't all-avoided
-//     (quality.IntoAvoidedLanguage), as the sweep would never grab it; and an accept the
-//     quality rules read as the escape (quality.IsLanguageEscape) spends the track's one;
-//   - higher or unknown: taken, as always.
+//     track;
+//   - equal, higher or unknown: taken, as MarkImportedTo always has; but when the quality
+//     rules read it as the escape all the same (quality.IsLanguageEscape: a name with no
+//     resolution, a converted file whose original had the higher one), it spends the
+//     track's one escape like the lower branch.
+//
+// An escape is recorded by MarkImportedToAllowing in the transaction that records the new
+// file, so it is spent exactly when it is taken.
 func (c *Coordinator) movieReplaceJudge(ctx context.Context, m movies.Movie, rec library.ImportRecord) movies.ReplaceJudge {
-	return func(v movies.Version, cmp int) bool {
-		if cmp > 0 {
-			return true
-		}
+	return func(v movies.Version, cmp int) (ok, escape bool) {
+		lower := cmp == movies.ImportLower
 		if v.UpgradeHold || c.quality == nil {
 			// Kept as it is: nothing lower replaces it on the importer's own initiative.
-			// An equal one is taken, as MarkImportedTo always has.
-			return cmp == 0
+			return !lower, false
 		}
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
 		cur := c.currentMovieFile(ctx, m, v)
 		size := gbOf(rec.SizeBytes)
-		if cmp < 0 {
-			return c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, size, cur) &&
-				c.recordMovieEscape(ctx, m.ID, v)
+		if lower {
+			ok := c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, size, cur)
+			return ok, ok
 		}
-		if c.quality.IntoAvoidedLanguage(ctx, profile, rec.ReleaseName, cur) {
-			return false
-		}
-		if c.quality.IsLanguageEscape(ctx, profile, rec.ReleaseName, size, cur) {
-			return c.recordMovieEscape(ctx, m.ID, v)
-		}
-		return true
+		return true, c.quality.IsLanguageEscape(ctx, profile, rec.ReleaseName, size, cur)
 	}
 }
 

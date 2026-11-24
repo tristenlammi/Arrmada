@@ -2128,13 +2128,20 @@ func (s *Service) AdoptEpisodeFile(ctx context.Context, seriesID int64, season, 
 // recorded release stays only if the path is unchanged (a new file can't inherit the old
 // one's), and the upgrade path skips episodes without one.
 func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, season, episode int, path string, size int64, sourceRelease string) error {
+	return s.SupersedeEpisodeFileEscaping(ctx, seriesID, season, episode, path, size, sourceRelease, false)
+}
+
+// SupersedeEpisodeFileEscaping is SupersedeEpisodeFile for an import the quality gate took
+// as the episode's one language escape (#137) when escaped: the record of it is written in
+// the same statement as the new file, before the old one is touched.
+func (s *Service) SupersedeEpisodeFileEscaping(ctx context.Context, seriesID int64, season, episode int, path string, size int64, sourceRelease string, escaped bool) error {
 	old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
 	// The new file and its release are recorded together, before the old file is touched:
 	// a failure leaves the record wholly on the old file, never the old file under the new
 	// release. The same write ends the upgrade hold for a new path (the hold kept the file
 	// it had) and drops the pre-conversion baseline, which described the old file. Convert
 	// and rename go through RepointEpisodeFile / MarkEpisodeImported and keep both.
-	if err := s.repo.SupersedeEpisodeFile(ctx, seriesID, season, episode, path, size, sourceRelease); err != nil {
+	if err := s.repo.SupersedeEpisodeFileEscaping(ctx, seriesID, season, episode, path, size, sourceRelease, escaped); err != nil {
 		return err
 	}
 	// The recorded path can be the new file spelt another way (another case on a
