@@ -1635,7 +1635,18 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	case parser.ResolutionRank(res) > parser.ResolutionRank(curRes):
 		return true // a real resolution upgrade
 	case parser.ResolutionRank(res) < parser.ResolutionRank(curRes):
-		return false // never downgrade
+		// Never downgrade — but for the one downgrade the upgrade sweep grabs (#137): a
+		// file whose every audio language the profile avoids, for a release in a language
+		// it wants. Judged on the recorded release, like the quality verdict below, and on
+		// the name this file is recorded under: a file whose name doesn't say the wanted
+		// language would read as avoided again once placed, and be replaced again.
+		if cur.SourceRelease != "" && c.quality.IsLanguageUpgrade(ctx, profile, candName, candShareGB, curFile) {
+			c.log.Info("series import: replacing a higher-resolution file — it has only audio languages the profile avoids, and this one has a language it wants",
+				"series", s.Title, "episode", epLabel,
+				"current", cur.SourceRelease, "candidate", candName)
+			return true
+		}
+		return false
 	}
 
 	// Equal resolution. Two ways to win, and they're the same two the SEARCHER uses in

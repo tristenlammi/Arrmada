@@ -11,6 +11,10 @@ Arrmada is pre-1.0 (v0.x), so a minor version can change behaviour. The format f
 
 ## [Unreleased]
 
+### Changed
+
+- **A file in a language you avoid can be replaced by a lower resolution in a language you want** ([#137](https://github.com/tristenlammi/Arrmada/issues/137)). With Italian on Want and English on Avoid, an English-only 4K file is now upgraded to an Italian 1080p release; before, upgrades never dropped resolution, so it stayed English. It only happens when every audio language of the file is one you avoid and the release's name says it has a language you want or require, and not when "Replace for" is set to resolution only. A release whose language can't be told doesn't count, and nothing else ever replaces a file with a lower resolution.
+
 ## [0.6.0] - 2026-11-23
 
 ### Highlights

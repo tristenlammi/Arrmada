@@ -2837,7 +2837,8 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 		}
 		return library.Unmatched, fmt.Errorf("no movie in the library matches %q", titleYear(rec.Title, rec.Year))
 	}
-	if err := c.movies.MarkImportedTo(ctx, m.ID, versionID, rec.TargetPath, rec.ReleaseName, false); err != nil {
+	if err := c.movies.MarkImportedToAllowing(ctx, m.ID, versionID, rec.TargetPath, rec.ReleaseName, false,
+		c.movieLanguageDowngradeOK(ctx, m, rec)); err != nil {
 		if errors.Is(err, movies.ErrWorseQuality) || errors.Is(err, movies.ErrPathOwnedByOtherTrack) {
 			return library.Refused, err
 		}
@@ -2852,6 +2853,23 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 	c.keepReplacedBaseline(ctx, m.ID, rec.Hash) // a "Find a smaller release" grab (smaller.go)
 	c.log.Info("automation: import attached to movie", "movie", m.Title)
 	return library.Attached, nil
+}
+
+// movieLanguageDowngradeOK is the movie import gate's one exception to "never a lower
+// resolution" (#137): the track's file carries only audio languages its profile avoids,
+// and the download carries one the profile wants — the downgrade the upgrade sweep grabs
+// (quality.UpgradePick). It judges the track's file exactly as the sweep does
+// (currentMovieFile), and the download by the name the track records for it
+// (rec.ReleaseName): a name that doesn't say the wanted language would read as avoided
+// again once placed, and the file would be replaced again.
+func (c *Coordinator) movieLanguageDowngradeOK(ctx context.Context, m movies.Movie, rec library.ImportRecord) func(movies.Version) bool {
+	return func(v movies.Version) bool {
+		if v.UpgradeHold || c.quality == nil {
+			return false // kept as it is: nothing replaces it on the importer's own initiative
+		}
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		return c.quality.IsLanguageUpgrade(ctx, profile, rec.ReleaseName, gbOf(rec.SizeBytes), c.currentMovieFile(ctx, m, v))
+	}
 }
 
 // untrackedMovie reports whether a torrent no grab knows (see untrackedQueue) is for the

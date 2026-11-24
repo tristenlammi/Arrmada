@@ -65,6 +65,12 @@ type upgradeBar struct {
 	// origEv is the converted file's original, scored like ev; nil when never converted.
 	// Under v2 an upgrade must rank above it as well as above the file.
 	origEv *Evaluation
+	// langAvoided says every language the file carries is one the profile avoids, and
+	// origLangAvoided the same of the release it was converted from (when orig is set):
+	// the only files that may give up resolution for a language (langEscape). Read with
+	// the profile's gates lifted when the profile no longer accepts the file, so both
+	// rankings read it alike.
+	langAvoided, origLangAvoided bool
 }
 
 // gain is THE verdict on whether cand's quality is worth replacing the file for, and on
@@ -115,6 +121,33 @@ func (b upgradeBar) intoAvoid(cand Evaluation) bool {
 		return cand.TargetAvoided && !b.ev.TargetAvoided
 	}
 	return cand.Avoided && !b.avoided
+}
+
+// langEscape reports a candidate that may replace the file even though it has a lower
+// resolution (#137): the file is in the avoided tier for its language alone — every
+// language it carries is avoided (and, for a converted file, so is every language of the
+// release it came from) — and cand is a release the profile would grab, alive, out of
+// the avoided tier altogether, and known to carry a language the profile wants or
+// requires that the file lacks. A release whose language can't be told never qualifies:
+// it gets no language credit (judgeLangs, creditable). The gain is named like escapeKey
+// names a language escape, preferences, so a "resolution only" trigger never takes it.
+//
+// Only the upgrade sweep's and import gates' lower-resolution paths ask this; at the
+// same or a higher resolution the ordinary verdict (gain) decides, unchanged.
+func (b upgradeBar) langEscape(trigger string, cand Evaluation) bool {
+	if !b.langAvoided || (b.orig != "" && !b.origLangAvoided) {
+		return false
+	}
+	if !cand.Eligible || !cand.Candidate.alive() || cand.Avoided || cand.TargetAvoided || cand.langAvoided {
+		return false
+	}
+	if b.creditable(cand).langPrefs == 0 {
+		return false
+	}
+	if b.mode == RankingV2 {
+		return v2TriggerAllows(trigger, KeyPreferences)
+	}
+	return triggerAllows(trigger, KeyPreferences)
 }
 
 // noWorse is the bitrate upgrade's other half: a heavier encode only replaces the file
@@ -184,8 +217,15 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		current: c.Release, curCodec: curCand.Release.Codec, ev: cur,
 		mode: NormalizeRanking(e.Ranking), fits: cur.Eligible,
 	}
-	if b.mode == RankingV2 && !cur.Eligible {
-		b.ev = e.describe(p, curCand)
+	b.langAvoided = cur.langAvoided
+	if !cur.Eligible {
+		// Evaluate stops at the first gate a file fails (a missing Must language, a
+		// resolution no longer allowed), before the language avoid is read.
+		d := e.describe(p, curCand)
+		b.langAvoided = d.langAvoided
+		if b.mode == RankingV2 {
+			b.ev = d
+		}
 	}
 	if orig := strings.TrimSpace(c.OrigRelease); orig != "" && !strings.EqualFold(orig, strings.TrimSpace(c.Release)) {
 		size := c.OrigSizeGB
@@ -198,6 +238,10 @@ func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
 		o := e.Evaluate(p, oc)
 		if o.Total > b.total {
 			b.total = o.Total
+		}
+		b.origLangAvoided = o.langAvoided
+		if !o.Eligible {
+			b.origLangAvoided = e.describe(p, oc).langAvoided
 		}
 		if b.mode == RankingV2 {
 			if !o.Eligible {

@@ -271,7 +271,14 @@ func (s *Service) UpgradePick(ctx context.Context, ref string, current CurrentFi
 			continue
 		}
 		if resRank[ev.Candidate.Release.Resolution] < bar.resRank {
-			continue // never drop resolution — that's a downgrade, not an upgrade
+			// Never drop resolution — that's a downgrade, not an upgrade — with one
+			// exception (#137): a file whose every language the profile avoids may give
+			// up resolution for a release that carries a language it wants (langEscape).
+			// The import gates accept the same (IsLanguageUpgrade, IsQualityUpgrade).
+			if bar.langEscape(sp.UpgradeTrigger, ev) && !bar.excludes(ev.Candidate.Name) {
+				return ev.Candidate, KeyPreferences, true
+			}
+			continue
 		}
 		if bar.excludes(ev.Candidate.Name) {
 			// The release we already have, or the one this file was converted from.
@@ -329,21 +336,57 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	if bar.excludes(candRelease) {
 		return false
 	}
-	// Seeders are irrelevant here and unknown for a file on disk, so both sides get the
-	// same large value rather than letting a seeder term skew the comparison.
-	cand := NewCandidate(candRelease, candSizeGB, 1_000_000)
-	// The title's language reaches the language rules only, as for the file it'd replace
-	// (CurrentFile.candidate): the gate has never run the foreign-only check.
-	cand.ruleLang = strings.TrimSpace(current.OrigLanguage)
-	ev := e.Evaluate(p, cand)
+	ev := e.Evaluate(p, current.arriving(candRelease, candSizeGB))
 	if bar.intoAvoid(ev) {
 		return false
+	}
+	// Below the file's resolution (or its original's) the sweep takes only a language
+	// escape (UpgradePick, #137) — accepted here too, so a converted file whose name the
+	// caller reads at an equal resolution isn't refused what the sweep grabbed.
+	if resRank[ev.Candidate.Release.Resolution] < bar.resRank && bar.langEscape(sp.UpgradeTrigger, ev) {
+		return true
 	}
 	// The same verdict the searcher applied (upgradeBar.gain, in the ranking mode in
 	// effect), so a release it grabbed as an upgrade is placed, and one it wouldn't have
 	// grabbed isn't placed as one either.
 	_, ok := bar.gain(sp.UpgradeTrigger, ev)
 	return ok
+}
+
+// IsLanguageUpgrade reports whether an arriving release with a LOWER resolution than the
+// file may still replace it: the one downgrade the upgrade sweep grabs (UpgradePick,
+// upgradeBar.langEscape, #137) — a file whose every audio language the profile avoids,
+// for a release that carries a language the profile wants or requires. The import gates
+// ask it where they would otherwise refuse a lower resolution, so a release the sweep
+// grabbed for its language is placed when it arrives. Nothing else lower is ever taken.
+//
+// The same profile gates as IsQualityUpgrade: upgrades enabled, never the file's own
+// release or the one it was converted from.
+func (s *Service) IsLanguageUpgrade(ctx context.Context, ref, candRelease string, candSizeGB float64, current CurrentFile) bool {
+	if strings.TrimSpace(candRelease) == "" || strings.TrimSpace(current.Release) == "" {
+		return false
+	}
+	sp, err := s.GetStored(ctx, ref)
+	if err != nil || !sp.UpgradesEnabled {
+		return false
+	}
+	p, e := s.Resolve(ctx, ref)
+	bar := current.upgradeBar(p, e)
+	if bar.excludes(candRelease) {
+		return false
+	}
+	return bar.langEscape(sp.UpgradeTrigger, e.Evaluate(p, current.arriving(candRelease, candSizeGB)))
+}
+
+// arriving is a downloaded release as the import gates score it against this file.
+// Seeders are irrelevant here and unknown for a file on disk, so it gets a large value
+// rather than letting a seeder term skew the comparison. The title's language reaches the
+// language rules only, as for the file it'd replace (CurrentFile.candidate): the gate has
+// never run the foreign-only check.
+func (c CurrentFile) arriving(release string, sizeGB float64) Candidate {
+	cand := NewCandidate(release, sizeGB, 1_000_000)
+	cand.ruleLang = strings.TrimSpace(c.OrigLanguage)
+	return cand
 }
 
 // convertedFrom reports whether cand looks like the release the current file was

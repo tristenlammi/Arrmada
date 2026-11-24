@@ -961,6 +961,16 @@ var ErrVersionNotFound = errors.New("that version isn't one of this movie's")
 // and edition as MarkImported always has, and so does a track that has been removed since.
 // manual skips the worse-quality gate (the user picked this file).
 func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool) error {
+	return s.MarkImportedToAllowing(ctx, id, versionID, path, sourceRelease, manual, nil)
+}
+
+// MarkImportedToAllowing is MarkImportedTo with lowerOK, asked only when an automatic
+// import has a known lower resolution than the track's file: true lets that one
+// replacement through the worse-quality gate. The automation passes the quality
+// profile's single downgrade it grabs — a file whose every audio language the profile
+// avoids, for a release in a language it wants (#137). nil refuses every lower
+// resolution, as MarkImportedTo always has.
+func (s *Service) MarkImportedToAllowing(ctx context.Context, id, versionID int64, path, sourceRelease string, manual bool, lowerOK func(Version) bool) error {
 	// The database rows (with the default track's cached media info) are all routing
 	// and the quality gate need; probing every track's file here cost one ffprobe per
 	// track on every import.
@@ -1004,8 +1014,16 @@ func (s *Service) MarkImportedTo(ctx context.Context, id, versionID int64, path,
 		if !manual {
 			newRes := importResolution(path, sourceRelease)
 			oldRes := existingResolution(target)
-			if newRes != parser.ResUnknown && oldRes != parser.ResUnknown &&
-				parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes) {
+			lower := newRes != parser.ResUnknown && oldRes != parser.ResUnknown &&
+				parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes)
+			if lower && lowerOK != nil && lowerOK(target) {
+				s.log.Info("replacing file with a lower-resolution import — it has an audio language the profile wants, the file only avoided ones",
+					"movie_id", id, "version", target.Label,
+					"existing", string(oldRes), "existing_path", target.FilePath,
+					"incoming", string(newRes), "incoming_path", path)
+				lower = false
+			}
+			if lower {
 				s.log.Warn("refusing to replace file with lower-resolution import — keeping existing",
 					"movie_id", id, "version", target.Label,
 					"existing", string(oldRes), "existing_path", target.FilePath,
