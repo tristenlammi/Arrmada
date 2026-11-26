@@ -1227,6 +1227,11 @@ export interface AppSettings {
   music_write_tags: boolean;
   /** Music: file types brought along beside an album (".jpg .pdf .lrc …"), space-separated. */
   music_extras: string;
+  /** Music: optionally transcode imported audio after download (staging copy only). */
+  music_transcode: boolean;
+  music_transcode_format: "mp3";
+  music_transcode_quality: "v0" | "v2" | "320" | "256" | "192";
+  music_transcode_lossless_only: boolean;
   write_nfo: boolean;
   download_artwork: boolean;
   books_enabled: boolean;

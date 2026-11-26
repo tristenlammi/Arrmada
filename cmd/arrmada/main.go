@@ -720,6 +720,12 @@ func main() {
 		return automation.MusicPlacementPrefs{
 			WriteTags: settingsSvc.GetBool(ctx, settings.KeyMusicWriteTags, settings.MusicWriteTagsDefault),
 			Extras:    stage.ParseExtras(settingsSvc.Get(ctx, settings.KeyMusicExtras, stage.DefaultExtras)),
+			Transcode: automation.MusicTranscodePrefs{
+				Enabled:      settingsSvc.GetBool(ctx, settings.KeyMusicTranscode, settings.MusicTranscodeDefault),
+				Format:       settingsSvc.Get(ctx, settings.KeyMusicTranscodeFormat, settings.MusicTranscodeFormatDefault),
+				Quality:      settingsSvc.Get(ctx, settings.KeyMusicTranscodeQuality, settings.MusicTranscodeQualityDefault),
+				LosslessOnly: settingsSvc.GetBool(ctx, settings.KeyMusicTranscodeLosslessOnly, settings.MusicTranscodeLosslessOnlyDefault),
+			},
 		}
 	}, music.NewCAA(), automation.MusicAudioHash)
 	// A music import, retag or rename a crash stopped part way is finished or rolled back

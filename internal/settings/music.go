@@ -13,7 +13,22 @@ const (
 	KeyNamingMusicFolder      = "naming_music_folder"
 	KeyNamingMusicTrack       = "naming_music_track"
 	KeyNamingMusicCompilation = "naming_music_compilation"
+
+	// Optional post-import transcode: convert imported music to a compact, widely
+	// compatible lossy format in staging. Off by default; never touches the download.
+	KeyMusicTranscode       = "music_transcode"
+	KeyMusicTranscodeFormat = "music_transcode_format"
+	// KeyMusicTranscodeQuality is the MP3 quality: v0, v2, 320, 256, 192.
+	KeyMusicTranscodeQuality      = "music_transcode_quality"
+	KeyMusicTranscodeLosslessOnly = "music_transcode_lossless_only"
 )
 
-// MusicWriteTagsDefault is on: the owner's decision (2026-10-19).
-const MusicWriteTagsDefault = true
+const (
+	// MusicWriteTagsDefault is on: the owner's decision (2026-10-19).
+	MusicWriteTagsDefault = true
+
+	MusicTranscodeDefault              = false
+	MusicTranscodeFormatDefault        = "mp3"
+	MusicTranscodeQualityDefault       = "v0"
+	MusicTranscodeLosslessOnlyDefault  = true
+)

@@ -36,8 +36,12 @@ var musicNamingFields = []struct {
 // musicSettings is the saved music placement settings (defaults filled), for GET /settings.
 func (a *api) musicSettings(ctx context.Context) map[string]any {
 	out := map[string]any{
-		settings.KeyMusicWriteTags: a.deps.Settings.GetBool(ctx, settings.KeyMusicWriteTags, settings.MusicWriteTagsDefault),
-		settings.KeyMusicExtras:    a.deps.Settings.Get(ctx, settings.KeyMusicExtras, stage.DefaultExtras),
+		settings.KeyMusicWriteTags:              a.deps.Settings.GetBool(ctx, settings.KeyMusicWriteTags, settings.MusicWriteTagsDefault),
+		settings.KeyMusicExtras:                 a.deps.Settings.Get(ctx, settings.KeyMusicExtras, stage.DefaultExtras),
+		settings.KeyMusicTranscode:              a.deps.Settings.GetBool(ctx, settings.KeyMusicTranscode, settings.MusicTranscodeDefault),
+		settings.KeyMusicTranscodeFormat:        a.deps.Settings.Get(ctx, settings.KeyMusicTranscodeFormat, settings.MusicTranscodeFormatDefault),
+		settings.KeyMusicTranscodeQuality:       a.deps.Settings.Get(ctx, settings.KeyMusicTranscodeQuality, settings.MusicTranscodeQualityDefault),
+		settings.KeyMusicTranscodeLosslessOnly:  a.deps.Settings.GetBool(ctx, settings.KeyMusicTranscodeLosslessOnly, settings.MusicTranscodeLosslessOnlyDefault),
 	}
 	for _, f := range musicNamingFields {
 		out[f.key] = a.deps.Settings.Get(ctx, f.key, f.def)
@@ -68,6 +72,20 @@ func checkMusicSettings(req *settingsUpdate) string {
 	if req.MusicExtras != nil && len(*req.MusicExtras) > 1000 {
 		return "the extras list can be at most 1000 characters"
 	}
+	if req.MusicTranscodeFormat != nil {
+		switch strings.ToLower(strings.TrimSpace(*req.MusicTranscodeFormat)) {
+		case "mp3":
+		default:
+			return "music transcode format must be mp3"
+		}
+	}
+	if req.MusicTranscodeQuality != nil {
+		switch strings.ToLower(strings.TrimSpace(*req.MusicTranscodeQuality)) {
+		case "v0", "v2", "320", "256", "192":
+		default:
+			return "music transcode quality must be v0, v2, 320, 256, or 192"
+		}
+	}
 	return ""
 }
 
@@ -88,6 +106,26 @@ func (a *api) saveMusicSettings(ctx context.Context, req *settingsUpdate) error 
 	}
 	if req.MusicExtras != nil {
 		if err := a.deps.Settings.Set(ctx, settings.KeyMusicExtras, tidyExtras(*req.MusicExtras)); err != nil {
+			return err
+		}
+	}
+	if req.MusicTranscode != nil {
+		if err := a.deps.Settings.SetBool(ctx, settings.KeyMusicTranscode, *req.MusicTranscode); err != nil {
+			return err
+		}
+	}
+	if req.MusicTranscodeFormat != nil {
+		if err := a.deps.Settings.Set(ctx, settings.KeyMusicTranscodeFormat, strings.ToLower(strings.TrimSpace(*req.MusicTranscodeFormat))); err != nil {
+			return err
+		}
+	}
+	if req.MusicTranscodeQuality != nil {
+		if err := a.deps.Settings.Set(ctx, settings.KeyMusicTranscodeQuality, strings.ToLower(strings.TrimSpace(*req.MusicTranscodeQuality))); err != nil {
+			return err
+		}
+	}
+	if req.MusicTranscodeLosslessOnly != nil {
+		if err := a.deps.Settings.SetBool(ctx, settings.KeyMusicTranscodeLosslessOnly, *req.MusicTranscodeLosslessOnly); err != nil {
 			return err
 		}
 	}
