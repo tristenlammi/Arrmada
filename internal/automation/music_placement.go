@@ -33,6 +33,9 @@ type MusicPlacementPrefs struct {
 	// Extras is the allowlist of extra files brought along (stage.ParseExtras); empty
 	// brings none.
 	Extras map[string]bool
+	// Transcode optionally converts imported audio to a compact lossy format in staging.
+	// Downloads/seeding sources are never touched.
+	Transcode MusicTranscodePrefs
 }
 
 // musicPlacement is the coordinator's placement wiring. The zero value (tests, or nothing
@@ -122,6 +125,14 @@ type placement struct {
 	from string
 	// scratch: f.Path is a split track in staging, Arrmada's own, deleted once placed.
 	scratch bool
+	// transcode: replace f.Path with a transcoded staging copy before placement.
+	transcode MusicTranscodePrefs
+	// orig* keep the pre-transcode plan so a failed transcode can fall back safely.
+	origTier     music.Quality
+	origBitrate  int
+	origProbe    *mediainfo.AudioInfo
+	origTarget   string
+	origAlbumDir string
 }
 
 // source is the download file the placement came from.
@@ -165,11 +176,16 @@ func (c *Coordinator) placeFiles(ctx context.Context, a music.Artist, al music.A
 			continue
 		}
 		tier, bitrate, probe := c.trackTier(ctx, f.Path, releaseTier)
-		if t.HasFile && !music.BetterTier(music.HeldTier(string(tier), bitrate), c.heldTier(ctx, t)) {
+		outTier, outBitrate, outProbe, outExt, transcode, terr := c.maybeTranscodePlan(ctx, f.Path, tier, bitrate, probe, prefs.Transcode)
+		if terr != nil {
+			res.failed++
+			c.log.Warn("music import: transcoding a track failed — leaving it as downloaded", "track", t.Title, "err", terr)
+		}
+		if t.HasFile && !music.BetterTier(music.HeldTier(string(outTier), outBitrate), c.heldTier(ctx, t)) {
 			res.kept++
 			continue
 		}
-		target, albumDir := c.musicTrackPath(tc, tcErr, a, al, t, tier, probe, filepath.Ext(f.Path))
+		target, albumDir := c.musicTrackPath(tc, tcErr, a, al, t, outTier, outProbe, outExt)
 		if taken[target] {
 			res.taken++
 			c.log.Warn("music import: two tracks would get the same file name — check the naming template",
@@ -188,7 +204,9 @@ func (c *Coordinator) placeFiles(ctx context.Context, a music.Artist, al music.A
 			continue
 		}
 		taken[target] = true
-		p := placement{t: t, f: f, tier: tier, bitrate: bitrate, probe: probe, target: target, albumDir: albumDir}
+		origTarget, origAlbumDir := c.musicTrackPath(tc, tcErr, a, al, t, tier, probe, filepath.Ext(f.Path))
+		p := placement{t: t, f: f, tier: outTier, bitrate: outBitrate, probe: outProbe, target: target, albumDir: albumDir, transcode: transcode,
+			origTier: tier, origBitrate: bitrate, origProbe: probe, origTarget: origTarget, origAlbumDir: origAlbumDir}
 		if t.HasFile {
 			p.old = t.FilePath
 		}
@@ -203,9 +221,14 @@ func (c *Coordinator) placeFiles(ctx context.Context, a music.Artist, al music.A
 	if !ok {
 		return res
 	}
+	plan, transcodeCleanup, ok := c.prepareTranscodes(ctx, al, plan, &res)
+	defer transcodeCleanup()
+	if !ok {
+		return res
+	}
 
 	var placedFrom []placement
-	if prefs.WriteTags && tcErr == nil {
+	if (prefs.WriteTags && tcErr == nil) || prefs.Transcode.Enabled {
 		if err := c.imp.CheckMusicRoot(); err != nil {
 			// Staging inside a missing (unmounted) music folder would write to the wrong
 			// disk; nothing is placed, and the import is tried again later.
@@ -213,7 +236,7 @@ func (c *Coordinator) placeFiles(ctx context.Context, a music.Artist, al music.A
 			c.log.Warn("music import: the music folder isn't there — nothing placed", "album", al.Title, "err", err)
 			return res
 		}
-		placedFrom = c.placeStaged(ctx, al, tc, plan, release, &res)
+		placedFrom = c.placeStaged(ctx, al, tc, plan, release, &res, prefs.WriteTags && tcErr == nil)
 	} else {
 		placedFrom = c.placeLinked(ctx, al, plan, release, &res)
 	}
@@ -288,11 +311,11 @@ func (c *Coordinator) recordPlaced(ctx context.Context, trackID int64, path stri
 	return c.music.RecordTrackFile(ctx, trackID, rec)
 }
 
-// placeStaged runs the files through a staging job: copy, house tags (and the cover),
-// verify, one move. A file the tag library can't write (WAV, an odd MP3) goes in as it
-// arrived, hardlinked. A write or check that fails sends the album to Reviews with the
-// reason; the download is never touched.
-func (c *Coordinator) placeStaged(ctx context.Context, al music.Album, tc music.TagContext, plan []placement, release string, res *albumImport) []placement {
+// placeStaged runs the files through a staging job: copy, optional house tags (and the
+// cover), verify, one move. A file the tag library can't write (WAV, an odd MP3) goes in
+// as it arrived, hardlinked. A write or check that fails sends the album to Reviews with
+// the reason; the download is never touched.
+func (c *Coordinator) placeStaged(ctx context.Context, al music.Album, tc music.TagContext, plan []placement, release string, res *albumImport, writeTags bool) []placement {
 	// Formats the tag library doesn't write (WAV, APE, WavPack…) go straight in as they
 	// arrived, without a pointless copy into staging first.
 	var asIs []placement
@@ -346,34 +369,37 @@ func (c *Coordinator) placeStaged(ctx context.Context, al music.Album, tc music.
 			continue
 		}
 		found, foundJSON := c.tagsFoundJSON(p.f.Path)
-		tags, ok := tc.HouseTags(p.t.ID, found)
-		if !ok {
-			_ = job.Discard(i, "the track isn't on the edition")
-			res.failed++
-			continue
-		}
 		meta := placedMeta{Quality: p.tier, BitrateKbps: p.bitrate, SourceRelease: release, Probe: p.probe,
-			TagState: music.TagStateHouse, TagsFound: foundJSON}
-		if err := job.Tag(ctx, i, tags, embed); err != nil {
-			if errors.Is(err, audiotag.ErrUnsupported) {
-				// Not a format the tag library writes: the file goes in as it arrived.
-				c.log.Info("music import: no house tags for this file type — placing it as downloaded", "file", filepath.Base(p.f.Path))
-				placed = append(placed, c.placeLinked(ctx, al, []placement{p}, release, res)...)
-				continue
-			}
-			if errors.Is(err, stage.ErrTransient) || ctx.Err() != nil {
-				// The check couldn't run just now (a decode timed out, shutting down): try
-				// the import again later rather than send it to Review.
+			TagState: music.TagStateAsFound, TagsFound: foundJSON}
+		if writeTags {
+			tags, ok := tc.HouseTags(p.t.ID, found)
+			if !ok {
+				_ = job.Discard(i, "the track isn't on the edition")
 				res.failed++
-				c.log.Warn("music import: couldn't check a tagged copy just now — trying again later", "track", p.t.Title, "err", err)
 				continue
 			}
-			res.tagFailed++
-			if res.tagWhy == "" {
-				res.tagWhy = fmt.Sprintf("%s: %v", filepath.Base(p.f.Path), err)
+			meta.TagState = music.TagStateHouse
+			if err := job.Tag(ctx, i, tags, embed); err != nil {
+				if errors.Is(err, audiotag.ErrUnsupported) {
+					// Not a format the tag library writes: the file goes in as it arrived.
+					c.log.Info("music import: no house tags for this file type — placing it as downloaded", "file", filepath.Base(p.f.Path))
+					placed = append(placed, c.placeLinked(ctx, al, []placement{p}, release, res)...)
+					continue
+				}
+				if errors.Is(err, stage.ErrTransient) || ctx.Err() != nil {
+					// The check couldn't run just now (a decode timed out, shutting down): try
+					// the import again later rather than send it to Review.
+					res.failed++
+					c.log.Warn("music import: couldn't check a tagged copy just now — trying again later", "track", p.t.Title, "err", err)
+					continue
+				}
+				res.tagFailed++
+				if res.tagWhy == "" {
+					res.tagWhy = fmt.Sprintf("%s: %v", filepath.Base(p.f.Path), err)
+				}
+				c.log.Warn("music import: writing the house tags failed — the download is untouched", "track", p.t.Title, "err", err)
+				continue
 			}
-			c.log.Warn("music import: writing the house tags failed — the download is untouched", "track", p.t.Title, "err", err)
-			continue
 		}
 		if err := setMeta(job, i, meta); err != nil {
 			c.log.Warn("music import: couldn't save the staging manifest", "err", err)

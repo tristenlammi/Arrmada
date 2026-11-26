@@ -59,11 +59,27 @@ func TestMusicSettingsAreChecked(t *testing.T) {
 			t.Errorf("PUT %s: HTTP %d %s", body, w.Code, w.Body.String())
 		}
 	}
-	if w := putSettingsAs(t, a, auth.RoleManager, `{"music_write_tags":false,"music_extras":"PDF, jpg  .lrc pdf"}`); w.Code != http.StatusOK {
+	if w := putSettingsAs(t, a, auth.RoleManager, `{"music_write_tags":false,"music_extras":"PDF, jpg  .lrc pdf","music_transcode":true,"music_transcode_format":"MP3","music_transcode_quality":"320","music_transcode_lossless_only":false}`); w.Code != http.StatusOK {
 		t.Fatalf("PUT: HTTP %d %s", w.Code, w.Body.String())
 	}
 	_, got := getSettings(t, a)
 	if got["music_write_tags"] != false || got["music_extras"] != ".pdf .jpg .lrc" {
 		t.Errorf("saved %v / %q", got["music_write_tags"], got["music_extras"])
+	}
+	if got["music_transcode"] != true || got["music_transcode_format"] != "mp3" || got["music_transcode_quality"] != "320" || got["music_transcode_lossless_only"] != false {
+		t.Errorf("transcode saved = %#v", got)
+	}
+}
+
+func TestMusicTranscodeSettingsValidation(t *testing.T) {
+	a := settingsAPI(t)
+	for _, body := range []string{
+		`{"music_transcode_format":"aac"}`,
+		`{"music_transcode_quality":"v1"}`,
+		`{"music_transcode_quality":"flac"}`,
+	} {
+		if w := putSettingsAs(t, a, auth.RoleManager, body); w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: HTTP %d %s", body, w.Code, w.Body.String())
+		}
 	}
 }

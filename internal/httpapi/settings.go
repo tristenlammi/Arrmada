@@ -221,6 +221,10 @@ type settingsUpdate struct {
 	NamingMusicCompilation *string `json:"naming_music_compilation"`
 	MusicWriteTags         *bool   `json:"music_write_tags"`
 	MusicExtras            *string `json:"music_extras"`
+	MusicTranscode              *bool   `json:"music_transcode"`
+	MusicTranscodeFormat        *string `json:"music_transcode_format"`
+	MusicTranscodeQuality       *string `json:"music_transcode_quality"`
+	MusicTranscodeLosslessOnly  *bool   `json:"music_transcode_lossless_only"`
 	WriteNFO               *bool   `json:"write_nfo"`
 	DownloadArtwork        *bool   `json:"download_artwork"`
 	BooksEnabled           *bool   `json:"books_enabled"`

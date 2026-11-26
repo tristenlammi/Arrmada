@@ -67,6 +67,9 @@ export function MusicNamingSettings() {
 
 function MusicNamingCard() {
   const writeTags = useSetting("music_write_tags");
+  const transcode = useSetting("music_transcode");
+  const transcodeQuality = useSetting("music_transcode_quality");
+  const transcodeLosslessOnly = useSetting("music_transcode_lossless_only");
   const folder = useSetting("naming_music_folder", { validate: notBlank });
   const track = useSetting("naming_music_track", { validate: notBlank });
   const compilation = useSetting("naming_music_compilation", { validate: notBlank });
@@ -113,6 +116,38 @@ function MusicNamingCard() {
         hint="One tag style that Plex, Jellyfin and Navidrome all read: every MusicBrainz id, each credited artist, disc and track totals, the album cover. Tags go into a copy, so a download that's still seeding is never touched. Off keeps files exactly as downloaded (hardlinked, untouched)."
         save={writeTags}
       />
+
+      <div className="flex flex-col gap-2 rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+        <AutoToggle
+          label="Transcode music on import"
+          hint="Convert imported audio to MP3 in a staging copy before placing it in the library. The download/source files are never touched, so seeding is safe. Useful when you want broad indexer coverage but smaller, widely compatible files."
+          save={transcode}
+        />
+        {transcode.value && (
+          <>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-ink-faint">MP3 quality</span>
+              <select
+                className="w-full max-w-xs rounded-md border px-2 py-1.5 text-sm"
+                style={{ background: "var(--panel)", borderColor: "var(--line)" }}
+                value={transcodeQuality.value}
+                onChange={(e) => void transcodeQuality.commit(e.target.value as "v0" | "v2" | "320" | "256" | "192")}
+              >
+                <option value="v0">V0 (recommended, high quality VBR)</option>
+                <option value="320">320 kbps CBR</option>
+                <option value="v2">V2 (smaller VBR)</option>
+                <option value="256">256 kbps CBR</option>
+                <option value="192">192 kbps CBR</option>
+              </select>
+            </label>
+            <AutoToggle
+              label="Only transcode lossless sources"
+              hint="When on, existing lossy files (MP3/AAC/OGG/Opus) are kept as-is to avoid re-encoding quality loss. Turn off to force MP3 output for all imported music."
+              save={transcodeLosslessOnly}
+            />
+          </>
+        )}
+      </div>
 
       {presets.length > 0 && (
         <div className="flex flex-col gap-2">
